@@ -59,9 +59,7 @@ SETTING(bool, EnableShaderOverride, "enableShaderOverride", false);
 // HUD options
 SETTING(bool, EnableHudMod, "enableHudMod", false)
 SETTING(bool, EnableMinimalHud, "enableMinimalHud", false)
-SETTING(float, HudScaleTopLeft, "hudScaleTopLeft", 1.0f)
-SETTING(float, HudScaleBottomLeft, "hudScaleBottomLeft", 1.0f)
-SETTING(float, HudScaleBottomRight, "hudScaleBottomRight", 1.0f)
+SETTING(float, HudScaleFactor, "hudScaleFactor", 1.0f)
 SETTING(float, HudTopLeftOpacity, "hudTopLeftOpacity", 1.0f)
 SETTING(float, HudBottomLeftOpacity, "hudBottomLeftOpacity", 1.0f)
 SETTING(float, HudBottomRightOpacity, "hudBottomRightOpacity", 1.0f)

@@ -19,288 +19,72 @@
 #include "Detouring.h"
 #include "SaveManager.h"
 #include "FPS.h"
-#include <cstdint>
-#include <mutex>
-#include "RenderstateManager.h"
-#include <vector>
-#include <intrin.h>
-
 
 // globals
 tDirect3DCreate9 oDirect3DCreate9 = Direct3DCreate9;
 tDirectInput8Create oDirectInput8Create;
 std::ofstream ofile;	
 char dlldir[320];
-std::mutex logMutex; // DSfix 3.0: Global mutex to prevent thread-racing crashes
 
-// DSfix 3.0: Integrated Bonfire Input Softlock Fix (Original logic by SeanPesce & Nullby7e)
-DWORD WINAPI BonfireGlitchDetectionThread(LPVOID lpParam) {
-    Sleep(1000); // Wait for the game to initialize
-    uintptr_t baseAddr = (uintptr_t)GetModuleHandle(NULL);
-    DWORD first_detected = 0;
-
-    while (true) {
-        Sleep(200);
-        bool isSitting = false;
-
-        __try {
-            // 1. Read player character status (Human = 0, Hollow = 8)
-            uintptr_t statusPtr = *(uintptr_t*)(baseAddr + 0xF7E204);
-            int status = *(int*)(statusPtr + 0xA28);
-
-            if (status == 0 || status == 8) {
-                // 2. Resolve the nested pointer to the character's current animation ID
-                uintptr_t animPtr = *(uintptr_t*)0x12E29E8;
-                animPtr = *(uintptr_t*)(animPtr + 0x0);
-                uint32_t current_anim = *(uint32_t*)(animPtr + 0xFC);
-
-                // Check if sitting animation is playing
-                isSitting = (current_anim == 7701 || current_anim == 7711 || current_anim == 7721);
-
-                // 3. Read the Bonfire UI menu flags
-                uintptr_t menuPtr = *(uintptr_t*)(baseAddr + 0xF786D0);
-
-                uint8_t bonfire_menu = *(uint8_t*)(menuPtr + 0x40);
-                uint8_t repair_menu = *(uint8_t*)(menuPtr + 0x4C);
-                uint8_t level_menu = *(uint8_t*)(menuPtr + 0x78);
-                uint8_t bottomless_menu = *(uint8_t*)(menuPtr + 0x84);
-                uint8_t attune_menu = *(uint8_t*)(menuPtr + 0x80);
-                uint8_t reinforce_menu = *(uint8_t*)(menuPtr + 0x50);
-                uint8_t warp_menu = *(uint8_t*)(menuPtr + 0xAC);
-                uint8_t dialog_menu = *(uint8_t*)(menuPtr + 0x60);
-
-                // 4. Check if we are softlocked (Sitting animation + NO UI Menus open)
-                if (isSitting && !bonfire_menu && !repair_menu && !bottomless_menu && !reinforce_menu &&
-                    !level_menu && !attune_menu && !dialog_menu && !warp_menu)
-                {
-                    if (first_detected == 0) {
-                        first_detected = GetTickCount();
-                    }
-                    else if ((GetTickCount() - first_detected) >= 1000) {
-                        // 5. Break the softlock!
-                        *(uint32_t*)(animPtr + 0xFC) = 0;
-                        SDLOG(0, "DSfix 3.0: Bonfire input softlock detected and neutralized.\n");
-                    }
-                }
-                else {
-                    first_detected = 0;
-                }
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            // If any pointer in the chain is invalid, catch the access violation silently.
-            first_detected = 0;
-            isSitting = false;
-        }
-
-        // Pass the sitting state to RSManager to disable SSAO
-        RSManager::get().setBonfireDisableSSAO(isSitting);
-    }
-    return 0;
-}
-
-typedef BOOL(WINAPI* PFN_SETPROCESSDPIAWARENESSCONTEXT)(HANDLE);
-
-static void ApplyModernDPIAwareness() {
-	HMODULE hUser32 = GetModuleHandleA("user32.dll");
-	if (hUser32) {
-		PFN_SETPROCESSDPIAWARENESSCONTEXT SetDpiContext =
-			(PFN_SETPROCESSDPIAWARENESSCONTEXT)GetProcAddress(hUser32, "SetProcessDpiAwarenessContext");
-		if (SetDpiContext) {
-			// -4 corresponds to DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-			SetDpiContext((HANDLE)-4);
-			return;
-		}
-	}
-	// Fallback for older Windows builds
-	SetProcessDPIAware();
-}
-
-#include <vector>
-
-void OptimizeCPUExecution() {
-    // 1. Set high priority class for process
-    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-
-    // 2. Query processor topology dynamically to identify P-Cores vs E-Cores
-    DWORD bufferSize = 0;
-    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &bufferSize) &&
-        GetLastError() == ERROR_INSUFFICIENT_BUFFER)
-    {
-        std::vector<BYTE> buffer(bufferSize);
-        PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX info =
-            reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data());
-
-        if (GetLogicalProcessorInformationEx(RelationProcessorCore, info, &bufferSize)) {
-            BYTE maxEfficiency = 0;
-            BYTE minEfficiency = 255;
-            DWORD offset = 0;
-
-            // Pass 1: Find the maximum and minimum EfficiencyClass present on this CPU
-            while (offset < bufferSize) {
-                PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX curr =
-                    reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data() + offset);
-
-                if (curr->Relationship == RelationProcessorCore) {
-                    BYTE eff = curr->Processor.EfficiencyClass;
-                    if (eff > maxEfficiency) maxEfficiency = eff;
-                    if (eff < minEfficiency) minEfficiency = eff;
-                }
-                offset += curr->Size;
-            }
-
-            // Pass 2: If a hybrid architecture is detected (P-cores have higher EfficiencyClass than E-cores)
-            if (maxEfficiency > minEfficiency) {
-                DWORD_PTR pCoreMask = 0;
-                offset = 0;
-
-                while (offset < bufferSize) {
-                    PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX curr =
-                        reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data() + offset);
-
-                    if (curr->Relationship == RelationProcessorCore &&
-                        curr->Processor.EfficiencyClass == maxEfficiency)
-                    {
-                        // Add every logical thread (including hyperthreaded sibling threads) belonging to this P-core
-                        for (WORD g = 0; g < curr->Processor.GroupCount; ++g) {
-                            if (curr->Processor.GroupMask[g].Group == 0) {
-                                pCoreMask |= curr->Processor.GroupMask[g].Mask;
-                            }
-                        }
-                    }
-                    offset += curr->Size;
-                }
-
-                // Intersect with the system's allowed process affinity mask for safety
-                DWORD_PTR processMask = 0, systemMask = 0;
-                if (GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask)) {
-                    DWORD_PTR targetMask = pCoreMask & processMask;
-
-                    // Count total bits in targetMask
-                    DWORD pCoreThreadCount = __popcnt(targetMask);
-
-                    // Ensure targetMask has enough P-cores to avoid starving the engine
-                    if (pCoreThreadCount >= 6 && targetMask != 0 && targetMask != processMask) {
-                        if (SetProcessAffinityMask(GetCurrentProcess(), targetMask)) {
-                            SDLOG(0, "DSfix 3.0: Hybrid CPU detected. Bound process strictly to P-Cores (Mask: 0x%08X)\n", targetMask);
-                        }
-                    }
-                    else if (pCoreThreadCount > 0 && pCoreThreadCount < 6) {
-                        SDLOG(0, "DSfix 3.0: Low-power Hybrid CPU detected (%u P-Core threads). Bypassing strict P-Core lock to prevent starvation.\n", pCoreThreadCount);
-                    }
-                }
-            }
-            else {
-                SDLOG(0, "DSfix 3.0: Homogeneous CPU detected (no E-cores). Running across all available cores.\n");
-            }
-        }
-    }
-
-    // 3. Disable Windows 11 EcoQoS (Power Throttling) dynamically to ensure P-Cores run at Max Turbo
-    HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
-    if (hKernel32) {
-        typedef BOOL(WINAPI* PFN_SETPROCESSINFORMATION)(HANDLE, DWORD, LPVOID, DWORD);
-        PFN_SETPROCESSINFORMATION SetProcInfo =
-            (PFN_SETPROCESSINFORMATION)GetProcAddress(hKernel32, "SetProcessInformation");
-
-        if (SetProcInfo) {
-            // Define an internal anonymous struct to bypass older Windows SDK missing headers
-            struct {
-                ULONG Version;
-                ULONG ControlMask;
-                ULONG StateMask;
-            } powerThrottling;
-
-            powerThrottling.Version = 1;     // PROCESS_POWER_THROTTLING_CURRENT_VERSION
-            powerThrottling.ControlMask = 1; // PROCESS_POWER_THROTTLING_EXECUTION_SPEED
-            powerThrottling.StateMask = 0;   // 0 disables throttling (enables max turbo)
-
-            // 4 corresponds to ProcessPowerThrottling in PROCESS_INFORMATION_CLASS
-            if (SetProcInfo(GetCurrentProcess(), 4, &powerThrottling, sizeof(powerThrottling))) {
-                SDLOG(0, "DSfix 3.0: EcoQoS / Power Throttling successfully disabled.\n");
-            }
-        }
-    }
-}
-
-HMODULE g_hModule = NULL;
-bool g_dsfixInitialized = false;
-
-// 1. Deferred setup for dangerous OS-level functions ONLY
-void InitializeDSfix() {
-    if (g_dsfixInitialized) return;
-    g_dsfixInitialized = true;
-
-    // Launch the Bonfire Softlock Monitor safely outside loader lock
-    CreateThread(NULL, 0, BonfireGlitchDetectionThread, NULL, 0, NULL);
-
-    // load original dinput8.dll safely outside loader lock
-    HMODULE hMod;
-    if (Settings::get().getDinput8dllWrapper().empty() || (Settings::get().getDinput8dllWrapper().find("none") == 0)) {
-        char syspath[320];
-        GetSystemDirectory(syspath, 320);
-        strcat_s(syspath, "\\dinput8.dll");
-        hMod = LoadLibrary(syspath);
-    }
-    else {
-        sdlog(0, "Loading dinput wrapper %s\n", Settings::get().getDinput8dllWrapper().c_str());
-        hMod = LoadLibrary(Settings::get().getDinput8dllWrapper().c_str());
-    }
-    if (!hMod) {
-        sdlog("Could not load original dinput8.dll\nABORTING.\n");
-        errorExit((LPTSTR)"Loading of specified dinput wrapper");
-    }
-    oDirectInput8Create = (tDirectInput8Create)GetProcAddress(hMod, "DirectInput8Create");
-}
-
-// 2. Immediate setup for timing-critical Engine functions
 bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
-    if (dwReason == DLL_PROCESS_ATTACH) {
-        DisableThreadLibraryCalls(hDll);
-        g_hModule = hDll;
+	TCHAR fileName[512];
+	GetModuleFileName(NULL, fileName, 512);
 
-        ApplyModernDPIAwareness();
-        OptimizeCPUExecution();
+	if(dwReason == DLL_PROCESS_ATTACH) {
+		DisableThreadLibraryCalls(hDll);
+		GetModuleFileName(hDll, dlldir, 512);
+		for(int i = strlen(dlldir); i > 0; i--) { if(dlldir[i] == '\\') { dlldir[i+1] = 0; break; } }
+		ofile.open(GetDirectoryFile("DSfix.log"), std::ios::out);
+		sdlogtime();
+		SDLOG(0, "===== start DSfix %s = fn: %s\n", VERSION, fileName);
+		
+		// load settings
+		Settings::get().load();
+		Settings::get().report();
+		
+		KeyActions::get().load();
+		KeyActions::get().report();
 
-        TCHAR fileName[512];
-        GetModuleFileName(NULL, fileName, 512);
-        GetModuleFileName(hDll, dlldir, 512);
-        for (int i = strlen(dlldir); i > 0; i--) { if (dlldir[i] == '\\') { dlldir[i + 1] = 0; break; } }
+		// load original dinput8.dll
+		HMODULE hMod;
+		if(Settings::get().getDinput8dllWrapper().empty() || (Settings::get().getDinput8dllWrapper().find("none") == 0)) {
+			char syspath[320];
+			GetSystemDirectory(syspath, 320);
+			strcat_s(syspath, "\\dinput8.dll");
+			hMod = LoadLibrary(syspath);
+		} else {
+			sdlog(0, "Loading dinput wrapper %s\n", Settings::get().getDinput8dllWrapper().c_str());
+			hMod = LoadLibrary(Settings::get().getDinput8dllWrapper().c_str());
+		}
+		if(!hMod) {
+			sdlog("Could not load original dinput8.dll\nABORTING.\n");
+			errorExit("Loading of specified dinput wrapper");
+		}
+		oDirectInput8Create = (tDirectInput8Create)GetProcAddress(hMod, "DirectInput8Create");
+		
+		SaveManager::get().init();
 
-        ofile.open(GetDirectoryFile("DSfix.log"), std::ios::out);
-        sdlogtime();
-        SDLOG(0, "===== start DSfix %s = fn: %s\n", VERSION, fileName);
+		earlyDetour();
 
-        // MUST load settings immediately so D3D creates buffers at your custom resolution
-        Settings::get().load();
-        Settings::get().report();
+		initFPSTimer();
+		if(Settings::get().getUnlockFPS()) applyFPSPatch();
 
-        KeyActions::get().load();
-        KeyActions::get().report();
-        SaveManager::get().init();
+		return true;
+	} else if(dwReason == DLL_PROCESS_DETACH) {
+		Settings::get().shutdown();
+		endDetour();
+		SDLOG(0, "===== end = fn: %s\n", fileName);
+		if(ofile) { ofile.close(); }
+	}
 
-        // MUST execute immediately so DSfix intercepts the DirectX graphics engine
-        earlyDetour();
-
-        // MUST execute immediately before game threads start to avoid logic deadlocks
-        initFPSTimer();
-        if (Settings::get().getUnlockFPS()) applyFPSPatch();
-
-        return true;
-    }
-    else if (dwReason == DLL_PROCESS_DETACH) {
-        Settings::get().shutdown();
-        endDetour();
-        if (ofile) { ofile.close(); }
-    }
-    return true;
+    return false;
 }
 
-char* GetDirectoryFile(const char* filename) {
-    thread_local static char path[320];
-    strcpy_s(path, dlldir);
-    strcat_s(path, filename);
-    return path;
+char *GetDirectoryFile(const char *filename) {
+	static char path[320];
+	strcpy_s(path, dlldir);
+	strcat_s(path, filename);
+	return path;
 }
 
 void __cdecl sdlogtime() {
@@ -317,8 +101,6 @@ void __cdecl sdlogtime() {
 void __cdecl sdlog(const char *fmt, ...) {
 	if(ofile.good()) {
 		if(!fmt) { return; }
-
-        std::lock_guard<std::mutex> lock(logMutex); // Locks the file so threads queue up politely
 
 		va_list va_alist;
 		char logbuf[9999] = {0};

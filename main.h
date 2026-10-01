@@ -17,10 +17,8 @@
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>
 
 #pragma once
-#include <string>
-#include <map>
 
-#define VERSION "3.0 from DDTM"
+#define VERSION "2.4"
 
 #define RELEASE_VER
 
@@ -47,7 +45,6 @@ std::string strError(int err);
 void __cdecl sdlogtime();
 void __cdecl sdlog(const char * fmt, ...);
 void errorExit(LPTSTR lpszFunction);
-void InitializeDSfix();
 
 extern bool timingIntroMode;
 

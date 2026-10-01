@@ -4,14 +4,12 @@
 #include "FPS.h"
 
 #include <windows.h>
-//#include <cmath>
+
 #include "Settings.h"
 #include "main.h"
 #include "Detouring.h"
 #include "RenderstateManager.h"
 #include "memory.h"
-
-extern bool g_Force30FPS;
 
 #ifndef WITHOUT_GFWL_LIB
 void enableGFWLCompatibility(void);
@@ -91,23 +89,15 @@ double getElapsedTime(void) {
 // Hook functions
 //----------------------------------------------------------------------------------------
 
-void _stdcall updateFramerate(unsigned int cmd) {
+void _stdcall updateFramerate(unsigned int cmd) {	
 	// If rendering was performed, update animation step-time
-	if ((cmd == 2) || (cmd == 5)) {
-		double maxFPS = g_Force30FPS ? 30.0 : (double)Settings::get().getCurrentFPSLimit();
+	if((cmd == 2) || (cmd == 5)) {
+		// FPS regulation based on previous render
+		double maxFPS = (double)Settings::get().getCurrentFPSLimit();
 		double minFPS = 10.0f;
-
 		double currentTime = getElapsedTime();
 		double deltaTime = currentTime - lastRenderTime;
 		lastRenderTime = currentTime;
-
-		// DSfix 3.0: Stabilize the physics step
-		double targetTime = 1000.0 / maxFPS;
-
-		// If the frame time is within a 2ms tolerance of our target, lock it perfectly
-		if (std::abs(deltaTime - targetTime) < 2.0) {
-			deltaTime = targetTime;
-		}
 
 		// Update step-time
 		updateAnimationStepTime((float)deltaTime, (float)minFPS, (float)maxFPS);

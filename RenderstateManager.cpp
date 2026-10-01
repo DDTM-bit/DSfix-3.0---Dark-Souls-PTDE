@@ -13,8 +13,6 @@
 #include "WindowManager.h"
 #include "FPS.h"
 
-extern bool g_Force30FPS;
-
 RSManager RSManager::instance;
 
 static const char *PIXEL_SHADER_DUMP_DIR = "dsfix/pixelshader_dump";
@@ -26,40 +24,23 @@ void RSManager::initResources() {
 	SDLOG(0, "RenderstateManager resource initialization started\n");
 	unsigned rw = Settings::get().getRenderWidth(), rh = Settings::get().getRenderHeight();
 	unsigned dofRes = Settings::get().getDOFOverrideResolution();
-
-	// Initialize shared buffer pool
-	d3ddev->CreateTexture(rw, rh, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &sharedBuffer1Tex, NULL);
-	sharedBuffer1Tex->GetSurfaceLevel(0, &sharedBuffer1Surf);
-	d3ddev->CreateTexture(rw, rh, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &sharedBuffer2Tex, NULL);
-	sharedBuffer2Tex->GetSurfaceLevel(0, &sharedBuffer2Surf);
-	d3ddev->CreateTexture(dofRes * 16 / 9, dofRes, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &sharedDofTex, NULL);
-	sharedDofTex->GetSurfaceLevel(0, &sharedDofSurf);
-
-	if (Settings::get().getAAQuality()) {
-		if (Settings::get().getAAType() == "SMAA") {
-			SMAA::ExternalStorage storage(sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
-			smaa = new SMAA(d3ddev, rw, rh, (SMAA::Preset)(Settings::get().getAAQuality() - 1), storage);
-		}
-		else {
-			fxaa = new FXAA(d3ddev, rw, rh, (FXAA::Quality)(Settings::get().getAAQuality() - 1), sharedBuffer1Tex, sharedBuffer1Surf);
+	if(Settings::get().getAAQuality()) {
+		if(Settings::get().getAAType() == "SMAA") {
+			smaa = new SMAA(d3ddev, rw, rh, (SMAA::Preset)(Settings::get().getAAQuality()-1));
+		} else {
+			fxaa = new FXAA(d3ddev, rw, rh, (FXAA::Quality)(Settings::get().getAAQuality()-1));
 		}
 	}
-	if (Settings::get().getSsaoStrength()) {
-		ssao = new SSAO(d3ddev, rw, rh, Settings::get().getSsaoStrength() - 1,
-			(Settings::get().getSsaoType() == "VSSAO") ? SSAO::VSSAO : ((Settings::get().getSsaoType() == "HBAO") ? SSAO::HBAO : SSAO::SCAO),
-			sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
-	}
-	if (Settings::get().getDOFBlurAmount()) gauss = new GAUSS(d3ddev, dofRes * 16 / 9, dofRes, sharedDofTex, sharedDofSurf);
+	if(Settings::get().getSsaoStrength()) ssao = new SSAO(d3ddev, rw, rh, Settings::get().getSsaoStrength()-1, 
+		(Settings::get().getSsaoType() == "VSSAO") ? SSAO::VSSAO : ((Settings::get().getSsaoType() == "HBAO") ? SSAO::HBAO : SSAO::SCAO) );
+	if(Settings::get().getDOFBlurAmount()) gauss = new GAUSS(d3ddev, dofRes*16/9, dofRes);
 	if(Settings::get().getEnableHudMod()) hud = new HUD(d3ddev, rw, rh);
 	d3ddev->CreateTexture(rw, rh, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &rgbaBuffer1Tex, NULL);
 	rgbaBuffer1Tex->GetSurfaceLevel(0, &rgbaBuffer1Surf);
 	d3ddev->CreateDepthStencilSurface(rw, rh, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, false, &depthStencilSurf, NULL);
 	d3ddev->CreateStateBlock(D3DSBT_ALL, &prevStateBlock);
-	if (Settings::get().getEnableTextureOverride() && Settings::get().getEnableTexturePrefetch()) {
-		if (!inited) { // DSfix 3.0: Only prefetch textures on the very first boot to prevent Alt+Tab RAM leaks
-			prefetchTextures();
-		}
-	}
+    if (Settings::get().getEnableTextureOverride() && Settings::get().getEnableTexturePrefetch())
+        prefetchTextures();
 
 	if (Settings::get().getEnableShaderDumping()) {
 		createDirectory(PIXEL_SHADER_DUMP_DIR);
@@ -125,25 +106,16 @@ void RSManager::prefetchTextures()
 
 RSManager::~RSManager()
 {
-	for (auto& texData : cachedTexFiles)
-	{
-		if (texData.second.buffer) {
-			delete[] texData.second.buffer;
-			texData.second.buffer = NULL;
-		}
-	}
+    for (auto texData : cachedTexFiles)
+    {
+        SAFEDELETE(texData.second.buffer);
+    }
 }
 
 void RSManager::releaseResources() {
 	SDLOG(0, "RenderstateManager releasing resources\n");
 	SAFERELEASE(rgbaBuffer1Surf);
 	SAFERELEASE(rgbaBuffer1Tex);
-	SAFERELEASE(sharedBuffer1Surf);
-	SAFERELEASE(sharedBuffer1Tex);
-	SAFERELEASE(sharedBuffer2Surf);
-	SAFERELEASE(sharedBuffer2Tex);
-	SAFERELEASE(sharedDofSurf);
-	SAFERELEASE(sharedDofTex);
 	SAFERELEASE(depthStencilSurf);
 	SAFERELEASE(prevStateBlock);
 	SAFEDELETE(smaa);
@@ -151,20 +123,6 @@ void RSManager::releaseResources() {
 	SAFEDELETE(ssao);
 	SAFEDELETE(gauss);
 	SAFEDELETE(hud);
-
-	// DSfix 3.0: Plug the tracking map leaks during Alt+Tab / Device Lost events
-	mainRenderTexIndices.clear();
-	mainRenderSurfIndices.clear();
-	mainRenderTexIndex = 0;
-	mainRenderSurfIndex = 0;
-
-	zSurf = NULL;
-	mainRT = NULL;
-	prevVDecl = NULL;
-	prevDepthStencilSurf = NULL;
-	prevRenderTarget = NULL;
-	prevRenderTex = NULL;
-
 	SDLOG(0, "RenderstateManager resource release completed\n");
 }
 
@@ -195,13 +153,9 @@ HRESULT RSManager::redirectPresent(CONST RECT *pSourceRect, CONST RECT *pDestRec
 	mainRTuses = 0;
 	zSurf = NULL;
 	
-	// Store the result of Present() first
-	HRESULT hr = d3ddev->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
-
-	// Execute the frame time sleep limiter AFTER the GPU presentation
 	frameTimeManagement();
-
-	return hr;
+	//if(Settings::get().getEnableTripleBuffering()) return ((IDirect3DDevice9Ex*)d3ddev)->PresentEx(NULL, NULL, NULL, NULL, D3DPRESENT_FORCEIMMEDIATE);
+	return d3ddev->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
 }
 
 D3DPRESENT_PARAMETERS RSManager::adjustPresentationParameters(const D3DPRESENT_PARAMETERS *pPresentationParameters) {
@@ -338,7 +292,7 @@ HRESULT RSManager::redirectSetRenderTarget(DWORD RenderTargetIndex, IDirect3DSur
 	}
 
 	// we are switching away from the initial 3D-rendered image, do AA and SSAO
-	if (mainRTuses == 2 && mainRT && zSurf && ((ssao && doSsao && !bonfireDisableSSAO) || (doAA && (smaa || fxaa)))) {
+	if(mainRTuses == 2 && mainRT && zSurf && ((ssao && doSsao) || (doAA && (smaa || fxaa)))) { 
 		IDirect3DSurface9 *oldRenderTarget;
 		d3ddev->GetRenderTarget(0, &oldRenderTarget);
 		if(oldRenderTarget == mainRT) {
@@ -362,7 +316,7 @@ HRESULT RSManager::redirectSetRenderTarget(DWORD RenderTargetIndex, IDirect3DSur
 						d3ddev->StretchRect(rgbaBuffer1Surf, NULL, oldRenderTarget, NULL, D3DTEXF_NONE);
 					}
 					// perform SSAO
-					if (ssao && doSsao && !bonfireDisableSSAO) {
+					if(ssao && doSsao) {
 						ssao->go(tex, zTex, rgbaBuffer1Surf);
 						d3ddev->StretchRect(rgbaBuffer1Surf, NULL, oldRenderTarget, NULL, D3DTEXF_NONE);
 					}
@@ -610,36 +564,34 @@ void RSManager::enableTakeScreenshot() {
 }
 
 void RSManager::reloadVssao() {
-	SAFEDELETE(ssao);
-	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), Settings::get().getSsaoStrength() - 1, SSAO::VSSAO, sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
+	SAFEDELETE(ssao); 
+	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), Settings::get().getSsaoStrength()-1, SSAO::VSSAO);
 	SDLOG(0, "Reloaded SSAO\n");
 }
 void RSManager::reloadHbao() {
-	SAFEDELETE(ssao);
-	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), Settings::get().getSsaoStrength() - 1, SSAO::HBAO, sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
+	SAFEDELETE(ssao); 
+	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), Settings::get().getSsaoStrength()-1, SSAO::HBAO);
 	SDLOG(0, "Reloaded SSAO\n");
 }
 void RSManager::reloadScao() {
-	SAFEDELETE(ssao);
-	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), Settings::get().getSsaoStrength() - 1, SSAO::SCAO, sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
+	SAFEDELETE(ssao); 
+	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), Settings::get().getSsaoStrength()-1, SSAO::SCAO);
 	SDLOG(0, "Reloaded SSAO\n");
 }
 
 void RSManager::reloadGauss() {
-	SAFEDELETE(gauss);
-	gauss = new GAUSS(d3ddev, Settings::get().getDOFOverrideResolution() * 16 / 9, Settings::get().getDOFOverrideResolution(), sharedDofTex, sharedDofSurf);
+	SAFEDELETE(gauss); 
+	gauss = new GAUSS(d3ddev, Settings::get().getDOFOverrideResolution()*16/9, Settings::get().getDOFOverrideResolution());
 	SDLOG(0, "Reloaded GAUSS\n");
 }
 
 void RSManager::reloadAA() {
-	SAFEDELETE(smaa);
-	SAFEDELETE(fxaa);
-	if (Settings::get().getAAType() == "SMAA") {
-		SMAA::ExternalStorage storage(sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
-		smaa = new SMAA(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), (SMAA::Preset)(Settings::get().getAAQuality() - 1), storage);
-	}
-	else {
-		fxaa = new FXAA(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), (FXAA::Quality)(Settings::get().getAAQuality() - 1), sharedBuffer1Tex, sharedBuffer1Surf);
+	SAFEDELETE(smaa); 
+	SAFEDELETE(fxaa); 
+	if(Settings::get().getAAType() == "SMAA") {
+		smaa = new SMAA(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), (SMAA::Preset)(Settings::get().getAAQuality()-1));
+	} else {
+		fxaa = new FXAA(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), (FXAA::Quality)(Settings::get().getAAQuality()-1));
 	}
 	SDLOG(0, "Reloaded AA\n");
 }
@@ -1027,43 +979,18 @@ bool RSManager::getOverrideShader(UINT32 hash, const char *directory, LPD3DXBUFF
 }
 
 void RSManager::frameTimeManagement() {
-	// 1. Initialize the modern high-resolution timer on the first frame
-	if (!frameTimer) {
-		// 0x00000002 is the flag for CREATE_WAITABLE_TIMER_HIGH_RESOLUTION in Windows 10/11
-		frameTimer = CreateWaitableTimerExW(NULL, NULL, 0x00000002, TIMER_ALL_ACCESS);
-		if (!frameTimer) {
-			frameTimer = CreateWaitableTimer(NULL, TRUE, NULL); // Fallback for older systems
-		}
-	}
-
 	double renderTime = getElapsedTime() - lastPresentTime;
 
 	// implement FPS threshold
 	double thresholdRenderTime = (1000.0f / Settings::get().getFPSThreshold()) + 0.2;
-	if (renderTime > thresholdRenderTime) lowFPSmode = true;
-	else if (renderTime < thresholdRenderTime - 1.0f) lowFPSmode = false;
+	if(renderTime > thresholdRenderTime) lowFPSmode = true;
+	else if(renderTime < thresholdRenderTime - 1.0f) lowFPSmode = false;
 
 	// implement FPS cap
-	// implement FPS cap
-	if (Settings::get().getUnlockFPS()) {
-		// DSfix 3.0: Intercept the framerate limit if the Smart Hold key is down
-		double currentLimit = g_Force30FPS ? 30.0 : Settings::get().getCurrentFPSLimit();
-		double desiredRenderTime = (1000.0 / currentLimit) - 0.1;
-
-		while (renderTime < desiredRenderTime) {
-			double timeRemaining = desiredRenderTime - renderTime;
-
-			// If we have more than 0.5ms to wait, let the high-res hardware timer handle it
-			if (timeRemaining > 0.5 && frameTimer) {
-				LARGE_INTEGER li;
-				// Sleep until 0.2ms before target, leaving just ~200 microseconds for final alignment
-				li.QuadPart = (LONGLONG)(-(timeRemaining - 0.2) * 10000.0);
-				SetWaitableTimer(frameTimer, &li, 0, NULL, NULL, FALSE);
-				WaitForSingleObject(frameTimer, INFINITE);
-			}
-			else {
-				YieldProcessor();
-			}
+	if(Settings::get().getUnlockFPS()) {
+		double desiredRenderTime = (1000.0 / Settings::get().getCurrentFPSLimit()) - 0.1;
+		while(renderTime < desiredRenderTime) {
+			SwitchToThread();
 			renderTime = getElapsedTime() - lastPresentTime;
 		}
 	}

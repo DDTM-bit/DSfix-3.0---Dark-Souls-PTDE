@@ -3,7 +3,7 @@
 #include <dxgi.h>
 #include <d3d9.h>
 #include <d3dx9.h>
-//#include <dxerr.h>
+#include <dxerr.h>
 
 #include "Effect.h"
 
@@ -11,7 +11,7 @@ class SSAO : public Effect {
 public:
 	enum Type { VSSAO, HBAO, SCAO, VSSAO2 };
 
-	SSAO(IDirect3DDevice9* device, int width, int height, unsigned strength, Type type, IDirect3DTexture9* sharedTex1, IDirect3DSurface9* sharedSurf1, IDirect3DTexture9* sharedTex2, IDirect3DSurface9* sharedSurf2);
+    SSAO(IDirect3DDevice9 *device, int width, int height, unsigned strength, Type type);
     virtual ~SSAO();
 
 	void go(IDirect3DTexture9 *frame, IDirect3DTexture9 *depth, IDirect3DSurface9 *dst);

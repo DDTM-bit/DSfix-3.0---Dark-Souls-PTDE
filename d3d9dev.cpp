@@ -622,30 +622,19 @@ HRESULT APIENTRY hkIDirect3DDevice9::SetSamplerState(DWORD Sampler, D3DSAMPLERST
 
 HRESULT APIENTRY hkIDirect3DDevice9::SetScissorRect(CONST RECT* pRect) {
 	SDLOG(5, "SetScissorRect %s\n", RectToString(pRect));
-
-	// 1. Pass through viewport and hardcoded shadow map rects unchanged
-	if (RSManager::get().isViewport(*pRect)
-		|| (pRect->left == 0 && pRect->top == 0 && pRect->right == 1024 && pRect->bottom == 1024)
-		|| (pRect->left == 1024 && pRect->top == 0 && pRect->right == 2048 && pRect->bottom == 1024)
-		|| (pRect->left == 0 && pRect->top == 1024 && pRect->right == 1024 && pRect->bottom == 2048)
-		|| (pRect->left == 1024 && pRect->top == 1024 && pRect->right == 2048 && pRect->bottom == 2048)
+	// These are scissor rects used for shadow rendering, should not be suppressed:
+	//SetScissorRect RECT[   0/   0/1024/1024]
+	//SetScissorRect RECT[1024/   0/2048/1024]
+	//SetScissorRect RECT[   0/1024/1024/2048]
+	//SetScissorRect RECT[1024/1024/2048/2048]
+	if(RSManager::get().isViewport(*pRect) 
+			|| (pRect->left==0 && pRect->top==0 && pRect->right==1024 && pRect->bottom==1024) 
+			|| (pRect->left==1024 && pRect->top==0 && pRect->right==2048 && pRect->bottom==1024) 
+			|| (pRect->left==0 && pRect->top==1024 && pRect->right==1024 && pRect->bottom==2048) 
+			|| (pRect->left==1024 && pRect->top==1024 && pRect->right==2048 && pRect->bottom==2048) 
 		) {
 		return m_pD3Ddev->SetScissorRect(pRect);
 	}
-
-	// 2. Target ONLY the 720p skybox/sun/moon scissor rect
-	if (pRect->left == 0 && pRect->top == 0 && pRect->right == 1024 && pRect->bottom == 720) {
-		RECT scaledRect;
-		scaledRect.left = 0;
-		scaledRect.top = 0;
-		scaledRect.right = Settings::get().getRenderWidth();
-		scaledRect.bottom = Settings::get().getRenderHeight();
-
-		SDLOG(5, " - Rescaled skybox scissor rect for Sun/Moon: %s\n", RectToString(&scaledRect));
-		return m_pD3Ddev->SetScissorRect(&scaledRect);
-	}
-
-	// 3. Discard everything else (including UI text bounds) to prevent letterboxing and clipping
 	SDLOG(5, " - Lyrical Tokarev, kill them all!\n", RectToString(pRect));
 	return D3D_OK;
 }

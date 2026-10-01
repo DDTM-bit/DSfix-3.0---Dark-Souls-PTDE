@@ -7,7 +7,7 @@ using namespace std;
 
 #include "Settings.h"
 
-GAUSS::GAUSS(IDirect3DDevice9* device, int width, int height, IDirect3DTexture9* sharedTex, IDirect3DSurface9* sharedSurf)
+GAUSS::GAUSS(IDirect3DDevice9 *device, int width, int height) 
 	: Effect(device), width(width), height(height) {
 	SDLOG(0, "Gauss construct\n");
 	// Setup the defines for compiling the effect
@@ -31,8 +31,9 @@ GAUSS::GAUSS(IDirect3DDevice9* device, int width, int height, IDirect3DTexture9*
 	HRESULT hr = D3DXCreateEffectFromFile(device, GetDirectoryFile("dsfix\\GAUSS.fx"), &defines.front(), NULL, flags, NULL, &effect, &errors);
 	if(hr != D3D_OK) SDLOG(0, "ERRORS:\n %s\n", errors->GetBufferPointer());
 
-	buffer1Tex = sharedTex;
-	buffer1Surf = sharedSurf;
+	// Create buffers
+	device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &buffer1Tex, NULL);
+    buffer1Tex->GetSurfaceLevel(0, &buffer1Surf);
 	
 	// get handles
 	frameTexHandle = effect->GetParameterByName(NULL, "frameTex2D");
@@ -40,6 +41,8 @@ GAUSS::GAUSS(IDirect3DDevice9* device, int width, int height, IDirect3DTexture9*
 
 GAUSS::~GAUSS() {
 	SAFERELEASE(effect);
+	SAFERELEASE(buffer1Surf);
+	SAFERELEASE(buffer1Tex);
 }
 
 void GAUSS::go(IDirect3DTexture9 *input, IDirect3DSurface9 *dst) {

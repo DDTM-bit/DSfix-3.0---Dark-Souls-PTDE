@@ -5,7 +5,6 @@
 
 #include "main.h"
 #include "WindowManager.h"
-#include <windows.h>
 
 Settings Settings::instance;
 
@@ -25,27 +24,6 @@ void Settings::load() {
 		}
 		#include "Settings.def"
 		#undef SETTING
-		// NEW: Manually parse custom save folder path and expand Windows environment variables
-		if (bstring.find("customSaveFolder ") == 0) {
-			char* valStart = buffer + strlen("customSaveFolder ");
-			while (*valStart == ' ') valStart++; // trim leading spaces
-			std::string rawPath = std::string(valStart);
-			rawPath.erase(rawPath.find_last_not_of(" \n\r\t") + 1); // trim trailing whitespace
-
-			if (rawPath == "none") {
-				customSaveFolder = "none";
-			}
-			else {
-				char expandedPath[MAX_PATH];
-				// Expand environment variables like %localappdata%
-				if (ExpandEnvironmentStrings(rawPath.c_str(), expandedPath, MAX_PATH) != 0) {
-					customSaveFolder = std::string(expandedPath);
-				}
-				else {
-					customSaveFolder = rawPath; // Fallback if expansion fails
-				}
-			}
-		}
 	}
 	sfile.close();
 	
@@ -91,9 +69,6 @@ void Settings::shutdown() {
 }
 
 unsigned Settings::getCurrentFPSLimit() {
-	if (curFPSlimit == 0) {
-		return 60; // Global fallback safe clamp
-	}
 	return curFPSlimit;
 }
 void Settings::setCurrentFPSLimit(unsigned limit) {

@@ -11,9 +11,6 @@ using namespace std;
 #include "Settings.h"
 #include "RenderstateManager.h"
 
-// DSfix 3.0: Global flag for smart physics toggle
-bool g_Force30FPS = false;
-
 KeyActions KeyActions::instance;
 
 void KeyActions::load() {
@@ -30,12 +27,10 @@ void KeyActions::load() {
 		char postChar;
 		#define KEY(_name, _val) \
 		pos = bstring.find(#_name); \
-		if(pos != bstring.npos) { \
-			postChar = buffer[pos + strlen(#_name)]; \
-			if(postChar == '\r' || postChar == '\n' || postChar == ' ' || postChar == '\0') { \
-				string action; stringstream ss(bstring); ss >> action; \
-				keyBindingMap.insert(make_pair(_val, action)); \
-			} \
+		postChar = buffer[pos + strlen(#_name)]; \
+		if(pos != bstring.npos && (postChar == '\r' || postChar == '\n' || postChar == ' ' || postChar == '\0')) { \
+			string action; stringstream ss(bstring); ss >> action; \
+			keyBindingMap.insert(make_pair(_val, action)); \
 		}
 		#include "Keys.def"
 		#undef KEY
@@ -73,32 +68,14 @@ void KeyActions::performAction(const char* name) {
 }
 
 void KeyActions::processIO() {
-		HWND fgWindow = ::GetForegroundWindow();
-		DWORD fgPid = 0;
-		if (fgWindow != NULL) {
-			::GetWindowThreadProcessId(fgWindow, &fgPid);
-		}
-		// Only process inputs if the currently focused window belongs to this game process
-		if (fgWindow != NULL && fgPid == ::GetCurrentProcessId()) {
-			g_Force30FPS = false; // Reset the state every single frame
-
-			for (IntStrMap::const_iterator i = keyBindingMap.begin(); i != keyBindingMap.end(); ++i) {
-
-				// DSfix 3.0: Call GetAsyncKeyState exactly ONCE and store the result to prevent flag erasure
-				short keyState = GetAsyncKeyState(i->first);
-				bool isDown = (keyState & 0x8000) != 0;
-				bool justPressed = (keyState & 1) != 0;
-
-				// Convert the old clunky toggle into the modern DSfix 3.0 Smart Hold
-				if (i->second == "toggleFPS" || i->second == "toggleFPSlimit") {
-					if (isDown) g_Force30FPS = true;
-				}
-				else if (justPressed) {
-					SDLOG(0, "Action triggered: %s\n", i->second.c_str());
-					performAction(i->second.c_str());
-				}
+	if(::GetForegroundWindow() != NULL && ::GetActiveWindow() != NULL) {
+		for(IntStrMap::const_iterator i = keyBindingMap.begin(); i != keyBindingMap.end(); ++i) {
+			if(GetAsyncKeyState(i->first)&1) {
+				SDLOG(0, "Action triggered: %s\n", i->second.c_str());
+				performAction(i->second.c_str());
 			}
 		}
+	}
 }
 
 

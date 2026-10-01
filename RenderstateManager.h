@@ -27,7 +27,6 @@ class RSManager {
 	
 	bool doSsao;
 	SSAO* ssao;
-	bool bonfireDisableSSAO;
 
 	bool doDofGauss;
 	GAUSS* gauss;
@@ -38,13 +37,6 @@ class RSManager {
 	IDirect3DTexture9* rgbaBuffer1Tex;
 	IDirect3DSurface9* rgbaBuffer1Surf;
 	IDirect3DSurface9* depthStencilSurf;
-
-	IDirect3DTexture9* sharedBuffer1Tex;
-	IDirect3DSurface9* sharedBuffer1Surf;
-	IDirect3DTexture9* sharedBuffer2Tex;
-	IDirect3DSurface9* sharedBuffer2Surf;
-	IDirect3DTexture9* sharedDofTex;
-	IDirect3DSurface9* sharedDofSurf;
 	
 	IDirect3DSurface9* zSurf;
 
@@ -63,8 +55,6 @@ class RSManager {
 
 	bool captureNextFrame, capturing, hudStarted, takeScreenshot;
 	unsigned dumpCaptureIndex;
-
-	HANDLE frameTimer; // DSfix 3.0 Precision Timer
 
 	void dumpSurface(const char* name, IDirect3DSurface9* surface);
 
@@ -135,16 +125,9 @@ public:
 		return instance;
 	}
 
-	void setBonfireDisableSSAO(bool disable) { bonfireDisableSSAO = disable; }
-	bool getBonfireDisableSSAO() { return bonfireDisableSSAO; }
-
 	RSManager() : smaa(NULL), fxaa(NULL), ssao(NULL), gauss(NULL), rgbaBuffer1Surf(NULL), rgbaBuffer1Tex(NULL),
-			sharedBuffer1Tex(NULL), sharedBuffer1Surf(NULL), sharedBuffer2Tex(NULL), sharedBuffer2Surf(NULL), sharedDofTex(NULL), sharedDofSurf(NULL),
 			inited(false), doAA(true), doSsao(true), doDofGauss(true), doHud(true), captureNextFrame(false), capturing(false), hudStarted(false), takeScreenshot(false), hideHud(false),
-			mainRenderTexIndex(0), mainRenderSurfIndex(0), dumpCaptureIndex(0), numKnownTextures(0), foundKnownTextures(0), skippedPresents(0), frameTimer(NULL), bonfireDisableSSAO(false) {
-		// Zero out the HUD vertices array to prevent garbage memory crashes
-		memset(hudVertices, 0, sizeof(hudVertices));
-
+			mainRenderTexIndex(0), mainRenderSurfIndex(0), dumpCaptureIndex(0), numKnownTextures(0), foundKnownTextures(0), skippedPresents(0) {
 		#define TEXTURE(_name, _hash) ++numKnownTextures;
 		#include "Textures.def"
 		#undef TEXTURE

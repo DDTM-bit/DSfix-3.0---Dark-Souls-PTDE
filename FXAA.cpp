@@ -8,7 +8,7 @@ using namespace std;
 #include "Settings.h"
 #include "RenderstateManager.h"
 
-FXAA::FXAA(IDirect3DDevice9* device, int width, int height, Quality quality, IDirect3DTexture9* sharedTex, IDirect3DSurface9* sharedSurf)
+FXAA::FXAA(IDirect3DDevice9 *device, int width, int height, Quality quality) 
 	: Effect(device), width(width), height(height) {
 	
 	// Setup the defines for compiling the effect
@@ -40,8 +40,9 @@ FXAA::FXAA(IDirect3DDevice9* device, int width, int height, Quality quality, IDi
 	HRESULT hr = D3DXCreateEffectFromFile(device, GetDirectoryFile("dsfix\\FXAA.fx"), &defines.front(), NULL, flags, NULL, &effect, &errors);
 	if(hr != D3D_OK) SDLOG(0, "ERRORS:\n %s\n", errors->GetBufferPointer());
 	
-	buffer1Tex = sharedTex;
-	buffer1Surf = sharedSurf;
+	// Create buffer
+	device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &buffer1Tex, NULL);
+    buffer1Tex->GetSurfaceLevel(0, &buffer1Surf);
 
 	// get handles
 	frameTexHandle = effect->GetParameterByName(NULL, "frameTex2D");
@@ -49,6 +50,8 @@ FXAA::FXAA(IDirect3DDevice9* device, int width, int height, Quality quality, IDi
 
 FXAA::~FXAA() {
 	SAFERELEASE(effect);
+	SAFERELEASE(buffer1Surf);
+	SAFERELEASE(buffer1Tex);
 }
 
 void FXAA::go(IDirect3DTexture9 *frame, IDirect3DSurface9 *dst) {

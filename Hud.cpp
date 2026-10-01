@@ -3,7 +3,6 @@
 #include <string>
 #include <sstream>
 #include <vector>
-#include <math.h>
 using namespace std;
 
 #include "Settings.h"
@@ -28,83 +27,74 @@ HUD::~HUD() {
 	SAFERELEASE(effect);
 }
 
-void HUD::go(IDirect3DTexture9* input, IDirect3DSurface9* dst) {
+void HUD::go(IDirect3DTexture9 *input, IDirect3DSurface9 *dst) {
 	device->SetVertexDeclaration(vertexDeclaration);
 	device->SetRenderTarget(0, dst);
-	effect->SetTexture(frameTexHandle, input);
+    effect->SetTexture(frameTexHandle, input);
 
-	// Fetch individual scale factors
-	float scaleTL = Settings::get().getHudScaleTopLeft();
-	float iscaleTL = 1.0f - scaleTL;
+	float scale = Settings::get().getHudScaleFactor();
+	float iscale = 1.0f-scale;
+	
+    UINT passes;
 
-	float scaleBL = Settings::get().getHudScaleBottomLeft();
-	float iscaleBL = 1.0f - scaleBL;
-
-	float scaleBR = Settings::get().getHudScaleBottomRight();
-	float iscaleBR = 1.0f - scaleBR;
-
-	UINT passes;
-	effect->Begin(&passes, 0);
-
-	// upper left (Health/Stamina)
+	// upper left
 	effect->SetFloat(opacityHandle, Settings::get().getHudTopLeftOpacity());
+	effect->Begin(&passes, 0);
 	effect->BeginPass(0);
-	device->SetSamplerState(0, D3DSAMP_MINFILTER, scaleTL == 1.0f ? D3DTEXF_POINT : D3DTEXF_LINEAR);
-	device->SetSamplerState(0, D3DSAMP_MAGFILTER, scaleTL == 1.0f ? D3DTEXF_POINT : D3DTEXF_LINEAR);
-	rect(0.0f, 0.0f, 1.0f, 0.21f,
-		0.0f, 0.0f, 1.0f * scaleTL, 0.21f * scaleTL);
+	rect(0.0f, 0.0f, 1.0f, 0.21f, 
+		 0.0f, 0.0f, 1.0f*scale, 0.21f*scale); 
 	effect->EndPass();
-
-	// lower left (Items/Weapons)
-	effect->SetFloat(opacityHandle, Settings::get().getHudBottomLeftOpacity());
-	effect->BeginPass(0);
-	device->SetSamplerState(0, D3DSAMP_MINFILTER, scaleBL == 1.0f ? D3DTEXF_POINT : D3DTEXF_LINEAR);
-	device->SetSamplerState(0, D3DSAMP_MAGFILTER, scaleBL == 1.0f ? D3DTEXF_POINT : D3DTEXF_LINEAR);
-	if (Settings::get().getEnableMinimalHud()) {
-		rect(0.145f, 0.527f, 0.074f, 0.204f,
-			0.1f * scaleBL, 0.77f + 0.2f * iscaleBL, 0.074f * scaleBL, 0.204f * scaleBL);
-		rect(0.145f, 0.731f, 0.074f, 0.204f,
-			0.1f * scaleBL + 0.074f * scaleBL + 0.01f, 0.77f + 0.2f * iscaleBL, 0.074f * scaleBL, 0.204f * scaleBL);
-	}
-	else {
-		rect(0.0f, 0.5f, 0.5f, 0.5f,
-			0.0f, 0.5f + 0.5f * iscaleBL, 0.5f * scaleBL, 0.5f * scaleBL);
-	}
-	effect->EndPass();
-
-	// lower right (Souls count)
-	effect->SetFloat(opacityHandle, Settings::get().getHudBottomRightOpacity());
-	effect->BeginPass(0);
-	device->SetSamplerState(0, D3DSAMP_MINFILTER, scaleBR == 1.0f ? D3DTEXF_POINT : D3DTEXF_LINEAR);
-	device->SetSamplerState(0, D3DSAMP_MAGFILTER, scaleBR == 1.0f ? D3DTEXF_POINT : D3DTEXF_LINEAR);
-	rect(0.8f, 0.8f, 0.2f, 0.2f,
-		0.8f + 0.2f * iscaleBR, 0.8f + 0.2f * iscaleBR, 0.2f * scaleBR, 0.2f * scaleBR);
-	effect->EndPass();
-
 	effect->End();
+
+	// lower left
+	effect->SetFloat(opacityHandle, Settings::get().getHudBottomLeftOpacity());
+	effect->Begin(&passes, 0);
+	effect->BeginPass(0);
+	if(Settings::get().getEnableMinimalHud()) {
+		rect(0.145f, 0.527f, 0.074f, 0.204f,
+			 0.1f*scale, 0.77f + 0.2f*iscale, 0.074f*scale, 0.204f*scale); 
+		rect(0.145f, 0.731f, 0.074f, 0.204f,
+			 0.1f*scale + 0.074f*scale + 0.01f, 0.77f + 0.2f*iscale, 0.074f*scale, 0.204f*scale); 
+	} else {
+		rect(0.0f, 0.5f, 0.5f, 0.5f, 
+			 0.0f, 0.5f + 0.5f*iscale, 0.5f*scale, 0.5f*scale); 
+	}
+	effect->EndPass();
+	effect->End();
+
+	// lower right
+	effect->SetFloat(opacityHandle, Settings::get().getHudBottomRightOpacity());
+	effect->Begin(&passes, 0);
+	effect->BeginPass(0);
+	rect(0.8f, 0.8f, 0.2f, 0.2f, 
+		 0.8f + 0.2f*iscale, 0.8f + 0.2f*iscale, 0.2f*scale, 0.2f*scale); 
+	effect->EndPass();
+	effect->End();
+
+	// center
+	effect->SetFloat(opacityHandle, 1.0f);
+	effect->Begin(&passes, 0);
+	effect->BeginPass(0);
+	rect(0.37f, 0.22f, 0.4f, 0.5f, 
+		 0.37f + 0.15f*iscale, 0.22f + 0.15f*iscale, 0.4f*scale, 0.5f*scale); 
+	effect->EndPass();
+	effect->End();
+
 }
 
 void HUD::rect(float srcLeft, float srcTop, float srcWidth, float srcHeight,
-	float trgLeft, float trgTop, float trgWidth, float trgHeight) {
-
-	// Calculate the DX9 half-pixel offset
-	float offsetX = 1.0f / float(width);
-	float offsetY = 1.0f / float(height);
-
-	// Apply the offset to the target coordinates
-	trgTop = -(trgTop * 2.0f - 1.0f) + offsetY;
-	trgLeft = (trgLeft * 2.0f - 1.0f) - offsetX;
-
-	float trgRight = trgLeft + trgWidth * 2.0f;
-	float trgBottom = trgTop - trgHeight * 2.0f;
+			   float trgLeft, float trgTop, float trgWidth, float trgHeight) {
+	trgTop = -(trgTop*2.0f-1.0f);
+	trgLeft = trgLeft*2.0f-1.0f;
+	float trgRight = trgLeft + trgWidth*2.0f;
+	float trgBottom = trgTop - trgHeight*2.0f;
 	float srcRight = srcLeft + srcWidth;
 	float srcBottom = srcTop + srcHeight;
-
 	float quad[4][5] = {
-			{ trgLeft,  trgTop,    0.5f, srcLeft,  srcTop    },
-			{ trgRight, trgTop,    0.5f, srcRight, srcTop    },
-			{ trgLeft,  trgBottom, 0.5f, srcLeft,  srcBottom },
-			{ trgRight, trgBottom, 0.5f, srcRight, srcBottom }
+			{ trgLeft,  trgTop, 0.5f, srcLeft,  srcTop    },
+			{ trgRight, trgTop, 0.5f, srcRight, srcTop    },
+			{ trgLeft,     trgBottom, 0.5f, srcLeft,  srcBottom },
+			{ trgRight,    trgBottom, 0.5f, srcRight, srcBottom }
 	};
 	device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(quad[0]));
 }

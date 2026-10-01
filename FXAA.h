@@ -3,7 +3,7 @@
 #include <dxgi.h>
 #include <d3d9.h>
 #include <d3dx9.h>
-//#include <dxerr.h>
+#include <dxerr.h>
 
 #include "Effect.h"
 
@@ -11,7 +11,7 @@ class FXAA : public Effect {
 public:
 	enum Quality { QualityLow, QualityMedium, QualityHigh, QualityUltra };
 
-	FXAA(IDirect3DDevice9* device, int width, int height, Quality quality, IDirect3DTexture9* sharedTex, IDirect3DSurface9* sharedSurf);
+    FXAA(IDirect3DDevice9 *device, int width, int height, Quality quality);
     virtual ~FXAA();
 
 	void go(IDirect3DTexture9 *frame, IDirect3DSurface9 *dst);

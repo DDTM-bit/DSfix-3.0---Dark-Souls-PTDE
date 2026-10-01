@@ -8,7 +8,7 @@ using namespace std;
 #include "Settings.h"
 #include "RenderstateManager.h"
 
-SSAO::SSAO(IDirect3DDevice9* device, int width, int height, unsigned strength, Type type, IDirect3DTexture9* sharedTex1, IDirect3DSurface9* sharedSurf1, IDirect3DTexture9* sharedTex2, IDirect3DSurface9* sharedSurf2)
+SSAO::SSAO(IDirect3DDevice9 *device, int width, int height, unsigned strength, Type type) 
 	: Effect(device), width(width), height(height) {
 	
 	// Setup the defines for compiling the effect
@@ -53,10 +53,11 @@ SSAO::SSAO(IDirect3DDevice9* device, int width, int height, unsigned strength, T
 	HRESULT hr = D3DXCreateEffectFromFile(device, shader, &defines.front(), NULL, flags, NULL, &effect, &errors);
 	if(hr != D3D_OK) SDLOG(0, "ERRORS:\n %s\n", errors->GetBufferPointer());
 	
-	buffer1Tex = sharedTex1;
-	buffer1Surf = sharedSurf1;
-	buffer2Tex = sharedTex2;
-	buffer2Surf = sharedSurf2;
+	// Create buffers
+	device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &buffer1Tex, NULL);
+    buffer1Tex->GetSurfaceLevel(0, &buffer1Surf);
+	device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &buffer2Tex, NULL);
+    buffer2Tex->GetSurfaceLevel(0, &buffer2Surf);
 
 	// get handles
 	depthTexHandle = effect->GetParameterByName(NULL, "depthTex2D");
@@ -66,6 +67,10 @@ SSAO::SSAO(IDirect3DDevice9* device, int width, int height, unsigned strength, T
 
 SSAO::~SSAO() {
 	SAFERELEASE(effect);
+	SAFERELEASE(buffer1Surf);
+	SAFERELEASE(buffer1Tex);
+	SAFERELEASE(buffer2Surf);
+	SAFERELEASE(buffer2Tex);
 }
 
 void SSAO::go(IDirect3DTexture9 *frame, IDirect3DTexture9 *depth, IDirect3DSurface9 *dst) {

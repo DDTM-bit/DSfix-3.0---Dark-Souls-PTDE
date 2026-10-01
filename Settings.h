@@ -5,14 +5,9 @@
 
 class Settings {
 	static Settings instance;
-	private:
-	std::string customSaveFolder = "none";
-
-	public:
-	const std::string& getCustomSaveFolder() const { return customSaveFolder; }
-
+	
 	bool inited, langOverridden;
-	unsigned curFPSlimit=0;
+	unsigned curFPSlimit;
 
 	void read(char* source, bool& value);
 	void read(char* source, int& value);
