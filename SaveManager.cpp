@@ -95,6 +95,7 @@ vector<string> SaveManager::getSaveFiles(const char* ending /*= ".sl2"*/) {
 				sprintf_s(buff2, "%s\\%s", userSaveFolder.c_str(), saveFileData.cFileName);
 				ret.push_back(string(buff2));
 			} while(FindNextFile(searchHandle, &saveFileData));
+			FindClose(searchHandle);
 		}
 		std::sort(ret.begin(), ret.end());
 		std::reverse(ret.begin(), ret.end());

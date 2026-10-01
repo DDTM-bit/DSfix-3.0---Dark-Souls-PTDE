@@ -50,7 +50,7 @@ DWORD WINAPI BonfireGlitchDetectionThread(LPVOID lpParam) {
 
             if (status == 0 || status == 8) {
                 // 2. Resolve the nested pointer to the character's current animation ID
-                uintptr_t animPtr = *(uintptr_t*)0x12E29E8;
+                uintptr_t animPtr = *(uintptr_t*)(baseAddr + 0xEE29E8);
                 animPtr = *(uintptr_t*)(animPtr + 0x0);
                 uint32_t current_anim = *(uint32_t*)(animPtr + 0xFC);
 

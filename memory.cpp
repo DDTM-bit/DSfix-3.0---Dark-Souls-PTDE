@@ -249,7 +249,8 @@ void *DetourApply(BYTE *orig, BYTE *hook, int len, BYTE type)
 
 	orig[0] = OP;
 	*(DWORD*)(orig+1) = (DWORD)(hook - orig) - SZ;
-	VirtualProtect(orig, len, dwProt, 0);
+	DWORD dummy;
+	VirtualProtect(orig, len, dwProt, &dummy);
 
 	return (jmp-len);
 }

@@ -141,7 +141,9 @@ public:
 	RSManager() : smaa(NULL), fxaa(NULL), ssao(NULL), gauss(NULL), rgbaBuffer1Surf(NULL), rgbaBuffer1Tex(NULL),
 			sharedBuffer1Tex(NULL), sharedBuffer1Surf(NULL), sharedBuffer2Tex(NULL), sharedBuffer2Surf(NULL), sharedDofTex(NULL), sharedDofSurf(NULL),
 			inited(false), doAA(true), doSsao(true), doDofGauss(true), doHud(true), captureNextFrame(false), capturing(false), hudStarted(false), takeScreenshot(false), hideHud(false),
-			mainRenderTexIndex(0), mainRenderSurfIndex(0), dumpCaptureIndex(0), numKnownTextures(0), foundKnownTextures(0), skippedPresents(0), frameTimer(NULL), bonfireDisableSSAO(false) {
+			mainRenderTexIndex(0), mainRenderSurfIndex(0), dumpCaptureIndex(0), numKnownTextures(0), foundKnownTextures(0), skippedPresents(0), frameTimer(NULL), bonfireDisableSSAO(false), 
+		lastPresentTime(0.0), lowFPSmode(false), onHudRT(false), pausedHudRT(false),
+		paused(false), rddp(0), nrts(0), hddp(0), mainRT(NULL), mainRTuses(0), zSurf(NULL) {
 		// Zero out the HUD vertices array to prevent garbage memory crashes
 		memset(hudVertices, 0, sizeof(hudVertices));
 
