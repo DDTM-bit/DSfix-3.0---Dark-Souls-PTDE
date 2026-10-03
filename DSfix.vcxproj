@@ -327,6 +327,7 @@
     <ClInclude Include="Hud.h" />
     <ClInclude Include="KeyActions.h" />
     <ClInclude Include="memory.h" />
+    <ClInclude Include="resource1.h" />
     <ClInclude Include="SearchTex.h" />
     <ClInclude Include="SMAA.h" />
     <ClInclude Include="Textures.def" />
@@ -345,6 +346,9 @@
     <None Include="Keys.def" />
     <None Include="packages.config" />
     <None Include="Settings.def" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="dsfix.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -12,7 +12,7 @@
 #include "Detouring.h"
 #include "WindowManager.h"
 #include "FPS.h"
-
+#include "resource1.h"
 extern bool g_Force30FPS;
 
 RSManager RSManager::instance;
@@ -807,32 +807,59 @@ unsigned RSManager::isDof(unsigned width, unsigned height) {
 	return 0;
 }
 
+extern HMODULE g_hModule; // Bring in the module handle from main.cpp
+
 HRESULT RSManager::redirectD3DXCreateTextureFromFileInMemoryEx(LPDIRECT3DDEVICE9 pDevice, LPCVOID pSrcData, UINT SrcDataSize, UINT Width, UINT Height, UINT MipLevels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, DWORD Filter, DWORD MipFilter, D3DCOLOR ColorKey, D3DXIMAGE_INFO* pSrcInfo, PALETTEENTRY* pPalette, LPDIRECT3DTEXTURE9* ppTexture) {
-	if(Settings::get().getEnableTextureOverride()) {
-		UINT32 hash = SuperFastHash((char*)const_cast<void*>(pSrcData), SrcDataSize);
-		SDLOG(4, "Trying texture override size: %8u, hash: %8x\n", SrcDataSize, hash);
-		
-        if (Settings::get().getEnableTexturePrefetch() && cachedTexFiles.find(hash) != cachedTexFiles.end())
-        {
-            SDLOG(4, "Cached texture file found! size: %ld, hash: %8x \n", cachedTexFiles[hash].size, hash);
-            return TrueD3DXCreateTextureFromFileInMemoryEx(pDevice, cachedTexFiles[hash].buffer, cachedTexFiles[hash].size, D3DX_DEFAULT, D3DX_DEFAULT, MipLevels, Usage, D3DFMT_FROM_FILE, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette, ppTexture);
-        }
-        else
-        {
-            char buffer[128];
-            sprintf_s(buffer, "dsfix/tex_override/%08x.png", hash);
-            if (fileExists(buffer)) {
-                SDLOG(4, "Texture override (png)! hash: %08x\n", hash);
-                return D3DXCreateTextureFromFileEx(pDevice, buffer, D3DX_DEFAULT, D3DX_DEFAULT, MipLevels, Usage, D3DFMT_FROM_FILE, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette, ppTexture);
-            }
-            sprintf_s(buffer, "dsfix/tex_override/%08x.dds", hash);
-            if (fileExists(buffer)) {
-                SDLOG(4, "Texture override (dds)! hash: %08x\n", hash);
-                return D3DXCreateTextureFromFileEx(pDevice, buffer, D3DX_DEFAULT, D3DX_DEFAULT, MipLevels, Usage, D3DFMT_FROM_FILE, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette, ppTexture);
-            }
-        }
+	if (Settings::get().getEnableTextureOverride()) {
+		UINT32 hash = SuperFastHash((char*)const_cast<void*>(pSrcData), SrcDataSize); 
+			SDLOG(4, "Trying texture override size: %8u, hash: %8x\n", SrcDataSize, hash); 
+
+			// 1. Check Prefetch Cache (loads from tex_override on boot)
+			if (Settings::get().getEnableTexturePrefetch() && cachedTexFiles.find(hash) != cachedTexFiles.end())
+			{
+				SDLOG(4, "Cached texture file found! size: %ld, hash: %8x \n", cachedTexFiles[hash].size, hash); 
+					return TrueD3DXCreateTextureFromFileInMemoryEx(pDevice, cachedTexFiles[hash].buffer, cachedTexFiles[hash].size, D3DX_DEFAULT, D3DX_DEFAULT, MipLevels, Usage, D3DFMT_FROM_FILE, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette, ppTexture); 
+			}
+			else
+			{
+				// 2. Check Disk for User Overrides (.png and .dds)
+				char buffer[128]; 
+					sprintf_s(buffer, "dsfix/tex_override/%08x.png", hash); 
+					if (fileExists(buffer)) {
+						
+						SDLOG(4, "Texture override (png)! hash: %08x\n", hash); 
+							return D3DXCreateTextureFromFileEx(pDevice, buffer, D3DX_DEFAULT, D3DX_DEFAULT, MipLevels, Usage, D3DFMT_FROM_FILE, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette, ppTexture); 
+					}
+				sprintf_s(buffer, "dsfix/tex_override/%08x.dds", hash); 
+					if (fileExists(buffer)) {
+						
+						SDLOG(4, "Texture override (dds)! hash: %08x\n", hash); 
+							return D3DXCreateTextureFromFileEx(pDevice, buffer, D3DX_DEFAULT, D3DX_DEFAULT, MipLevels, Usage, D3DFMT_FROM_FILE, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette, ppTexture); 
+					}
+			}
+
+		// 3. Fallback to Embedded DLL Textures
+		int resourceId = 0;
+		if (hash == 0xdb8a58fa) resourceId = IDR_TEX_DB8A58FA;
+		else if (hash == 0xf9d8db89) resourceId = IDR_TEX_F9D8DB89;
+
+		if (resourceId != 0) {
+			HRSRC hRes = FindResource(g_hModule, MAKEINTRESOURCE(resourceId), RT_RCDATA);
+			if (hRes) {
+				HGLOBAL hData = LoadResource(g_hModule, hRes);
+				DWORD resSize = SizeofResource(g_hModule, hRes);
+				void* pResData = LockResource(hData);
+
+				if (pResData && resSize > 0) {
+					SDLOG(4, "Loaded embedded texture override for hash: %08x\n", hash);
+					return TrueD3DXCreateTextureFromFileInMemoryEx(pDevice, pResData, resSize, D3DX_DEFAULT, D3DX_DEFAULT, MipLevels, Usage, D3DFMT_FROM_FILE, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette, ppTexture);
+				}
+			}
+		}
 	}
-    return TrueD3DXCreateTextureFromFileInMemoryEx(pDevice, pSrcData, SrcDataSize, Width, Height, MipLevels, Usage, Format, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette, ppTexture);
+
+	// 4. Fallback to Original Game Texture
+	return TrueD3DXCreateTextureFromFileInMemoryEx(pDevice, pSrcData, SrcDataSize, Width, Height, MipLevels, Usage, Format, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette, ppTexture); 
 }
 
 void RSManager::storeRenderState() {
