@@ -33,7 +33,7 @@ Replaced the original DSfix 100% CPU spinlock with a modern, low-overhead hybrid
 * **Backup Saves Fix:** Now, the default path can be set in `DSFix.ini` file and it supports Windows environment variables. Example: `%USERPROFILE%\Documents\NBGI\DarkSouls`
 * **Smarter Save Backups:** The backup system now verifies if your game save has actually changed before creating a new backup. This prevents your limited backup slots from being overwritten by identical copies if you frequently launch and exit the game without making any new progress.
 * **VRAM Optimization:** Post-processing effects (AA, SSAO, DoF) now utilize a shared buffer pool, reducing VRAM usage and improving frame pacing.
-
+* **Text:** Includes high visual quality of the in-game fonts
 ---
 
 ## Best Practices & Recommendations
