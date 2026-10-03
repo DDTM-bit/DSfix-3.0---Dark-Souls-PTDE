@@ -101,15 +101,7 @@ void _stdcall updateFramerate(unsigned int cmd) {
 		double deltaTime = currentTime - lastRenderTime;
 		lastRenderTime = currentTime;
 
-		// DSfix 3.0: Stabilize the physics step
-		double targetTime = 1000.0 / maxFPS;
-
-		// If the frame time is within a 2ms tolerance of our target, lock it perfectly
-		if (std::abs(deltaTime - targetTime) < 2.0) {
-			deltaTime = targetTime;
-		}
-
-		// Update step-time
+		// Update step-time using the actual elapsed render time without artificial snapping
 		updateAnimationStepTime((float)deltaTime, (float)minFPS, (float)maxFPS);
 	}
 }

@@ -119,84 +119,15 @@ static void ApplyModernDPIAwareness() {
 #include <vector>
 
 void OptimizeCPUExecution() {
-    // 1. Set high priority class for process
-    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+    // 1. Remove HIGH_PRIORITY_CLASS completely to prevent driver starvation.
+    // If you absolutely must elevate priority, use ABOVE_NORMAL_PRIORITY_CLASS, 
+    // but NORMAL_PRIORITY_CLASS is best for DirectX 9 games.
 
-    // 2. Query processor topology dynamically to identify P-Cores vs E-Cores
-    DWORD bufferSize = 0;
-    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &bufferSize) &&
-        GetLastError() == ERROR_INSUFFICIENT_BUFFER)
-    {
-        std::vector<BYTE> buffer(bufferSize);
-        PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX info =
-            reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data());
+    // 2. Remove the manual P-Core affinity lock. Let the Windows 11 Thread Director 
+    // natively handle routing heavy threads to P-Cores and audio/net to E-Cores.
 
-        if (GetLogicalProcessorInformationEx(RelationProcessorCore, info, &bufferSize)) {
-            BYTE maxEfficiency = 0;
-            BYTE minEfficiency = 255;
-            DWORD offset = 0;
-
-            // Pass 1: Find the maximum and minimum EfficiencyClass present on this CPU
-            while (offset < bufferSize) {
-                PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX curr =
-                    reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data() + offset);
-
-                if (curr->Relationship == RelationProcessorCore) {
-                    BYTE eff = curr->Processor.EfficiencyClass;
-                    if (eff > maxEfficiency) maxEfficiency = eff;
-                    if (eff < minEfficiency) minEfficiency = eff;
-                }
-                offset += curr->Size;
-            }
-
-            // Pass 2: If a hybrid architecture is detected (P-cores have higher EfficiencyClass than E-cores)
-            if (maxEfficiency > minEfficiency) {
-                DWORD_PTR pCoreMask = 0;
-                offset = 0;
-
-                while (offset < bufferSize) {
-                    PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX curr =
-                        reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data() + offset);
-
-                    if (curr->Relationship == RelationProcessorCore &&
-                        curr->Processor.EfficiencyClass == maxEfficiency)
-                    {
-                        // Add every logical thread (including hyperthreaded sibling threads) belonging to this P-core
-                        for (WORD g = 0; g < curr->Processor.GroupCount; ++g) {
-                            if (curr->Processor.GroupMask[g].Group == 0) {
-                                pCoreMask |= curr->Processor.GroupMask[g].Mask;
-                            }
-                        }
-                    }
-                    offset += curr->Size;
-                }
-
-                // Intersect with the system's allowed process affinity mask for safety
-                DWORD_PTR processMask = 0, systemMask = 0;
-                if (GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask)) {
-                    DWORD_PTR targetMask = pCoreMask & processMask;
-
-                    // Count total bits in targetMask
-                    DWORD pCoreThreadCount = __popcnt(targetMask);
-
-                    // Ensure targetMask has enough P-cores to avoid starving the engine
-                    if (pCoreThreadCount >= 6 && targetMask != 0 && targetMask != processMask) {
-                        if (SetProcessAffinityMask(GetCurrentProcess(), targetMask)) {
-                            SDLOG(0, "DSfix 3.0: Hybrid CPU detected. Bound process strictly to P-Cores (Mask: 0x%08X)\n", targetMask);
-                        }
-                    }
-                    else if (pCoreThreadCount > 0 && pCoreThreadCount < 6) {
-                        SDLOG(0, "DSfix 3.0: Low-power Hybrid CPU detected (%u P-Core threads). Bypassing strict P-Core lock to prevent starvation.\n", pCoreThreadCount);
-                    }
-                }
-            }
-            else {
-                SDLOG(0, "DSfix 3.0: Homogeneous CPU detected (no E-cores). Running across all available cores.\n");
-            }
-        }
-    }
-
-    // 3. Disable Windows 11 EcoQoS (Power Throttling) dynamically to ensure P-Cores run at Max Turbo
+    // 3. Keep the EcoQoS (Power Throttling) disable to ensure the OS doesn't 
+    // park cores while the game is running.
     HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
     if (hKernel32) {
         typedef BOOL(WINAPI* PFN_SETPROCESSINFORMATION)(HANDLE, DWORD, LPVOID, DWORD);
@@ -204,7 +135,6 @@ void OptimizeCPUExecution() {
             (PFN_SETPROCESSINFORMATION)GetProcAddress(hKernel32, "SetProcessInformation");
 
         if (SetProcInfo) {
-            // Define an internal anonymous struct to bypass older Windows SDK missing headers
             struct {
                 ULONG Version;
                 ULONG ControlMask;

@@ -195,11 +195,10 @@ HRESULT RSManager::redirectPresent(CONST RECT *pSourceRect, CONST RECT *pDestRec
 	mainRTuses = 0;
 	zSurf = NULL;
 	
-	// Store the result of Present() first
-	HRESULT hr = d3ddev->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
-
-	// Execute the frame time sleep limiter AFTER the GPU presentation
+	// Pace the frame BEFORE submitting to the D3D presentation queue
 	frameTimeManagement();
+	
+	HRESULT hr = d3ddev->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
 
 	return hr;
 }
@@ -1027,45 +1026,45 @@ bool RSManager::getOverrideShader(UINT32 hash, const char *directory, LPD3DXBUFF
 }
 
 void RSManager::frameTimeManagement() {
-	// 1. Initialize the modern high-resolution timer on the first frame
 	if (!frameTimer) {
-		// 0x00000002 is the flag for CREATE_WAITABLE_TIMER_HIGH_RESOLUTION in Windows 10/11
+		// CREATE_WAITABLE_TIMER_HIGH_RESOLUTION (0x2) for Windows 10 build 1803+ and Windows 11
 		frameTimer = CreateWaitableTimerExW(NULL, NULL, 0x00000002, TIMER_ALL_ACCESS);
 		if (!frameTimer) {
-			frameTimer = CreateWaitableTimer(NULL, TRUE, NULL); // Fallback for older systems
+			frameTimer = CreateWaitableTimer(NULL, TRUE, NULL);
 		}
 	}
 
 	double renderTime = getElapsedTime() - lastPresentTime;
 
-	// implement FPS threshold
+	// Maintain low FPS detection threshold
 	double thresholdRenderTime = (1000.0f / Settings::get().getFPSThreshold()) + 0.2;
 	if (renderTime > thresholdRenderTime) lowFPSmode = true;
 	else if (renderTime < thresholdRenderTime - 1.0f) lowFPSmode = false;
 
-	// implement FPS cap
-	// implement FPS cap
 	if (Settings::get().getUnlockFPS()) {
-		// DSfix 3.0: Intercept the framerate limit if the Smart Hold key is down
-		double currentLimit = g_Force30FPS ? 30.0 : Settings::get().getCurrentFPSLimit();
-		double desiredRenderTime = (1000.0 / currentLimit) - 0.1;
+		double currentLimit = g_Force30FPS ? 30.0 : (double)Settings::get().getCurrentFPSLimit();
+		double desiredRenderTime = 1000.0 / currentLimit;
 
-		while (renderTime < desiredRenderTime) {
-			double timeRemaining = desiredRenderTime - renderTime;
+		double timeRemaining = desiredRenderTime - renderTime;
 
-			// If we have more than 0.5ms to wait, let the high-res hardware timer handle it
-			if (timeRemaining > 0.5 && frameTimer) {
-				LARGE_INTEGER li;
-				// Sleep until 0.2ms before target, leaving just ~200 microseconds for final alignment
-				li.QuadPart = (LONGLONG)(-(timeRemaining - 0.2) * 10000.0);
-				SetWaitableTimer(frameTimer, &li, 0, NULL, NULL, FALSE);
+		// 1. Coarse sleep: If we have more than 2.0ms left, yield to the OS using the high-res timer.
+		// Wake up 1.5ms early so OS scheduling variance cannot cause an overshoot.
+		if (timeRemaining > 2.0 && frameTimer) {
+			LARGE_INTEGER li;
+			// 10,000 units = 1 millisecond (negative indicates relative time)
+			li.QuadPart = (LONGLONG)(-(timeRemaining - 1.5) * 10000.0);
+			if (SetWaitableTimer(frameTimer, &li, 0, NULL, NULL, FALSE)) {
 				WaitForSingleObject(frameTimer, INFINITE);
-			}
-			else {
-				YieldProcessor();
 			}
 			renderTime = getElapsedTime() - lastPresentTime;
 		}
+
+		// 2. Fine-grained spin: Burn the final ~1.5ms with low-latency thread yielding
+		while (renderTime < desiredRenderTime) {
+			YieldProcessor(); // Emits PAUSE instruction on x86, preventing pipeline stalls
+			renderTime = getElapsedTime() - lastPresentTime;
+		}
 	}
+
 	lastPresentTime = getElapsedTime();
 }
