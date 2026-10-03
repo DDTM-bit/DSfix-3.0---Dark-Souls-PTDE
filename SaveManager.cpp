@@ -1,4 +1,5 @@
 #include "SaveManager.h"
+#include <sys/stat.h>
 
 #include <algorithm>
 
@@ -57,10 +58,39 @@ void SaveManager::init() {
 }
 
 void SaveManager::tick() {
-	if(Settings::get().getEnableBackups()) {
+	if (Settings::get().getEnableBackups()) {
 		time_t curTime = time(NULL);
-		if(curTime - getLastBackupTime() > Settings::get().getBackupInterval()) {
-			backup(curTime);
+		time_t lastBackup = getLastBackupTime();
+
+		if (curTime - lastBackup > Settings::get().getBackupInterval()) {
+			bool shouldBackup = false;
+
+			// Always backup if this is the very first one (lastBackup == 0)
+			if (lastBackup == 0) {
+				shouldBackup = true;
+			}
+			else {
+				vector<string> sl2Files = getSaveFiles(".sl2");
+				for (size_t i = 0; i < sl2Files.size(); ++i) {
+					struct _stat fileInfo;
+					if (_stat(sl2Files[i].c_str(), &fileInfo) == 0) {
+						// Check if the save file was modified AFTER our last backup was taken
+						if (fileInfo.st_mtime > lastBackup) {
+							shouldBackup = true;
+							break;
+						}
+					}
+				}
+			}
+
+			if (shouldBackup) {
+				backup(curTime);
+			}
+			else {
+				SDLOG(3, "SaveManager: Skipped backup (no new progress).\n");
+			}
+
+			// Always update the timer so we don't query the hard drive every single frame
 			lastBackupTime = curTime;
 		}
 	}
