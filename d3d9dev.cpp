@@ -485,7 +485,8 @@ HRESULT APIENTRY hkIDirect3DDevice9::Reset(D3DPRESENT_PARAMETERS *pPresentationP
 		RSManager::get().initResources();
 	} else {
 		SDLOG(0, "ERROR: Reset Failed!\n");
-		SDLOG(0, "Error code: %s\n", DXGetErrorString(hRet));
+		//SDLOG(0, "Error code: %s\n", DXGetErrorString(hRet));
+		SDLOG(0, "Error code: %08X\n", hRet);
 	}
 	
 	return hRet;

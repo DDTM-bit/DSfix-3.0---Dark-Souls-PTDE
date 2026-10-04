@@ -1,0 +1,22 @@
+On the release version, the logging macro is disabled for safety (performance issue).
+The logic scales the _level number based on the frequency and verbosity of the event:
+
+• Level 0 (Critical / Initialization):
+  These are one-time events or major errors. Examples include DSfix startup markers ("===== start DSfix..."), memory addresses for FPS unlocking ("ImageBase at..."), configuration reporting, and major backup errors.
+  * Setting your logLevel to 1 prints only these.
+
+• Levels 1–2 (Resource Creation):
+  These track the creation of textures, render targets, and the discovery of save files on the disk (e.g., SaveManager: searching for files is level 2).
+
+• Level 3 (Per-Frame Events):
+  This logs events that happen roughly once per frame, such as the Present call (which pushes the frame to the screen), switching the main render target, or the SaveManager skipping a backup.
+  * Setting logLevel to 4 would capture everything from Level 0 to 3.
+
+• Levels 4–8 (Engine State Changes):
+  These log frequent DirectX state changes occurring multiple times per frame, such as setting scissor rects (Level 5), binding viewports (Level 6), or starting/ending scenes (Level 7).
+
+• Levels 9+ (Draw Calls & Ultra-High Frequency):
+  These track the absolute lowest-level DirectX operations that happen thousands of times per frame. For example, DrawIndexedPrimitive (rendering actual polygons) is Level 9, while SetSamplerState (configuring texture filters) is Level 14.
+
+Summary:
+If you set your logLevel to 11, the engine allows all SDLOG calls with a _level of 10 or lower to pass. This means you capture every single initialization step, frame presentation, render target swap, and every single polygon draw call sent to your GPU, resulting in massive text files and a performance drop.
