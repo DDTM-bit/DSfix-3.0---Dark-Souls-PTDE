@@ -10,6 +10,14 @@
 #include "Detouring.h"
 #include "RenderstateManager.h"
 #include "memory.h"
+#include "PhysicsFixes.h"
+#include "LadderSnapFix.h"
+#include "StaminaFix.h"
+#include "CameraFix.h"
+#include "TurnFix.h"
+#include "SfxFix.h"
+#include "GhostFix.h"
+#include "UIFix.h"
 
 extern bool g_Force30FPS;
 
@@ -103,6 +111,9 @@ void _stdcall updateFramerate(unsigned int cmd) {
 
 		// Update step-time using the actual elapsed render time without artificial snapping
 		updateAnimationStepTime((float)deltaTime, (float)minFPS, (float)maxFPS);
+
+		// Update physics scalars once per frame (deltaTime is in ms)
+		updatePhysicsDeltas((float)(deltaTime / 1000.0));
 	}
 }
 
@@ -191,6 +202,15 @@ void applyFPSPatch() {
 
 	// Binary patches
 	//--------------------------------------------------------------
+	installPhysicsFixes();
+	installLadderSnapFix();
+	installStaminaFix();
+	installCameraFix();
+	installTurnFix();
+	installSfxFix();
+	installGhostFix();
+	installUIFix();
+	
 	DWORD address;
 	DWORD data;
 

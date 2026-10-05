@@ -239,6 +239,7 @@
     </ResourceCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="CameraFix.cpp" />
     <ClCompile Include="d3d9.cpp">
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Disabled</Optimization>
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Disabled</Optimization>
@@ -260,8 +261,10 @@
     <ClCompile Include="FPS.cpp" />
     <ClCompile Include="FXAA.cpp" />
     <ClCompile Include="GAUSS.cpp" />
+    <ClCompile Include="GhostFix.cpp" />
     <ClCompile Include="Hud.cpp" />
     <ClCompile Include="KeyActions.cpp" />
+    <ClCompile Include="LadderSnapFix.cpp" />
     <ClCompile Include="main.cpp">
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Disabled</Optimization>
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Disabled</Optimization>
@@ -305,15 +308,21 @@
       <PreprocessorDefinitions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">WIN32;NDEBUG;_WINDOWS;_MBCS;_USRDLL</PreprocessorDefinitions>
     </ClCompile>
     <ClCompile Include="memory.cpp" />
+    <ClCompile Include="PhysicsFixes.cpp" />
     <ClCompile Include="RenderstateManager.cpp" />
     <ClCompile Include="SaveManager.cpp" />
     <ClCompile Include="Settings.cpp" />
+    <ClCompile Include="SfxFix.cpp" />
     <ClCompile Include="SMAA.cpp" />
     <ClCompile Include="SSAO.cpp" />
+    <ClCompile Include="StaminaFix.cpp" />
+    <ClCompile Include="TurnFix.cpp" />
+    <ClCompile Include="UIFix.cpp" />
     <ClCompile Include="WindowManager.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AreaTex.h" />
+    <ClInclude Include="CameraFix.h" />
     <ClInclude Include="d3d9.h" />
     <ClInclude Include="d3dutil.h" />
     <ClInclude Include="Detouring.h" />
@@ -322,14 +331,19 @@
     <ClInclude Include="Effect.h" />
     <ClInclude Include="FXAA.h" />
     <ClInclude Include="GAUSS.h" />
+    <ClInclude Include="GhostFix.h" />
     <ClInclude Include="Hash.h" />
     <ClInclude Include="FPS.h" />
     <ClInclude Include="Hud.h" />
     <ClInclude Include="KeyActions.h" />
+    <ClInclude Include="LadderSnapFix.h" />
     <ClInclude Include="memory.h" />
+    <ClInclude Include="PhysicsFixes.h" />
     <ClInclude Include="resource1.h" />
     <ClInclude Include="SearchTex.h" />
+    <ClInclude Include="SfxFix.h" />
     <ClInclude Include="SMAA.h" />
+    <ClInclude Include="StaminaFix.h" />
     <ClInclude Include="Textures.def" />
     <ClInclude Include="RenderstateManager.h" />
     <ClInclude Include="main.h" />
@@ -338,6 +352,8 @@
     <ClInclude Include="SaveManager.h" />
     <ClInclude Include="Settings.h" />
     <ClInclude Include="SSAO.h" />
+    <ClInclude Include="TurnFix.h" />
+    <ClInclude Include="UIFix.h" />
     <ClInclude Include="WindowManager.h" />
   </ItemGroup>
   <ItemGroup>
