@@ -222,7 +222,20 @@ void applyFPSPatch() {
 	// Detour call to getDrawThreadMsgCommand
 	address = convertAddress(ADDR_GETCMD);
 	DetourApply((BYTE*)address, (BYTE*)getDrawThreadMsgCommand, 5, CALLOP);
-		
+
+	// --- NEW: Disable Present Catch-up Loop (VRR stutter fix) ---
+	DWORD kRepeatJump = 0x00BACE90;
+	BYTE* jumpSite = (BYTE*)kRepeatJump;
+	if (jumpSite[0] == 0x7E && jumpSite[1] == 0x36) { // Check for 'jle 0xbacec8'
+		DWORD oldProtect;
+		if (VirtualProtect(jumpSite, 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+			jumpSite[0] = 0xEB; // Change 'jle' to 'jmp' to skip the loop
+			VirtualProtect(jumpSite, 1, oldProtect, &oldProtect);
+			FlushInstructionCache(GetCurrentProcess(), jumpSite, 1);
+			SDLOG(0, "FPS: Present catch-up loop disabled.\n");
+		}
+	}
+
 	SDLOG(0, "FPS unlocked\n");
 }
 

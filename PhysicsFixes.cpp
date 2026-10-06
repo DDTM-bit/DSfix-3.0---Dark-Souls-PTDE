@@ -5,11 +5,12 @@
 
 float g_PhysicsDeltaTime = 1.0f / 30.0f;
 
-// Ghost Fractional Accumulator Globals
-//int g_GhostTicks = 0;
-//float g_GhostAccumulator = 0.0f;
-int g_GhostFrames10 = 10;
-int g_GhostFrames5 = 5;
+//ghost bloodstain
+float g_GhostUnitsPerSecond = 30.0f * 65536.0f;
+int32_t g_GhostRecStep = -65536;
+float g_GhostTurnScale = 1.0f;
+__declspec(align(16)) float g_GhostStepScale[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+
 
 namespace {
     // 1. Slide Gravity & Damping
@@ -133,8 +134,8 @@ void updatePhysicsDeltas(float deltaSeconds) {
     g_scaledSmooth = 1.0 - std::pow(1.0 - (1.0 / 30.0), s);
     g_scaledShineDiv = 2.0 / (double)deltaSeconds;
 
-    //Ghost Frame Sync
-    float scale = 1.0f / (deltaSeconds * 30.0f);
-    g_GhostFrames10 = (int)(10.0f * scale);
-    g_GhostFrames5 = (int)(5.0f * scale);
+    // Ghost Fixed-Point Timers & Translation Scaling (v1.5.0 logic)
+    g_GhostRecStep = -(int32_t)(s * 65536.0);
+    g_GhostTurnScale = (float)s;
+    g_GhostStepScale[0] = g_GhostStepScale[1] = g_GhostStepScale[2] = g_GhostStepScale[3] = (float)s;
 }
