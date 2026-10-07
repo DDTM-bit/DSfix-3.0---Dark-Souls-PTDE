@@ -34,6 +34,26 @@ Replaced the original DSfix 100% CPU spinlock with a modern, low-overhead hybrid
 * **Smarter Save Backups:** The backup system now verifies if your game save has actually changed before creating a new backup. This prevents your limited backup slots from being overwritten by identical copies if you frequently launch and exit the game without making any new progress.
 * **VRAM Optimization:** Post-processing effects (AA, SSAO, DoF) now utilize a shared buffer pool, reducing VRAM usage and improving frame pacing.
 * **Text:** Includes high visual quality of the in-game fonts
+* **High-FPS Fixes:**
+  - **Core Physics & Movement**
+    - **Slope Gravity & Friction:** Sliding down slopes and embankments no longer happens at light-speed.
+    - **Airborne Damping:** Normalizes jump distance and walk-off momentum to match the native 30 FPS console release.
+    - **Ladder & Ledge Snap:** Prevents the player from falling through the floor at the bottom of ladders, and stops the engine from aggressively gluing the character to curved lips or stairs.
+    - **Sprint Graze Check:** Fixes the engine bug where running near walls or complex geometry artificially slows the player down at high framerates.
+  - **Combat & Camera**
+    - **Accurate Stamina Drain:** Preserves fractional engine ticks to guarantee a strict 10-point-per-second sprint drain, preventing stamina from lasting artificially long at non-divisible framerates.
+    - **Lock-On Body Tracking:** Normalizes the bone rotation speeds for the torso, head, and hips. Enemies will no longer instantly snap their upper bodies to track you, and your own aiming remains smooth.
+    - **Camera Smoothing & Panning:** Makes all 16 camera blend weights framerate-independent. Switching lock-on targets smoothly pans the camera instead of instantly snapping, and the mouse/stick "look-at boost" fades out correctly in real-time.
+  - **Multiplayer & Phantoms**
+    - **Flawless Ghost Replays:** Implements a fixed-point translation scaler so bloodstains, wandering ghosts, and network phantoms move at the exact correct speed. Perfectly syncs their walking/running animations to the game's internal 10-frame update clock, completely eliminating phantom skipping, skating, and fast-forwarding.
+  - **Visuals, Audio & UI**
+    - **Particle Effect Spawning:** Clamps engine emitter intervals to 1/30s as they load into memory, preventing sparks, bonfire smoke, and magic effects from becoming blindingly dense and opaque at 120 FPS.
+    - **Ragdolls & 3D Audio:** Normalizes frame-velocity multipliers so ragdolls maintain proper physical weight upon death, and moving sound sources (FMOD Doppler effect) do not drop in pitch.
+    - **Timers & Fades:** Corrects the duration of weapon buff glows, dropped item pulses, and ragdoll blend-in animations.
+    - **Menu Input Repeat:** Locks the D-Pad and menu navigation delay to the engine's default timing so players do not accidentally skip past items in their inventory.
+    - **HUD Animations:** Health, stamina, and boss bars smoothly fill and deplete rather than instantly snapping to new values. The loading screen bonfire swirl rotates at the correct cinematic speed.
+  - **Engine Stability**
+    - **VRR / G-Sync Stutter Fix:** Bypasses the engine's hardcoded "Present" catch-up loop, eliminating erratic refresh-rate bouncing and micro-stutters on variable-refresh-rate monitors.
 ---
 
 ## Best Practices & Recommendations
@@ -97,13 +117,6 @@ Certain engine limitations are hardcoded too deeply into Havok or DirectX 9 to b
 2. **Flawless Widescreen (21:9 Aspect Ratios)**
    * **DSfix 3.0 Status:** CANNOT FIX.
    * **Details:** DSfix forces the game to render at ultrawide resolutions, but the UI coordinates in `Hud.cpp` are mapped using fixed 16:9 float mathematics. If you have an ultrawide monitor, you still need Flawless Widescreen to intercept the UI memory and un-stretch the health bars.
-3. **Tomb of the Giants Stuttering & Throttlestop**
-   * **DSfix 3.0 Status:** CANNOT FIX.
-   * **Details:** The massive frame drops in Tomb of the Giants and Blighttown are caused by engine culling failures (the game is trying to render the entire level geometry at once). DSfix cannot fix bad level design.
-4. **DXVK (Vulkan Wrapper)**
-   * **DSfix 3.0 Status:** COMPATIBLE.
-   * **Details:** DirectX 9 is inherently single-threaded. DSfix cannot change this. Dropping the DXVK `d3d9.dll` into your folder forces DirectX 9 to translate into Vulkan, which utilizes modern multi-core CPUs much better.
-   * **Attention:** If you want to use PVP Watchdog with Vulkan... you can't. PVP Watchdog needs `d3d9.dll`, the same one for Vulkan, and if you try with `DSPWSteam.ini` to change `d3d9dllWrapper` it will make the game have serious performance issues.
 
 ---
 
