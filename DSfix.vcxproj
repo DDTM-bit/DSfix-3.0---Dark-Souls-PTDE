@@ -239,6 +239,7 @@
     </ResourceCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="AspectFix.cpp" />
     <ClCompile Include="CameraFix.cpp" />
     <ClCompile Include="d3d9.cpp">
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Disabled</Optimization>
@@ -322,6 +323,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AreaTex.h" />
+    <ClInclude Include="AspectFix.h" />
     <ClInclude Include="CameraFix.h" />
     <ClInclude Include="d3d9.h" />
     <ClInclude Include="d3dutil.h" />

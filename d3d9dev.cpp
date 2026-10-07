@@ -11,6 +11,7 @@
 #include "Settings.h"
 #include "KeyActions.h"
 #include "SaveManager.h"
+#include "AspectFix.h"
 
 using namespace std;
 
@@ -64,6 +65,12 @@ HRESULT APIENTRY hkIDirect3DDevice9::SetVertexShaderConstantF(UINT StartRegister
 	//	SDLOG(0, "!!4ball\n");
 	//	return m_pD3Ddev->SetVertexShaderConstantF(StartRegister, replacement, Vector4fCount);
 	//}*/ 
+	if (isAspectActive() && pConstantData && Vector4fCount >= 4 && Vector4fCount <= 24) {
+		float corrected[24 * 4];
+		if (correctMatrixUpload(pConstantData, Vector4fCount, corrected)) {
+			return m_pD3Ddev->SetVertexShaderConstantF(StartRegister, corrected, Vector4fCount);
+		}
+	}
 	return m_pD3Ddev->SetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount);
 }
 
@@ -81,6 +88,12 @@ HRESULT APIENTRY hkIDirect3DDevice9::SetVertexShader(IDirect3DVertexShader9* pvS
 HRESULT APIENTRY hkIDirect3DDevice9::SetViewport(CONST D3DVIEWPORT9 *pViewport) {
 	Settings::get().init();
 	SDLOG(6, "SetViewport X / Y - W x H : %4lu / %4lu  -  %4lu x %4lu\n", pViewport->X, pViewport->Y, pViewport->Width, pViewport->Height);
+
+	D3DVIEWPORT9 vp = *pViewport;
+	if (isAspectActive()) {
+		correctViewport(&vp, m_pD3Ddev);
+	}
+
 	RSManager::get().setViewport(*pViewport);
 	return m_pD3Ddev->SetViewport(pViewport); 
 	//D3DVIEWPORT9 copy;
@@ -694,10 +707,16 @@ BOOL APIENTRY hkIDirect3DDevice9::ShowCursor(BOOL bShow) {
 	return m_pD3Ddev->ShowCursor(bShow);
 }
 
-HRESULT APIENTRY hkIDirect3DDevice9::StretchRect(IDirect3DSurface9* pSourceSurface, CONST RECT* pSourceRect, IDirect3DSurface9* pDestSurface, CONST RECT* pDestRect,D3DTEXTUREFILTERTYPE Filter) {
+HRESULT APIENTRY hkIDirect3DDevice9::StretchRect(IDirect3DSurface9* pSourceSurface, CONST RECT* pSourceRect, IDirect3DSurface9* pDestSurface, CONST RECT* pDestRect, D3DTEXTUREFILTERTYPE Filter) {
 	SDLOG(5, "StretchRect src -> dest, sR -> dR : %p -> %p,  %s -> %s\n", pSourceSurface, pDestSurface, RectToString(pSourceRect), RectToString(pDestRect));
-	//return m_pD3Ddev->StretchRect(pSourceSurface,pSourceRect,pDestSurface,pDestRect,Filter);
-	return RSManager::get().redirectStretchRect(pSourceSurface, pSourceRect, pDestSurface, pDestRect, Filter);
+
+	RECT correctedDst;
+	CONST RECT* dstUse = pDestRect;
+	if (isAspectActive() && pDestRect && pDestSurface) {
+		dstUse = correctStretchRect(pDestSurface, pDestRect, &correctedDst);
+	}
+
+	return RSManager::get().redirectStretchRect(pSourceSurface, pSourceRect, pDestSurface, dstUse, Filter);
 }
 
 HRESULT APIENTRY hkIDirect3DDevice9::TestCooperativeLevel() {

@@ -52,8 +52,10 @@ Replaced the original DSfix 100% CPU spinlock with a modern, low-overhead hybrid
     - **Timers & Fades:** Corrects the duration of weapon buff glows, dropped item pulses, and ragdoll blend-in animations.
     - **Menu Input Repeat:** Locks the D-Pad and menu navigation delay to the engine's default timing so players do not accidentally skip past items in their inventory.
     - **HUD Animations:** Health, stamina, and boss bars smoothly fill and deplete rather than instantly snapping to new values. The loading screen bonfire swirl rotates at the correct cinematic speed.
+    - **Native 16:10 & Steam Deck Aspect Ratio Support:** Dark Souls PTDE natively forces 16:9 letterboxing (black bars) on taller displays, such as 16:10 monitors or the Steam Deck's 1280x800 screen. This fix automatically detects displays taller than 16:9 and removes the black bars by seamlessly expanding the vertical camera field-of-view (Vert+). The game now perfectly fills the entire screen without any image stretching or horizontal squashing. Standard 16:9 displays are left completely untouched.
   - **Engine Stability**
     - **VRR / G-Sync Stutter Fix:** Bypasses the engine's hardcoded "Present" catch-up loop, eliminating erratic refresh-rate bouncing and micro-stutters on variable-refresh-rate monitors.
+	
 ---
 
 ## Best Practices & Recommendations

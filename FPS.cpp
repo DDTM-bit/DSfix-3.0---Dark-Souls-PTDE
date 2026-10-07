@@ -18,6 +18,7 @@
 #include "SfxFix.h"
 #include "GhostFix.h"
 #include "UIFix.h"
+#include "AspectFix.h"
 
 extern bool g_Force30FPS;
 
@@ -210,6 +211,7 @@ void applyFPSPatch() {
 	installSfxFix();
 	installGhostFix();
 	installUIFix();
+	installAspectFix();
 	
 	DWORD address;
 	DWORD data;
