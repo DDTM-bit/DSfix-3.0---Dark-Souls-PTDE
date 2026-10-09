@@ -29,10 +29,13 @@ HRESULT APIENTRY hkIDirect3DQuery9::Issue(DWORD dwIssueFlags) {
 	return m_pD3Dquery->Issue(dwIssueFlags);
 }
 HRESULT APIENTRY hkIDirect3DQuery9::GetData(void* pData, DWORD dwSize, DWORD dwGetDataFlags) {
-	auto result = m_pD3Dquery->GetData(pData, dwSize, dwGetDataFlags);
-	if (SUCCEEDED(result)) {
-		auto pixelsDrawn = reinterpret_cast<DWORD*>(pData);
-		pixelsDrawn[0] = static_cast<DWORD>(pixelsDrawn[0] / RSManager::get().getOcclusionScale());
+	HRESULT result = m_pD3Dquery->GetData(pData, dwSize, dwGetDataFlags);
+	if (result == S_OK && pData && dwSize >= sizeof(DWORD)) {
+		DWORD* pixelsDrawn = reinterpret_cast<DWORD*>(pData);
+		float scale = RSManager::get().getOcclusionScale();
+		if (scale > 0.0f) {
+			pixelsDrawn[0] = static_cast<DWORD>(pixelsDrawn[0] / scale + 0.5f);
+		}
 	}
 	return result;
 }
