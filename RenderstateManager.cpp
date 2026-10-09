@@ -13,6 +13,8 @@
 #include "WindowManager.h"
 #include "FPS.h"
 #include "resource1.h"
+#include <atlbase.h>
+
 extern bool g_Force30FPS;
 
 RSManager RSManager::instance;
@@ -323,6 +325,9 @@ HRESULT RSManager::redirectSetRenderTarget(DWORD RenderTargetIndex, IDirect3DSur
 		// store it for later use
 		mainRT = pRenderTarget;
 		SDLOG(0, "Storing RT as main RT: %p\n", mainRT);
+		if (!haveOcclusionScale) {
+			measureOcclusionScale();
+		}
 	}
 
 	if(nrts == 11) { // we are switching to the RT used to store the Z value in the 24 RGB bits (among other things)
@@ -366,7 +371,7 @@ HRESULT RSManager::redirectSetRenderTarget(DWORD RenderTargetIndex, IDirect3DSur
 						d3ddev->StretchRect(rgbaBuffer1Surf, NULL, oldRenderTarget, NULL, D3DTEXF_NONE);
 					}
 					restoreRenderState();
-					zTex->Release();
+					SAFERELEASE(zTex);
 					//if(takeScreenshot) D3DXSaveSurfaceToFile("1effect_buff.bmp", D3DXIFF_BMP, rgbaBuffer1Surf, NULL, NULL);
 					//if(takeScreenshot) D3DXSaveSurfaceToFile("1effect_post.bmp", D3DXIFF_BMP, oldRenderTarget, NULL, NULL);
 				}
@@ -1094,4 +1099,67 @@ void RSManager::frameTimeManagement() {
 	}
 
 	lastPresentTime = getElapsedTime();
+}
+
+void RSManager::measureOcclusionScale() {
+	static const D3DVERTEXELEMENT9 vertexElements[2] = {
+		{ 0, 0,  D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+		D3DDECL_END()
+	};
+	CComPtr<IDirect3DVertexDeclaration9> vertexDeclaration;
+	CComPtr<ID3DXBuffer> errorBuffer;
+	static const char vertexShaderSource[] = "vs_3_0 \n dcl_position v0 \n dcl_position o0 \n mov o0, v0";
+	CComPtr<ID3DXBuffer> vertexShaderBuffer;
+	CComPtr<IDirect3DVertexShader9> vertexShader;
+	static const char pixelShaderSource[] = "ps_3_0 \n def c0, 0, 0, 0, 0 \n mov_pp oC0, c0.x";
+	CComPtr<ID3DXBuffer> pixelShaderBuffer;
+	CComPtr<IDirect3DPixelShader9> pixelShader;
+	CComPtr<IDirect3DQuery9> query;
+	DWORD pixelsVisible = 0;
+	HRESULT hr;
+
+	haveOcclusionScale = true;
+
+	float width = 24.0f / 1024.0f;
+	float height = 24.0f / 720.0f;
+	const float vertexData[4][3] = {
+		{ -width, -height, 0.5f },
+		{  width, -height, 0.5f },
+		{  width,  height, 0.5f },
+		{ -width,  height, 0.5f },
+	};
+
+	if (FAILED(d3ddev->Clear(0, nullptr, D3DCLEAR_TARGET, 0, 1, 0))) return;
+	if (FAILED(d3ddev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE))) return;
+	if (FAILED(d3ddev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL))) return;
+	if (FAILED(d3ddev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE))) return;
+	if (FAILED(d3ddev->CreateVertexDeclaration(vertexElements, &vertexDeclaration))) return;
+	if (FAILED(d3ddev->SetVertexDeclaration(vertexDeclaration))) return;
+	if (FAILED(D3DXAssembleShader(vertexShaderSource, sizeof(vertexShaderSource), nullptr, nullptr, 0, &vertexShaderBuffer, &errorBuffer))) return;
+	if (FAILED(d3ddev->CreateVertexShader(reinterpret_cast<const DWORD*>(vertexShaderBuffer->GetBufferPointer()), &vertexShader))) return;
+	if (FAILED(d3ddev->SetVertexShader(vertexShader))) return;
+	if (FAILED(D3DXAssembleShader(pixelShaderSource, sizeof(pixelShaderSource), nullptr, nullptr, 0, &pixelShaderBuffer, &errorBuffer))) return;
+	if (FAILED(d3ddev->CreatePixelShader(reinterpret_cast<const DWORD*>(pixelShaderBuffer->GetBufferPointer()), &pixelShader))) return;
+	if (FAILED(d3ddev->SetPixelShader(pixelShader))) return;
+	if (FAILED(d3ddev->CreateQuery(D3DQUERYTYPE_OCCLUSION, &query))) return;
+	if (FAILED(d3ddev->BeginScene())) return;
+	if (FAILED(query->Issue(D3DISSUE_BEGIN))) return;
+	if (FAILED(d3ddev->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, vertexData, sizeof(vertexData[0])))) return;
+	if (FAILED(query->Issue(D3DISSUE_END))) return;
+
+	while ((hr = query->GetData(&pixelsVisible, sizeof(pixelsVisible), D3DGETDATA_FLUSH)) == S_FALSE);
+
+	if (FAILED(hr)) return;
+
+	if (pixelsVisible == 0) {
+		occlusionScale = 1;
+	}
+	else {
+		occlusionScale = pixelsVisible / 576.0f;
+	}
+
+	SDLOG(2, "measureOcclusionScale: pixelsVisible = %d\n", pixelsVisible);
+	SDLOG(2, "measureOcclusionScale: occlusionScale = %f\n", occlusionScale);
+
+	if (FAILED(d3ddev->EndScene())) return;
 }

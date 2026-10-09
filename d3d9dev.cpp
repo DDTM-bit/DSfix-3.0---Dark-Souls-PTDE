@@ -12,6 +12,7 @@
 #include "KeyActions.h"
 #include "SaveManager.h"
 #include "AspectFix.h"
+#include "d3d9query.h"
 
 using namespace std;
 
@@ -199,7 +200,11 @@ HRESULT APIENTRY hkIDirect3DDevice9::CreatePixelShader(CONST DWORD* pFunction,ID
 }
 
 HRESULT APIENTRY hkIDirect3DDevice9::CreateQuery(D3DQUERYTYPE Type,IDirect3DQuery9** ppQuery) {
-	return m_pD3Ddev->CreateQuery(Type, ppQuery);
+	auto result = m_pD3Ddev->CreateQuery(Type, ppQuery);
+	if (Type == D3DQUERYTYPE_OCCLUSION && result == D3D_OK) {
+		new hkIDirect3DQuery9(ppQuery);
+	}
+	return result;
 }
 
 HRESULT APIENTRY hkIDirect3DDevice9::CreateRenderTarget(UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, BOOL Lockable, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle) {
@@ -647,19 +652,7 @@ HRESULT APIENTRY hkIDirect3DDevice9::SetScissorRect(CONST RECT* pRect) {
 		return m_pD3Ddev->SetScissorRect(pRect);
 	}
 
-	// 2. Target ONLY the 720p skybox/sun/moon scissor rect
-	if (pRect->left == 0 && pRect->top == 0 && pRect->right == 1024 && pRect->bottom == 720) {
-		RECT scaledRect;
-		scaledRect.left = 0;
-		scaledRect.top = 0;
-		scaledRect.right = Settings::get().getRenderWidth();
-		scaledRect.bottom = Settings::get().getRenderHeight();
-
-		SDLOG(5, " - Rescaled skybox scissor rect for Sun/Moon: %s\n", RectToString(&scaledRect));
-		return m_pD3Ddev->SetScissorRect(&scaledRect);
-	}
-
-	// 3. Discard everything else (including UI text bounds) to prevent letterboxing and clipping
+	// 2. Discard everything else (including UI text bounds) to prevent letterboxing and clipping
 	SDLOG(5, " - Lyrical Tokarev, kill them all!\n", RectToString(pRect));
 	return D3D_OK;
 }

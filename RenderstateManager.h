@@ -126,6 +126,9 @@ class RSManager {
 	bool disassembleShader(CONST DWORD *pFunction, LPD3DXBUFFER *ppBuffer);
 	void dumpShader(UINT32 hash, const char *directory, LPD3DXBUFFER pBuffer);
 	bool getOverrideShader(UINT32 hash, const char *directory, LPD3DXBUFFER *ppBuffer);
+	bool haveOcclusionScale;
+	float occlusionScale;
+	void measureOcclusionScale();
 
 private:
     ~RSManager();
@@ -143,7 +146,7 @@ public:
 			inited(false), doAA(true), doSsao(true), doDofGauss(true), doHud(true), captureNextFrame(false), capturing(false), hudStarted(false), takeScreenshot(false), hideHud(false),
 			mainRenderTexIndex(0), mainRenderSurfIndex(0), dumpCaptureIndex(0), numKnownTextures(0), foundKnownTextures(0), skippedPresents(0), frameTimer(NULL), bonfireDisableSSAO(false), 
 		lastPresentTime(0.0), lowFPSmode(false), onHudRT(false), pausedHudRT(false),
-		paused(false), rddp(0), nrts(0), hddp(0), mainRT(NULL), mainRTuses(0), zSurf(NULL) {
+		paused(false), rddp(0), nrts(0), hddp(0), mainRT(NULL), mainRTuses(0), zSurf(NULL), haveOcclusionScale(false), occlusionScale(1) {
 		// Zero out the HUD vertices array to prevent garbage memory crashes
 		memset(hudVertices, 0, sizeof(hudVertices));
 
@@ -214,4 +217,5 @@ public:
 	HRESULT redirectSetRenderState(D3DRENDERSTATETYPE State, DWORD Value);
 	HRESULT redirectCreatePixelShader(CONST DWORD *pfunction, IDirect3DPixelShader9 **ppShader);
 	HRESULT redirectCreateVertexShader(CONST DWORD *pfunction, IDirect3DVertexShader9 **ppShader);
+	float getOcclusionScale() const { return occlusionScale; }
 };
