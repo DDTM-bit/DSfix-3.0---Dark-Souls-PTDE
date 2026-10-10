@@ -29,14 +29,19 @@ void RSManager::initResources() {
 	SDLOG(0, "RenderstateManager resource initialization started\n");
 	unsigned rw = Settings::get().getRenderWidth(), rh = Settings::get().getRenderHeight();
 	unsigned dofRes = Settings::get().getDOFOverrideResolution();
+	unsigned dofW = dofRes == 0 ? 512 : dofRes * 16 / 9;
+	unsigned dofH = dofRes == 0 ? 360 : dofRes;
 
 	// Initialize shared buffer pool
 	d3ddev->CreateTexture(rw, rh, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &sharedBuffer1Tex, NULL);
 	sharedBuffer1Tex->GetSurfaceLevel(0, &sharedBuffer1Surf);
 	d3ddev->CreateTexture(rw, rh, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &sharedBuffer2Tex, NULL);
 	sharedBuffer2Tex->GetSurfaceLevel(0, &sharedBuffer2Surf);
-	d3ddev->CreateTexture(dofRes * 16 / 9, dofRes, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &sharedDofTex, NULL);
-	sharedDofTex->GetSurfaceLevel(0, &sharedDofSurf);
+
+	d3ddev->CreateTexture(dofW, dofH, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &sharedDofTex, NULL);
+	if (sharedDofTex) {
+		sharedDofTex->GetSurfaceLevel(0, &sharedDofSurf);
+	}
 
 	if (Settings::get().getAAQuality()) {
 		if (Settings::get().getAAType() == "SMAA") {
@@ -52,7 +57,7 @@ void RSManager::initResources() {
 			(Settings::get().getSsaoType() == "VSSAO") ? SSAO::VSSAO : ((Settings::get().getSsaoType() == "HBAO") ? SSAO::HBAO : SSAO::SCAO),
 			sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
 	}
-	if (Settings::get().getDOFBlurAmount()) gauss = new GAUSS(d3ddev, dofRes * 16 / 9, dofRes, sharedDofTex, sharedDofSurf);
+	if (Settings::get().getDOFBlurAmount()) gauss = new GAUSS(d3ddev, dofW, dofH, sharedDofTex, sharedDofSurf);
 	if(Settings::get().getEnableHudMod()) hud = new HUD(d3ddev, rw, rh);
 	d3ddev->CreateTexture(rw, rh, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &rgbaBuffer1Tex, NULL);
 	rgbaBuffer1Tex->GetSurfaceLevel(0, &rgbaBuffer1Surf);
@@ -807,9 +812,11 @@ bool RSManager::isTextureText(IDirect3DBaseTexture9* t) {
 }
 
 unsigned RSManager::isDof(unsigned width, unsigned height) {
-	unsigned topWidth = Settings::get().getDOFOverrideResolution()*16/9, topHeight = Settings::get().getDOFOverrideResolution();
-	if(width == topWidth && height == topHeight) return 1;
-	if(width == topWidth/2 && height == topHeight/2) return 2;
+	unsigned dofRes = Settings::get().getDOFOverrideResolution();
+	unsigned topWidth = dofRes == 0 ? 512 : dofRes * 16 / 9;
+	unsigned topHeight = dofRes == 0 ? 360 : dofRes;
+	if (width == topWidth && height == topHeight) return 1;
+	if (width == topWidth / 2 && height == topHeight / 2) return 2;
 	return 0;
 }
 
