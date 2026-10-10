@@ -74,11 +74,82 @@ HRESULT WINAPI DetouredD3DXCompileShader(_In_ LPCSTR pSrcData, _In_ UINT srcData
 	return res;
 }
 
+// ===================== Language override via API hooks (no registry) =====================
+#include <string>
+#include <cwchar>
+
+namespace {
+	LCID(WINAPI* TrueGetUserDefaultLCID)(void) = NULL;
+	LANGID(WINAPI* TrueGetUserDefaultLangID)(void) = NULL;
+	LCID   g_forcedLcid = 0;
+	LANGID g_forcedLangId = 0;
+	bool   g_langHooksAttached = false;
+
+	LCID   WINAPI HkGetUserDefaultLCID(void) { return g_forcedLcid; }
+	LANGID WINAPI HkGetUserDefaultLangID(void) { return g_forcedLangId; }
+
+	typedef LCID(WINAPI* PFN_LocaleNameToLCID)(LPCWSTR, DWORD);
+	typedef int  (WINAPI* PFN_ResolveLocaleName)(LPCWSTR, LPWSTR, int);
+
+	bool resolveForcedLocale(const std::string& name, LCID* outLcid) {
+		const int kMaxName = 85;
+		HMODULE k32 = GetModuleHandleA("kernel32.dll");
+		PFN_LocaleNameToLCID pLocaleNameToLCID = k32 ? (PFN_LocaleNameToLCID)GetProcAddress(k32, "LocaleNameToLCID") : NULL;
+		PFN_ResolveLocaleName pResolveLocaleName = k32 ? (PFN_ResolveLocaleName)GetProcAddress(k32, "ResolveLocaleName") : NULL;
+		if (!pLocaleNameToLCID) return false;
+
+		wchar_t w[kMaxName] = { 0 };
+		if (MultiByteToWideChar(CP_ACP, 0, name.c_str(), -1, w, kMaxName) == 0) return false;
+
+		// neutral name like "fr": resolve to the default specific locale ("fr-FR")
+		if (!wcschr(w, L'-') && pResolveLocaleName) {
+			wchar_t r[kMaxName] = { 0 };
+			if (pResolveLocaleName(w, r, kMaxName) > 0) wcscpy_s(w, kMaxName, r);
+		}
+		LCID lcid = pLocaleNameToLCID(w, 0);
+		if (lcid == 0 || lcid == 0x1000 /* LOCALE_CUSTOM_UNSPECIFIED */) return false;
+		*outLcid = lcid;
+		return true;
+	}
+}
+
+// Call between DetourTransactionBegin and DetourTransactionCommit
+void attachLanguageHooks() {
+	const std::string& lang = Settings::get().getOverrideLanguage();
+	if (lang.length() < 2 || lang.find("none") == 0) return;
+
+	LCID lcid = 0;
+	if (!resolveForcedLocale(lang, &lcid)) {
+		SDLOG(0, "LanguageOverride: could not resolve '%s' - override disabled\n", lang.c_str());
+		return;
+	}
+	g_forcedLcid = lcid;
+	g_forcedLangId = LANGIDFROMLCID(lcid);
+
+	TrueGetUserDefaultLCID = (LCID(WINAPI*)(void))   DetourFindFunction("kernel32.dll", "GetUserDefaultLCID");
+	TrueGetUserDefaultLangID = (LANGID(WINAPI*)(void)) DetourFindFunction("kernel32.dll", "GetUserDefaultLangID");
+	if (TrueGetUserDefaultLCID)   DetourAttach(&(PVOID&)TrueGetUserDefaultLCID, HkGetUserDefaultLCID);
+	if (TrueGetUserDefaultLangID) DetourAttach(&(PVOID&)TrueGetUserDefaultLangID, HkGetUserDefaultLangID);
+	g_langHooksAttached = true;
+	SDLOG(0, "LanguageOverride: forcing '%s' (LCID 0x%04X, LANGID 0x%04X), no registry changes\n",
+		lang.c_str(), (unsigned)g_forcedLcid, (unsigned)g_forcedLangId);
+}
+
+// Call between DetourTransactionBegin and DetourTransactionCommit
+void detachLanguageHooks() {
+	if (!g_langHooksAttached) return;
+	g_langHooksAttached = false;
+	if (TrueGetUserDefaultLCID)   DetourDetach(&(PVOID&)TrueGetUserDefaultLCID, HkGetUserDefaultLCID);
+	if (TrueGetUserDefaultLangID) DetourDetach(&(PVOID&)TrueGetUserDefaultLangID, HkGetUserDefaultLangID);
+}
+// =================== end of language override hooks ===================
+
 void earlyDetour() {
 	QueryPerformanceFrequency(&countsPerSec);
 	DetourTransactionBegin();
 	DetourUpdateThread(GetCurrentThread());
 	DetourAttach(&(PVOID&)oDirect3DCreate9, hkDirect3DCreate9);
+	attachLanguageHooks();
 	DetourTransactionCommit();
 }
 
@@ -117,6 +188,7 @@ void endDetour() {
 		DetourDetach(&(PVOID&)TrueD3DXCreateTextureFromFileInMemoryEx, DetouredD3DXCreateTextureFromFileInMemoryEx);
 		DetourDetach(&(PVOID&)oDirect3DCreate9, hkDirect3DCreate9);
 		//DetourDetach(&(PVOID&)TrueD3DXCompileShader, DetouredD3DXCompileShader);
+		detachLanguageHooks();
 		DetourTransactionCommit();
 	//}
 }

@@ -19,6 +19,7 @@
 #pragma once
 #include <string>
 #include <map>
+//#include "Settings.h"
 
 #define VERSION "3.0 from DDTM"
 
