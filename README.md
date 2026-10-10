@@ -107,6 +107,8 @@ To ensure maximum stability on modern machines, configure your environment using
 ### Infinite Freeze on Zero FPS Limit
 * **Applied Solution:** 60 FPS for user input of 0 fps limit.
 
+### Override Language not keeping the change, sometimes the user needed to play with compatibility mode.
+* **Applied Solution:** Language override no longer modifies the Windows registry or requires compatibility mode. It is applied inside the game process only
 ---
 
 ## Issues Requiring External Workarounds
