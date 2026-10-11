@@ -11,6 +11,8 @@ using namespace std;
 #include "Settings.h"
 #include "RenderstateManager.h"
 
+void requestHudDump(); // defined in RenderstateManager.cpp
+
 // DSfix 3.0: Global flag for smart physics toggle
 bool g_Force30FPS = false;
 

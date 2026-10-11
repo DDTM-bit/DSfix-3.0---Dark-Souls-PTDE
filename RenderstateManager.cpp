@@ -5,6 +5,10 @@
 #include <io.h>
 #include <fstream>
 #include <string>
+#include <vector>
+#include <cstring>
+#include <cstdio>
+#include <cstdlib>
 
 #include "d3dutil.h"
 #include "Settings.h"
@@ -15,6 +19,251 @@
 #include "resource1.h"
 #include <atlbase.h>
 #include "AspectFix.h"
+
+// ============================================================================================
+// Per-draw HUD scaling (enableHudMod + hudDrawScale)
+//
+// The game's UI vertices are INT16[6] = { x, y, colorLo, colorHi, u, v } in a virtual 1280x720
+// space with 8 units per pixel (a full-screen quad spans 0..10240 x 0..5760).
+// While the HUD window is open, every draw call is classified by the position of its quad and
+// drawn with a shrunken D3D viewport anchored at that zone's corner. Because this happens per draw
+// call, all pieces of one element (boss bar frame, ruler, fill, ...) get exactly the same
+// transform, no matter whether the draw ends up in the HUD buffer or goes straight to the frame.
+// ============================================================================================
+namespace {
+	enum HudGroup { HG_NONE = 0, HG_TL, HG_BL, HG_BR, HG_BOSS };
+
+	bool     g_hudScalePhase = false;   // true from the start of the HUD until Present / first menu draw
+	bool     g_hudWindowSeen = false;   // a HUD window (buffer) was started in this frame
+	HudGroup g_lastHudGroup  = HG_NONE; // text/button glyphs follow the element drawn just before them
+
+	const float kUiW = 10240.0f;
+	const float kUiH = 5760.0f;
+
+	float hudGroupScale(HudGroup g) {
+		float s = 1.0f;
+		if (g == HG_TL) s = Settings::get().getHudScaleTopLeft();
+		else if (g == HG_BL) s = Settings::get().getHudScaleBottomLeft();
+		else if (g == HG_BR) s = Settings::get().getHudScaleBottomRight();
+		else if (g == HG_BOSS) s = Settings::get().getHudScaleBottomCenter();
+		else return 1.0f;
+		// a viewport can only shrink; scales >= 1 are handled by the compositor in Hud.cpp
+		return (s < 1.0f && s > 0.05f) ? s : 1.0f;
+	}
+
+	void hudGroupAnchor(HudGroup g, const HudLayout& L, float& ax, float& ay) {
+		ax = 0.0f; ay = 0.0f;
+		if (g == HG_BL) { ax = 0.0f; ay = 1.0f; }
+		else if (g == HG_BR) { ax = 1.0f; ay = 1.0f; }
+		else if (g == HG_BOSS) { ax = 0.59f; ay = 1.0f; } // boss bar is centred around x~0.59
+	}
+
+	// Zones (centre of the quad / text string, normalized screen coordinates):
+	//  TL   top-left strip, x < 0.60            (health, stamina, humanity, status)
+	//  BL   left block, below mid-screen        (item cluster + its labels)
+	//  BR   bottom-right corner, BELOW the boss bar (souls counter)
+	//  BOSS lower screen, between BL and the right edge (boss bar + boss name; scale 1.0 by default)
+	// Everything else (top-right: flame icon, quick menu; centre: prompts, banners) is never scaled.
+	HudGroup zoneFor(float cx, float cy, float w, float h) {
+		if (w > 0.7f || h > 0.45f) return HG_NONE; // fades, full-screen overlays
+		const HudLayout L = getHudLayout();
+		if (cy < L.tlH && cx < 0.60f) return HG_TL;
+		if (cy > L.blTop && cx < L.blW) return HG_BL;
+		if (cy > L.brTop && cx > L.brLeft) return HG_BR;
+		if (cy > 0.70f && cx >= L.blW) return HG_BOSS;
+		return HG_NONE;
+	}
+
+	// 'valid' (optional) reports whether the vertex data looked like sane UI coordinates.
+	// 'outBox' (optional) receives the normalized bounding box { x0, y0, x1, y1 } of the quad.
+	HudGroup classifyHudQuad(const INT16* v, UINT strideBytes, UINT first, UINT count, bool* valid = NULL, float* outBox = NULL) {
+		if (valid) *valid = false;
+		if (!v || strideBytes < 4 || count == 0) return HG_NONE;
+		if (count > 4096) count = 4096;
+		const UINT step = strideBytes / 2;
+		float minX = 1e9f, minY = 1e9f, maxX = -1e9f, maxY = -1e9f;
+		for (UINT i = first; i < first + count; ++i) {
+			const INT16* p = v + (size_t)i * step;
+			const float x = (float)p[0], y = (float)p[1];
+			if (x < minX) minX = x;
+			if (x > maxX) maxX = x;
+			if (y < minY) minY = y;
+			if (y > maxY) maxY = y;
+		}
+		const float w = (maxX - minX) / kUiW, h = (maxY - minY) / kUiH;
+		const float cx = (minX + maxX) * 0.5f / kUiW, cy = (minY + maxY) * 0.5f / kUiH;
+		if (outBox) { outBox[0] = minX / kUiW; outBox[1] = minY / kUiH; outBox[2] = maxX / kUiW; outBox[3] = maxY / kUiH; }
+		if (valid) *valid = (cx > -0.2f && cx < 1.2f && cy > -0.2f && cy < 1.2f && w < 1.5f && h < 1.5f && (w > 0.0f || h > 0.0f));
+		return zoneFor(cx, cy, w, h);
+	}
+
+	// Text strings use a different vertex format: stride 24 = float x, y, z (pixels in the 1280x720 UI space),
+	// DWORD colour, float u, v. Classifies the string by its bounding box.
+	bool textBox(const void* data, UINT stride, UINT count, float& minX, float& minY, float& maxX, float& maxY) {
+		if (!data || stride != 24 || count == 0 || count > 4096) return false;
+		minX = minY = 1e9f; maxX = maxY = -1e9f;
+		for (UINT i = 0; i < count; ++i) {
+			const float* p = (const float*)((const BYTE*)data + (size_t)i * stride);
+			const float x = p[0], y = p[1];
+			if (!(x > -2000.0f && x < 4000.0f && y > -2000.0f && y < 3000.0f)) return false; // also rejects NaN
+			if (x < minX) minX = x;
+			if (x > maxX) maxX = x;
+			if (y < minY) minY = y;
+			if (y > maxY) maxY = y;
+		}
+		return (maxX >= minX && maxY >= minY);
+	}
+
+	// Moves a text string to where the shrunken element it belongs to is and shrinks the glyphs with it.
+	// align: 0 = keep the string's centre, 1 = keep its left edge (left-aligned labels), 2 = keep its right edge (right-aligned numbers)
+	void transformHudText(std::vector<BYTE>& out, const void* data, UINT stride, UINT count, HudGroup g,
+		float minX, float minY, float maxX, float maxY, int align) {
+		const float s = hudGroupScale(g);
+		const float ts = s; // glyphs shrink together with the element they belong to
+		const HudLayout L = getHudLayout();
+		float ax, ay;
+		hudGroupAnchor(g, L, ax, ay);
+		const float axp = ax * 1280.0f, ayp = ay * 720.0f;
+		const float cx = (minX + maxX) * 0.5f, cy = (minY + maxY) * 0.5f;
+		const float refX = (align == 1) ? minX : ((align == 2) ? maxX : cx);
+		const float nrefX = axp + (refX - axp) * s;
+		const float ncy = ayp + (cy - ayp) * s;
+		out.resize((size_t)count * stride);
+		memcpy(&out[0], data, (size_t)count * stride);
+		for (UINT i = 0; i < count; ++i) {
+			float* p = (float*)(&out[0] + (size_t)i * stride);
+			p[0] = nrefX + (p[0] - refX) * ts;
+			p[1] = ncy + (p[1] - cy) * ts;
+		}
+	}
+
+	// Shrinks the viewport around the group's anchor. Returns true if the viewport was changed
+	// (caller must restore 'saved' after the draw).
+	bool applyHudViewport(IDirect3DDevice9* dev, HudGroup g, D3DVIEWPORT9& saved) {
+		const float s = hudGroupScale(g);
+		if (s >= 1.0f || !dev) return false;
+		if (FAILED(dev->GetViewport(&saved))) return false;
+		const HudLayout L = getHudLayout();
+		float ax, ay;
+		hudGroupAnchor(g, L, ax, ay);
+		const float W = (float)saved.Width, H = (float)saved.Height;
+		D3DVIEWPORT9 vp = saved;
+		vp.Width  = (DWORD)(W * s + 0.5f);
+		vp.Height = (DWORD)(H * s + 0.5f);
+		vp.X = saved.X + (DWORD)(W * ax * (1.0f - s) + 0.5f);
+		vp.Y = saved.Y + (DWORD)(H * ay * (1.0f - s) + 0.5f);
+		if (vp.Width == 0 || vp.Height == 0) return false;
+		return SUCCEEDED(dev->SetViewport(&vp));
+	}
+
+
+	float hudGroupOpacity(HudGroup g) {
+		float o = 1.0f;
+		if (g == HG_TL) o = Settings::get().getHudTopLeftOpacity();
+		else if (g == HG_BL) o = Settings::get().getHudBottomLeftOpacity();
+		else if (g == HG_BR) o = Settings::get().getHudBottomRightOpacity();
+		if (o < 0.0f) o = 0.0f;
+		if (o > 1.0f) o = 1.0f;
+		return o;
+	}
+
+	// Draws that go straight to the frame (not through the HUD buffer) do not get the per-corner opacity when the buffer
+	// is composited. The game's UI is drawn with shaders, so fixed-function texture-stage tricks have no effect on it,
+	// but its shaders do use the vertex colour (the game fades UI pieces itself that way). So the opacity is applied by
+	// scaling the alpha byte (D3DCOLOR, alpha = 4th byte) of a copy of the vertices.
+	// 'out' may already hold the vertices (then 'data' must point into it) and is modified in place.
+	const void* applyVertexOpacity(std::vector<BYTE>& out, const void* data, UINT stride, UINT first, UINT count,
+		UINT colorOffset, float o, IDirect3DDevice9* dev) {
+		if (!data || o >= 0.999f || count == 0 || count > 65536 || stride < colorOffset + 4) return data;
+		if (o < 0.0f) o = 0.0f;
+		DWORD srcBlend = D3DBLEND_SRCALPHA;
+		if (dev) dev->GetRenderState(D3DRS_SRCBLEND, &srcBlend);
+		const bool scaleRgb = (srcBlend == D3DBLEND_ONE); // additive / premultiplied blending: alpha alone would not fade it
+		const UINT f = (UINT)(o * 256.0f + 0.5f);
+		const size_t total = (size_t)(first + count) * stride;
+		BYTE* base;
+		if (!out.empty() && (const void*)&out[0] == data && out.size() >= total) {
+			base = &out[0];
+		} else {
+			out.assign((const BYTE*)data, (const BYTE*)data + total);
+			base = &out[0];
+		}
+		for (UINT i = first; i < first + count; ++i) {
+			BYTE* c = base + (size_t)i * stride + colorOffset;
+			c[3] = (BYTE)((c[3] * f) >> 8);
+			if (scaleRgb) {
+				c[0] = (BYTE)((c[0] * f) >> 8);
+				c[1] = (BYTE)((c[1] * f) >> 8);
+				c[2] = (BYTE)((c[2] * f) >> 8);
+			}
+		}
+		return base;
+	}
+
+	// Byte offset of the colour inside a 24-byte text vertex. Expected layout is float x,y,z + colour + float u,v (offset 12);
+	// float x,y,z + u,v + colour (offset 20) is detected too. Returns 0 if neither looks right (then no opacity is applied).
+	UINT textColorOffset(const void* data) {
+		if (!data) return 0;
+		const BYTE* v = (const BYTE*)data;
+		float f12, f16, f20;
+		memcpy(&f12, v + 12, 4); memcpy(&f16, v + 16, 4); memcpy(&f20, v + 20, 4);
+		auto isUv = [](float f) { return f > -1.0f && f < 2.0f; }; // NaN fails both comparisons
+		if (isUv(f16) && isUv(f20)) return 12;
+		if (isUv(f12) && isUv(f16)) return 20;
+		return 0;
+	}
+
+	// If the draw uses alpha testing, its reference value is scaled with the opacity so faded pixels are not cut away.
+	struct AlphaRefGuard {
+		IDirect3DDevice9* dev;
+		DWORD ref;
+		bool active;
+		AlphaRefGuard(IDirect3DDevice9* d, float o) : dev(d), ref(0), active(false) {
+			if (!d || o >= 0.999f) return;
+			DWORD at = FALSE;
+			if (FAILED(d->GetRenderState(D3DRS_ALPHATESTENABLE, &at)) || !at) return;
+			if (FAILED(d->GetRenderState(D3DRS_ALPHAREF, &ref))) return;
+			d->SetRenderState(D3DRS_ALPHAREF, (DWORD)(ref * (o < 0.0f ? 0.0f : o)));
+			active = true;
+		}
+		~AlphaRefGuard() { if (active) dev->SetRenderState(D3DRS_ALPHAREF, ref); }
+	};
+
+	// ---- one-frame HUD dump (hotkey, see Actions.def: dumpHudFrame) ----
+	bool g_dumpRequested = false;
+	bool g_dumpActive = false;
+	std::vector<std::string> g_dumpLines;
+
+	void dumpHudDraw(const char* api, const char* state, const char* tex, int grp, UINT prims, UINT stride, UINT first, UINT nv, const void* data) {
+		char buf[600];
+		float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+		const INT16* v = (const INT16*)data;
+		if (v && stride >= 4 && nv > 0) {
+			const UINT n = nv > 4096 ? 4096 : nv;
+			const UINT step = stride / 2;
+			x0 = y0 = 1e9f; x1 = y1 = -1e9f;
+			for (UINT i = first; i < first + n; ++i) {
+				const INT16* p = v + (size_t)i * step;
+				const float x = p[0] / kUiW, y = p[1] / kUiH;
+				if (x < x0) x0 = x;
+				if (x > x1) x1 = x;
+				if (y < y0) y0 = y;
+				if (y > y1) y1 = y;
+			}
+		}
+		INT16 r[6] = { 0, 0, 0, 0, 0, 0 };
+		float f[3] = { 0.0f, 0.0f, 0.0f };
+		if (v && stride >= 12) { for (int i = 0; i < 6; ++i) r[i] = v[i]; memcpy(f, data, sizeof(f)); }
+		DWORD tail[3] = { 0, 0, 0 };
+		if (v && stride >= 24) memcpy(tail, (const BYTE*)data + 12, sizeof(tail));
+		sprintf_s(buf, sizeof(buf), "%s %s phase=%d tex=%s grp=%d prims=%u stride=%u nv=%u bbox=[%.3f %.3f %.3f %.3f] raw16=[%d %d %d %d %d %d] f32=[%g %g %g] tail=[%08lx %08lx %08lx]",
+			api, state, g_hudScalePhase ? 1 : 0, tex, grp, prims, stride, nv, x0, y0, x1, y1, r[0], r[1], r[2], r[3], r[4], r[5], f[0], f[1], f[2], tail[0], tail[1], tail[2]);
+		g_dumpLines.push_back(buf);
+	}
+}
+
+// called from the hotkey action; the next frame that contains a HUD window is written to hud_dump.txt
+void requestHudDump() { g_dumpRequested = true; }
 
 extern bool g_Force30FPS;
 
@@ -196,7 +445,18 @@ HRESULT RSManager::redirectPresent(CONST RECT *pSourceRect, CONST RECT *pDestRec
 		return S_OK;
 	}
 	skippedPresents = 0;
+	if (g_dumpActive) {
+		std::ofstream df(GetDirectoryFile("hud_dump.txt"), std::ios::app);
+		df << "=== HUD FRAME DUMP ===\n";
+		for (size_t i = 0; i < g_dumpLines.size(); ++i) df << g_dumpLines[i] << "\n";
+		df << "=== END ===\n\n";
+		g_dumpActive = false;
+		g_dumpLines.clear();
+	}
 	hudStarted = false;
+	g_hudScalePhase = false;
+	g_hudWindowSeen = false;
+	g_lastHudGroup = HG_NONE;
 	nrts = 0;
 	doft[0] = 0; doft[1] = 0; doft[2] = 0;
 	mainRT = NULL;
@@ -456,10 +716,14 @@ HRESULT RSManager::redirectSetRenderTarget(DWORD RenderTargetIndex, IDirect3DSur
 			oldRenderTarget->GetDesc(&desc);
 			if(desc.Width == Settings::get().getRenderWidth() && desc.Height == Settings::get().getRenderHeight()) {
 				// HUD stuff
-				if(hud && doHud && rddp == 9) {
+				if(hud && doHud && rddp == 9 && !g_hudWindowSeen) {
 					SDLOG(0, "Starting HUD rendering\n");
 					hddp = 0;
 					onHudRT = true;
+					g_hudScalePhase = true;
+					g_hudWindowSeen = true;
+					g_lastHudGroup = HG_NONE;
+					if (g_dumpRequested) { g_dumpRequested = false; g_dumpActive = true; g_dumpLines.clear(); g_dumpLines.push_back("--- WINDOW START ---"); }
 					d3ddev->SetRenderTarget(0, rgbaBuffer1Surf);
 					d3ddev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_RGBA(0,0,0,0), 0.0f, 0);
 					prevRenderTex = tex;
@@ -692,6 +956,43 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 	if(hudStarted && hideHud) {
 		return D3D_OK;
 	}
+	// Fallback: the render-pass counter (rddp) that normally detects the start of the HUD gets confused by some
+	// scenes (e.g. looking at the far horizon), and then the whole HUD would stay at scale 1. In that case start the
+	// HUD window here, at the first HUD draw of the frame (the item-cluster backdrop quad, always drawn first).
+	if (hud && doHud && !g_hudWindowSeen && !onHudRT && !pausedHudRT && PrimitiveCount == 2 && VertexStreamZeroStride == 12 && pVertexStreamZeroData) {
+		const INT16* sv = (const INT16*)pVertexStreamZeroData;
+		if (abs((int)sv[0] - 695) <= 64 && abs((int)sv[1] - 3256) <= 64) {
+			IDirect3DBaseTexture9* ft = NULL;
+			d3ddev->GetTexture(0, &ft);
+			const bool firstHudDraw = ft && isTextureHudHealthbar(ft);
+			if (ft) ft->Release();
+			IDirect3DSurface9* cur = NULL;
+			if (firstHudDraw && SUCCEEDED(d3ddev->GetRenderTarget(0, &cur)) && cur) {
+				IDirect3DTexture9* ctex = getSurfTexture(cur);
+				D3DSURFACE_DESC desc;
+				cur->GetDesc(&desc);
+				if (ctex && desc.Width == Settings::get().getRenderWidth() && desc.Height == Settings::get().getRenderHeight()) {
+					SDLOG(1, "Starting HUD rendering (fallback)\n");
+					hddp = 0;
+					onHudRT = true;
+					g_hudScalePhase = true;
+					g_hudWindowSeen = true;
+					g_lastHudGroup = HG_NONE;
+					if (g_dumpRequested) { g_dumpRequested = false; g_dumpActive = true; g_dumpLines.clear(); g_dumpLines.push_back("--- WINDOW START (fallback) ---"); }
+					prevRenderTex = ctex;
+					prevRenderTarget = cur;
+					d3ddev->SetRenderTarget(0, rgbaBuffer1Surf);
+					d3ddev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_RGBA(0,0,0,0), 0.0f, 0);
+					d3ddev->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+					d3ddev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_ADD);
+					d3ddev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+					d3ddev->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_CURRENT);
+				}
+				if (ctex) ctex->Release();
+				cur->Release();
+			}
+		}
+	}
 	bool isTargetIndicator = false;
 	if(pausedHudRT) {
 		IDirect3DBaseTexture9 *t;
@@ -730,7 +1031,87 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 			//d3ddev->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_CURRENT);
 		}
 	}
-	HRESULT hr = d3ddev->DrawIndexedPrimitiveUP(PrimitiveType, MinIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride);
+	bool idxIsHealthbarTex = false;
+	if (g_hudScalePhase) {
+		// menu draws end the HUD scaling phase; they must never be scaled
+		IDirect3DBaseTexture9* mt = NULL;
+		d3ddev->GetTexture(0, &mt);
+		if (mt && isTextureGuiElements1(mt)) {
+			g_hudScalePhase = false;
+			g_lastHudGroup = HG_NONE;
+			if (g_dumpActive) g_dumpLines.push_back("--- PHASE END (menu texture) ---");
+		}
+		idxIsHealthbarTex = mt && isTextureHudHealthbar(mt);
+		if (mt) mt->Release();
+	}
+	HudGroup hudGrp = HG_NONE;
+	bool wideBottomOverlay = false;
+	bool fullScreenFade = false;
+	if (g_hudScalePhase && hud && doHud && pVertexStreamZeroData) {
+		float qb[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		hudGrp = classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, NULL, qb);
+		// The dialogue vignette (a wide gradient over the lower half of the screen) must not go through the HUD buffer,
+		// otherwise the corner opacity regions cut visible edges into it. (The full-screen fade-to-black is NOT affected.)
+		wideBottomOverlay = (qb[2] - qb[0]) > 0.7f && (qb[3] - qb[1]) < 0.7f && (qb[1] + qb[3]) * 0.5f > 0.6f;
+		// A full-screen quad after the HUD (fade from/to black after loading, death fade, ...). hddp >= 7 means the
+		// health bars and humanity counter have already been drawn, i.e. the HUD itself is done.
+		fullScreenFade = (onHudRT || pausedHudRT) && hddp >= 7 && (qb[2] - qb[0]) > 0.95f && (qb[3] - qb[1]) > 0.95f;
+		if (pausedHudRT) {
+			// The game also "pauses" for any semi-transparent health-bar textured quad. That covers world-anchored things
+			// (lock-on marker, enemy health bars: must NOT be scaled) but also HUD pieces of our own: the boss bar fill and the
+			// golden flash of the item squares. Tell them apart by size/position.
+			const float qw = qb[2] - qb[0], qh = qb[3] - qb[1];
+			bool own = false;
+			if (hudGrp == HG_BOSS) own = qw > 0.3f;                    // wide boss bar
+			else if (hudGrp == HG_BL) own = qw >= 0.03f && qb[0] > 0.05f && qb[2] < 0.31f && qb[1] > 0.49f && qb[3] < 0.97f; // item cluster: flash squares, fading frames, underlines (lock-on marker is ~0.026 wide)
+			else if (hudGrp == HG_BR) own = qw > 0.09f && qb[0] > 0.75f; // souls box
+			else if (hudGrp == HG_TL) own = qb[0] > 0.05f && qb[0] < 0.16f; // the player's own bars start at x ~ 0.137
+			if (!own) hudGrp = HG_NONE;
+		}
+		// the boss zone only ever scales health-bar textured quads (not dialogue/prompt boxes)
+		if (hudGrp == HG_BOSS && !idxIsHealthbarTex) hudGrp = HG_NONE;
+		g_lastHudGroup = hudGrp;
+	}
+	if (g_dumpActive) {
+		IDirect3DBaseTexture9* dt = NULL;
+		d3ddev->GetTexture(0, &dt);
+		dumpHudDraw("IDX", onHudRT ? "WINDOW" : (pausedHudRT ? "PAUSED" : "DIRECT"), dt ? getTextureName(dt) : "none", (int)hudGrp, PrimitiveCount, VertexStreamZeroStride, MinIndex, NumVertices, pVertexStreamZeroData);
+		if (dt) dt->Release();
+	}
+	// The boss bar (frame, ruler and fill) and the souls box are drawn directly onto the frame, in the game's own
+	// order, instead of through the HUD buffer. That keeps them identical to vanilla (no fading with the corner opacity
+	// settings, no separate fade on death) and keeps the souls text on top of its box.
+	if (fullScreenFade) {
+		// In vanilla the fade covers the whole HUD. It used to be drawn into the HUD buffer instead, where it covered only the
+		// buffered parts: the directly drawn text showed through it on the loading screen (whenever a corner opacity was
+		// below 1), and the HUD flickered while the fade-in after loading ran. So the HUD buffer is composited now and the
+		// fade is drawn on top of everything, like in vanilla. Everything after it (loading screen) is not HUD: no scaling.
+		if (g_dumpActive) g_dumpLines.push_back("--- FULL-SCREEN FADE: HUD finished before it ---");
+		if (pausedHudRT) resumeHudRendering();
+		finishHudRendering();
+		pausedHudRT = false;
+		g_hudScalePhase = false;
+		g_lastHudGroup = HG_NONE;
+		hudGrp = HG_NONE;
+	}
+	bool routedDirect = false;
+	if (onHudRT && (hudGrp == HG_BOSS || hudGrp == HG_BR || wideBottomOverlay)) {
+		pauseHudRendering();
+		routedDirect = true;
+	}
+	D3DVIEWPORT9 savedVp;
+	const bool vpChanged = applyHudViewport(d3ddev, hudGrp, savedVp);
+	HRESULT hr;
+	{
+		// draws that bypass the HUD buffer get their corner's opacity here (buffered ones get it when the buffer is composited)
+		const float op = (!onHudRT && hudGrp != HG_NONE && VertexStreamZeroStride == 12) ? hudGroupOpacity(hudGrp) : 1.0f;
+		std::vector<BYTE> vcopy;
+		const void* vdata = applyVertexOpacity(vcopy, pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, 4, op, d3ddev);
+		AlphaRefGuard arg(d3ddev, op);
+		hr = d3ddev->DrawIndexedPrimitiveUP(PrimitiveType, MinIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, vdata, VertexStreamZeroStride);
+	}
+	if (vpChanged) d3ddev->SetViewport(&savedVp);
+	if (routedDirect) resumeHudRendering();
 	//if(onHudRT) {
 	//	if(takeScreenshot) dumpSurface("HUD_IndexPrimUP", rgbaBuffer1Surf);
 	//}
@@ -777,7 +1158,84 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 			subbed = true;
 		}
 	}
-	HRESULT hr = d3ddev->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride);
+	// Text / button glyphs (vertex format: float x,y,z in 1280x720 UI pixels, colour, u, v; stride 24).
+	// They are moved to where their element ended up, but drawn at hudTextScale so they stay sharp.
+	HudGroup hudGrp = HG_NONE;
+	UINT dumpNv = 0;   // for the dump (INT16 layout only)
+	UINT primNv = 0;   // vertex count of this draw
+	if (PrimitiveType == D3DPT_TRIANGLELIST) primNv = PrimitiveCount * 3;
+	else if (PrimitiveType == D3DPT_TRIANGLESTRIP || PrimitiveType == D3DPT_TRIANGLEFAN) primNv = PrimitiveCount + 2;
+	if (VertexStreamZeroStride == 12) dumpNv = primNv;
+	std::vector<BYTE> textCopy;
+	CONST void* drawData = pVertexStreamZeroData;
+	bool textDirect = false;
+	if (g_hudScalePhase && hud && doHud) {
+		IDirect3DBaseTexture9 *tt = NULL;
+		d3ddev->GetTexture(0, &tt);
+		const bool sub = tt && isTextureText00(tt);
+		const bool menu = tt && isTextureGuiElements1(tt);
+		const bool isTxt = tt && isTextureText(tt);
+		if (tt) tt->Release();
+		if (!sub && !menu && primNv && pVertexStreamZeroData) {
+			bool placed = false;
+			if (VertexStreamZeroStride == 24) {
+				float x0, y0, x1, y1;
+				if (textBox(pVertexStreamZeroData, VertexStreamZeroStride, primNv, x0, y0, x1, y1)) {
+					const float w = (x1 - x0) / 1280.0f, h = (y1 - y0) / 720.0f;
+					HudGroup g = zoneFor((x0 + x1) * 0.5f / 1280.0f, (y0 + y1) * 0.5f / 720.0f, w, h);
+					// boss-zone text (boss name) only counts inside the HUD buffer window, never dialogue/prompts
+					if (g == HG_BOSS && !onHudRT) g = HG_NONE;
+					// while paused (fading item frames): only the cluster / souls texts count, never enemy names or damage numbers
+					if (pausedHudRT && g != HG_BL && g != HG_BR) g = HG_NONE;
+					hudGrp = g;
+					placed = true;
+					// Font glyphs are drawn directly onto the frame (like the subtitles). Going through the HUD buffer made
+					// them noticeably thinner than vanilla.
+					if (isTxt && onHudRT && (g == HG_BL || g == HG_BR || g == HG_BOSS)) textDirect = true;
+					if (hudGroupScale(g) < 1.0f) {
+						// counts are right-aligned numbers, item names are left-aligned, the souls number is right-aligned
+						int align = 1;
+						if (g == HG_BR) align = 2;
+						else if (g == HG_BL && (x1 - x0) < 45.0f) align = 2;
+						transformHudText(textCopy, pVertexStreamZeroData, VertexStreamZeroStride, primNv, g, x0, y0, x1, y1, align);
+						drawData = &textCopy[0];
+					}
+				}
+			} else if (VertexStreamZeroStride == 12) {
+				bool ok = false;
+				const HudGroup g = classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, 0, primNv, &ok);
+				if (ok) { hudGrp = g; placed = true; }
+			}
+			// unknown vertex format: follow the element drawn just before it, only inside the HUD buffer window
+			if (!placed) hudGrp = onHudRT ? g_lastHudGroup : HG_NONE;
+		}
+	}
+	if (g_dumpActive) {
+		IDirect3DBaseTexture9* dt = NULL;
+		d3ddev->GetTexture(0, &dt);
+		dumpHudDraw("PRIM", onHudRT ? "WINDOW" : (pausedHudRT ? "PAUSED" : "DIRECT"), dt ? getTextureName(dt) : "none", (int)hudGrp, PrimitiveCount, VertexStreamZeroStride, 0, dumpNv, pVertexStreamZeroData);
+		if (dt) dt->Release();
+	}
+	D3DVIEWPORT9 savedVp;
+	// float text was already moved above; other formats (unknown/INT16) still use the viewport transform
+	const bool vpChanged = (VertexStreamZeroStride == 24) ? false : applyHudViewport(d3ddev, hudGrp, savedVp);
+	if (textDirect) pauseHudRendering();
+	HRESULT hr;
+	{
+		// text drawn directly onto the frame gets its corner's opacity through the vertex colour
+		float op = (!onHudRT && hudGrp != HG_NONE && primNv) ? hudGroupOpacity(hudGrp) : 1.0f;
+		UINT colOff = 0;
+		if (op < 0.999f) {
+			if (VertexStreamZeroStride == 24) colOff = textColorOffset(drawData);
+			else if (VertexStreamZeroStride == 12) colOff = 4;
+			if (!colOff) op = 1.0f;
+		}
+		if (op < 0.999f) drawData = applyVertexOpacity(textCopy, drawData, VertexStreamZeroStride, 0, primNv, colOff, op, d3ddev);
+		AlphaRefGuard arg(d3ddev, op);
+		hr = d3ddev->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, drawData, VertexStreamZeroStride);
+	}
+	if (textDirect) resumeHudRendering();
+	if (vpChanged) d3ddev->SetViewport(&savedVp);
 	if(subbed) resumeHudRendering();
 	//if(onHudRT) {
 	//	if(takeScreenshot) dumpSurface("HUD_PrimUP", rgbaBuffer1Surf);
@@ -906,6 +1364,8 @@ const char* RSManager::getTextureName(IDirect3DBaseTexture9* pTexture) {
 
 void RSManager::finishHudRendering() {
 	SDLOG(2, "FinishHudRendering\n");
+	g_lastHudGroup = HG_NONE; // note: the scaling phase itself continues until Present or the first menu draw
+	if (g_dumpActive) g_dumpLines.push_back("--- FINISH (HUD buffer composited) ---");
 	if(takeScreenshot) dumpSurface("HUD_end", rgbaBuffer1Surf);
 	d3ddev->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
 	d3ddev->SetRenderTarget(0, prevRenderTarget);
@@ -918,6 +1378,7 @@ void RSManager::finishHudRendering() {
 
 void RSManager::pauseHudRendering() {
 	SDLOG(3, "PauseHudRendering\n");
+	if (g_dumpActive) g_dumpLines.push_back("--- PAUSE ---");
 	d3ddev->SetRenderTarget(0, prevRenderTarget);
 	d3ddev->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
 	d3ddev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_BLENDTEXTUREALPHA);
@@ -927,6 +1388,7 @@ void RSManager::pauseHudRendering() {
 
 void RSManager::resumeHudRendering() {
 	SDLOG(3, "ResumeHudRendering\n");
+	if (g_dumpActive) g_dumpLines.push_back("--- RESUME ---");
 	d3ddev->SetRenderTarget(0, rgbaBuffer1Surf);
 	d3ddev->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
 	d3ddev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);

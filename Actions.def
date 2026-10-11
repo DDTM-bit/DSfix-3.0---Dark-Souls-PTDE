@@ -32,6 +32,7 @@ ACTION(reloadGAUSSEffect, RSManager::get().reloadGauss())
 ACTION(reloadAAEffect, RSManager::get().reloadAA())
 
 ACTION(singleFrameFullCapture, RSManager::get().enableSingleFrameCapture())
+ACTION(dumpHudFrame, requestHudDump())
 ACTION(userTrigger, SDLOG(0, "================================================================= USER TRIGGER ===\n"))
 ACTION(reloadHUDVertices, RSManager::get().reloadHudVertices());
 
