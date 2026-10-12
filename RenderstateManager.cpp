@@ -19,6 +19,8 @@
 #include "resource1.h"
 #include <atlbase.h>
 #include "AspectFix.h"
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
 
 // ============================================================================================
 // Per-draw HUD scaling (enableHudMod + hudDrawScale)
@@ -229,6 +231,46 @@ namespace {
 		~AlphaRefGuard() { if (active) dev->SetRenderState(D3DRS_ALPHAREF, ref); }
 	};
 
+
+	// With the 16:10 / 4:3 letterbox correction active, 2D UI draws (INT16 quads, stride 12, and text, stride 24) are
+	// drawn inside the game's own 16:9 viewport so the HUD and menus are not stretched. Full-screen quads (fades,
+	// menu backgrounds) keep the expanded viewport so they still cover the whole screen.
+	bool enterUiViewport(IDirect3DDevice9* dev, UINT stride, const void* data, UINT first, UINT count, D3DVIEWPORT9& saved) {
+		if (!dev || !isAspectActive() || (stride != 12 && stride != 24)) return false;
+		if (stride == 12 && data && count) {
+			float box[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			classifyHudQuad((const INT16*)data, stride, first, count, NULL, box);
+			if ((box[2] - box[0]) > 0.95f && (box[3] - box[1]) > 0.95f) return false;
+		}
+		D3DVIEWPORT9 cur, game;
+		if (FAILED(dev->GetViewport(&cur)) || !getGameViewport(cur, &game)) return false;
+		saved = cur;
+		return SUCCEEDED(dev->SetViewport(&game));
+	}
+
+
+	// Validated effect settings, shared by initResources() and the reload hotkeys.
+	// -1 means "effect off". Values above the highest preset are clamped instead of indexing past the shader macro tables.
+	int ssaoStrengthIndex() {
+		unsigned s = Settings::get().getSsaoStrength();
+		if (s == 0) return -1;
+		return (int)(s > 3 ? 3 : s) - 1;            // SSAO: low / medium / high
+	}
+	int aaQualityIndex() {
+		unsigned q = Settings::get().getAAQuality();
+		if (q == 0) return -1;
+		return (int)(q > 4 ? 4 : q) - 1;            // FXAA and SMAA: low / medium / high / ultra
+	}
+	SSAO::Type ssaoTypeFromSettings() {
+		const std::string& t = Settings::get().getSsaoType();
+		return (t == "VSSAO") ? SSAO::VSSAO : ((t == "HBAO") ? SSAO::HBAO : SSAO::SCAO);
+	}
+	void dofBufferSize(unsigned& w, unsigned& h) {
+		const unsigned dofRes = Settings::get().getDOFOverrideResolution();
+		w = dofRes == 0 ? 512 : dofRes * 16 / 9;
+		h = dofRes == 0 ? 360 : dofRes;
+	}
+
 	// ---- one-frame HUD dump (hotkey, see Actions.def: dumpHudFrame) ----
 	bool g_dumpRequested = false;
 	bool g_dumpActive = false;
@@ -277,41 +319,88 @@ static const char *VERTEX_SHADER_OVERRIDE_DIR = "dsfix/vertexshader_override";
 void RSManager::initResources() {
 	SDLOG(0, "RenderstateManager resource initialization started\n");
 	unsigned rw = Settings::get().getRenderWidth(), rh = Settings::get().getRenderHeight();
-	unsigned dofRes = Settings::get().getDOFOverrideResolution();
-	unsigned dofW = dofRes == 0 ? 512 : dofRes * 16 / 9;
-	unsigned dofH = dofRes == 0 ? 360 : dofRes;
+	unsigned dofW, dofH;
+	dofBufferSize(dofW, dofH);
+	const int aaIdx = aaQualityIndex();
+	const int ssaoIdx = ssaoStrengthIndex();
 
-	// Initialize shared buffer pool
-	d3ddev->CreateTexture(rw, rh, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &sharedBuffer1Tex, NULL);
-	sharedBuffer1Tex->GetSurfaceLevel(0, &sharedBuffer1Surf);
-	d3ddev->CreateTexture(rw, rh, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &sharedBuffer2Tex, NULL);
-	sharedBuffer2Tex->GetSurfaceLevel(0, &sharedBuffer2Surf);
+	// DSfix 3.0: every buffer is checked. If video memory runs short (e.g. right after Alt+Tab), the effect that needs the
+	// missing buffer is simply skipped for this session instead of crashing the game on a NULL pointer.
+	auto createRT = [&](unsigned w, unsigned h, IDirect3DTexture9** tex, IDirect3DSurface9** surf, const char* name) -> bool {
+		*tex = NULL;
+		*surf = NULL;
+		HRESULT hr = d3ddev->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, tex, NULL);
+		if (SUCCEEDED(hr) && *tex) hr = (*tex)->GetSurfaceLevel(0, surf);
+		if (FAILED(hr) || !*tex || !*surf) {
+			SDLOG(0, "WARNING: could not create %s (%ux%u), error %08X\n", name, w, h, (unsigned)hr);
+			SAFERELEASE(*surf);
+			SAFERELEASE(*tex);
+			return false;
+		}
+		return true;
+	};
 
-	d3ddev->CreateTexture(dofW, dofH, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &sharedDofTex, NULL);
-	if (sharedDofTex) {
-		sharedDofTex->GetSurfaceLevel(0, &sharedDofSurf);
+	// Core resources used by every effect and by the HUD mod: intermediate buffer, depth buffer, state block
+	const bool haveRgba = createRT(rw, rh, &rgbaBuffer1Tex, &rgbaBuffer1Surf, "rgbaBuffer1");
+	depthStencilSurf = NULL;
+	HRESULT dsHr = d3ddev->CreateDepthStencilSurface(rw, rh, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, false, &depthStencilSurf, NULL);
+	if (FAILED(dsHr) || !depthStencilSurf) {
+		SDLOG(0, "WARNING: could not create depth/stencil surface (%ux%u), error %08X\n", rw, rh, (unsigned)dsHr);
+		depthStencilSurf = NULL;
 	}
+	prevStateBlock = NULL;
+	HRESULT sbHr = d3ddev->CreateStateBlock(D3DSBT_ALL, &prevStateBlock);
+	if (FAILED(sbHr) || !prevStateBlock) {
+		SDLOG(0, "WARNING: could not create state block, error %08X\n", (unsigned)sbHr);
+		prevStateBlock = NULL;
+	}
+	const bool haveCore = haveRgba && depthStencilSurf && prevStateBlock;
+	if (!haveCore) SDLOG(0, "WARNING: core resources missing - AA, SSAO, DoF blur and HUD mod disabled until the next device reset\n");
 
-	if (Settings::get().getAAQuality()) {
+	// Shared buffer pool
+	const bool wantAA = aaIdx >= 0;
+	const bool wantSsao = ssaoIdx >= 0;
+	const bool wantDof = Settings::get().getDOFBlurAmount() != 0;
+	// Only the buffers an enabled effect actually uses are created (VRAM):
+	//   sharedBuffer1: FXAA, SMAA, SSAO     sharedBuffer2: SMAA, SSAO     sharedDofBuffer: DoF blur
+	const bool wantSmaa = wantAA && Settings::get().getAAType() == "SMAA";
+	const bool needShared1 = wantAA || wantSsao;
+	const bool needShared2 = wantSmaa || wantSsao;
+	bool haveShared1 = false, haveShared2 = false, haveDof = false;
+	if (haveCore) {
+		if (needShared1) haveShared1 = createRT(rw, rh, &sharedBuffer1Tex, &sharedBuffer1Surf, "sharedBuffer1");
+		if (needShared2) haveShared2 = createRT(rw, rh, &sharedBuffer2Tex, &sharedBuffer2Surf, "sharedBuffer2");
+		if (wantDof) haveDof = createRT(dofW, dofH, &sharedDofTex, &sharedDofSurf, "sharedDofBuffer");
+	}
+	SDLOG(0, "Shared buffers: buffer1 %s, buffer2 %s, DoF %s\n", haveShared1 ? "created" : "not needed/failed",
+		haveShared2 ? "created" : "not needed/failed", haveDof ? "created" : "not needed/failed");
+
+	if (wantAA) {
 		if (Settings::get().getAAType() == "SMAA") {
-			SMAA::ExternalStorage storage(sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
-			smaa = new SMAA(d3ddev, rw, rh, (SMAA::Preset)(Settings::get().getAAQuality() - 1), storage);
+			if (haveShared1 && haveShared2) {
+				SMAA::ExternalStorage storage(sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
+				smaa = new SMAA(d3ddev, rw, rh, (SMAA::Preset)aaIdx, storage);
+			} else SDLOG(0, "WARNING: SMAA skipped (buffers missing)\n");
 		}
 		else {
-			fxaa = new FXAA(d3ddev, rw, rh, (FXAA::Quality)(Settings::get().getAAQuality() - 1), sharedBuffer1Tex, sharedBuffer1Surf);
+			if (haveShared1) fxaa = new FXAA(d3ddev, rw, rh, (FXAA::Quality)aaIdx, sharedBuffer1Tex, sharedBuffer1Surf);
+			else SDLOG(0, "WARNING: FXAA skipped (buffers missing)\n");
 		}
 	}
-	if (Settings::get().getSsaoStrength()) {
-		ssao = new SSAO(d3ddev, rw, rh, Settings::get().getSsaoStrength() - 1,
-			(Settings::get().getSsaoType() == "VSSAO") ? SSAO::VSSAO : ((Settings::get().getSsaoType() == "HBAO") ? SSAO::HBAO : SSAO::SCAO),
-			sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
+	if (wantSsao) {
+		if (haveShared1 && haveShared2) {
+			ssao = new SSAO(d3ddev, rw, rh, (unsigned)ssaoIdx, ssaoTypeFromSettings(),
+				sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
+		} else SDLOG(0, "WARNING: SSAO skipped (buffers missing)\n");
 	}
-	if (Settings::get().getDOFBlurAmount()) gauss = new GAUSS(d3ddev, dofW, dofH, sharedDofTex, sharedDofSurf);
-	if(Settings::get().getEnableHudMod()) hud = new HUD(d3ddev, rw, rh);
-	d3ddev->CreateTexture(rw, rh, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &rgbaBuffer1Tex, NULL);
-	rgbaBuffer1Tex->GetSurfaceLevel(0, &rgbaBuffer1Surf);
-	d3ddev->CreateDepthStencilSurface(rw, rh, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, false, &depthStencilSurf, NULL);
-	d3ddev->CreateStateBlock(D3DSBT_ALL, &prevStateBlock);
+	if (wantDof) {
+		if (haveDof) gauss = new GAUSS(d3ddev, dofW, dofH, sharedDofTex, sharedDofSurf);
+		else SDLOG(0, "WARNING: DoF blur skipped (buffers missing)\n");
+	}
+	if (Settings::get().getEnableHudMod()) {
+		if (haveCore) hud = new HUD(d3ddev, rw, rh);
+		else SDLOG(0, "WARNING: HUD mod skipped (buffers missing)\n");
+	}
 	if (Settings::get().getEnableTextureOverride() && Settings::get().getEnableTexturePrefetch()) {
 		if (!inited) { // DSfix 3.0: Only prefetch textures on the very first boot to prevent Alt+Tab RAM leaks
 			prefetchTextures();
@@ -421,6 +510,22 @@ void RSManager::releaseResources() {
 	prevDepthStencilSurf = NULL;
 	prevRenderTarget = NULL;
 	prevRenderTex = NULL;
+
+	// DSfix 3.0: a device reset can happen in the middle of a frame (Alt+Tab). Clear every per-frame state so the first
+	// frame after the reset starts clean and nothing points at the released HUD buffer.
+	onHudRT = false;
+	pausedHudRT = false;
+	hudStarted = false;
+	hddp = 0;
+	rddp = 0;
+	nrts = 0;
+	mainRTuses = 0;
+	doft[0] = 0; doft[1] = 0; doft[2] = 0;
+	g_hudScalePhase = false;
+	g_hudWindowSeen = false;
+	g_lastHudGroup = HG_NONE;
+	g_dumpActive = false;
+	g_dumpLines.clear();
 
 	SDLOG(0, "RenderstateManager resource release completed\n");
 }
@@ -883,37 +988,55 @@ void RSManager::enableTakeScreenshot() {
 	SDLOG(0, "takeScreenshot: %s\n", takeScreenshot?"true":"false");
 }
 
+// Dev hotkeys: rebuild an effect from its .fx file. Each one is skipped (with a log line) when the effect is off in the
+// ini or its buffers were not created, instead of building it with invalid settings or missing buffers.
+static bool reloadSsaoAllowed(IDirect3DTexture9* b1, IDirect3DTexture9* b2) {
+	if (ssaoStrengthIndex() < 0) { SDLOG(0, "SSAO reload skipped: SSAO is off (ssaoStrength 0)\n"); return false; }
+	if (!b1 || !b2) { SDLOG(0, "SSAO reload skipped: SSAO buffers not allocated\n"); return false; }
+	return true;
+}
 void RSManager::reloadVssao() {
+	if (!reloadSsaoAllowed(sharedBuffer1Tex, sharedBuffer2Tex)) return;
 	SAFEDELETE(ssao);
-	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), Settings::get().getSsaoStrength() - 1, SSAO::VSSAO, sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
-	SDLOG(0, "Reloaded SSAO\n");
+	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), (unsigned)ssaoStrengthIndex(), SSAO::VSSAO, sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
+	SDLOG(0, "Reloaded SSAO (VSSAO)\n");
 }
 void RSManager::reloadHbao() {
+	if (!reloadSsaoAllowed(sharedBuffer1Tex, sharedBuffer2Tex)) return;
 	SAFEDELETE(ssao);
-	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), Settings::get().getSsaoStrength() - 1, SSAO::HBAO, sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
-	SDLOG(0, "Reloaded SSAO\n");
+	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), (unsigned)ssaoStrengthIndex(), SSAO::HBAO, sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
+	SDLOG(0, "Reloaded SSAO (HBAO)\n");
 }
 void RSManager::reloadScao() {
+	if (!reloadSsaoAllowed(sharedBuffer1Tex, sharedBuffer2Tex)) return;
 	SAFEDELETE(ssao);
-	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), Settings::get().getSsaoStrength() - 1, SSAO::SCAO, sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
-	SDLOG(0, "Reloaded SSAO\n");
+	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), (unsigned)ssaoStrengthIndex(), SSAO::SCAO, sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
+	SDLOG(0, "Reloaded SSAO (SCAO)\n");
 }
 
 void RSManager::reloadGauss() {
+	if (Settings::get().getDOFBlurAmount() == 0) { SDLOG(0, "DoF reload skipped: DoF blur is off (dofBlurAmount 0)\n"); return; }
+	if (!sharedDofTex) { SDLOG(0, "DoF reload skipped: DoF buffer not allocated\n"); return; }
+	unsigned w, h;
+	dofBufferSize(w, h); // same size as the buffer (512x360 when dofOverrideResolution is 0)
 	SAFEDELETE(gauss);
-	gauss = new GAUSS(d3ddev, Settings::get().getDOFOverrideResolution() * 16 / 9, Settings::get().getDOFOverrideResolution(), sharedDofTex, sharedDofSurf);
+	gauss = new GAUSS(d3ddev, w, h, sharedDofTex, sharedDofSurf);
 	SDLOG(0, "Reloaded GAUSS\n");
 }
 
 void RSManager::reloadAA() {
+	const int aaIdx = aaQualityIndex();
+	const bool isSmaa = Settings::get().getAAType() == "SMAA";
+	if (aaIdx < 0) { SDLOG(0, "AA reload skipped: AA is off (aaQuality 0)\n"); return; }
+	if (!sharedBuffer1Tex || (isSmaa && !sharedBuffer2Tex)) { SDLOG(0, "AA reload skipped: AA buffers not allocated\n"); return; }
 	SAFEDELETE(smaa);
 	SAFEDELETE(fxaa);
-	if (Settings::get().getAAType() == "SMAA") {
+	if (isSmaa) {
 		SMAA::ExternalStorage storage(sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
-		smaa = new SMAA(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), (SMAA::Preset)(Settings::get().getAAQuality() - 1), storage);
+		smaa = new SMAA(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), (SMAA::Preset)aaIdx, storage);
 	}
 	else {
-		fxaa = new FXAA(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), (FXAA::Quality)(Settings::get().getAAQuality() - 1), sharedBuffer1Tex, sharedBuffer1Surf);
+		fxaa = new FXAA(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), (FXAA::Quality)aaIdx, sharedBuffer1Tex, sharedBuffer1Surf);
 	}
 	SDLOG(0, "Reloaded AA\n");
 }
@@ -1099,6 +1222,8 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		pauseHudRendering();
 		routedDirect = true;
 	}
+	D3DVIEWPORT9 uiSavedVp;
+	const bool uiVp = enterUiViewport(d3ddev, VertexStreamZeroStride, pVertexStreamZeroData, MinIndex, NumVertices, uiSavedVp);
 	D3DVIEWPORT9 savedVp;
 	const bool vpChanged = applyHudViewport(d3ddev, hudGrp, savedVp);
 	HRESULT hr;
@@ -1111,6 +1236,7 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		hr = d3ddev->DrawIndexedPrimitiveUP(PrimitiveType, MinIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, vdata, VertexStreamZeroStride);
 	}
 	if (vpChanged) d3ddev->SetViewport(&savedVp);
+	if (uiVp) d3ddev->SetViewport(&uiSavedVp);
 	if (routedDirect) resumeHudRendering();
 	//if(onHudRT) {
 	//	if(takeScreenshot) dumpSurface("HUD_IndexPrimUP", rgbaBuffer1Surf);
@@ -1216,6 +1342,8 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 		dumpHudDraw("PRIM", onHudRT ? "WINDOW" : (pausedHudRT ? "PAUSED" : "DIRECT"), dt ? getTextureName(dt) : "none", (int)hudGrp, PrimitiveCount, VertexStreamZeroStride, 0, dumpNv, pVertexStreamZeroData);
 		if (dt) dt->Release();
 	}
+	D3DVIEWPORT9 uiSavedVp;
+	const bool uiVp = enterUiViewport(d3ddev, VertexStreamZeroStride, pVertexStreamZeroData, 0, primNv, uiSavedVp);
 	D3DVIEWPORT9 savedVp;
 	// float text was already moved above; other formats (unknown/INT16) still use the viewport transform
 	const bool vpChanged = (VertexStreamZeroStride == 24) ? false : applyHudViewport(d3ddev, hudGrp, savedVp);
@@ -1236,6 +1364,7 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 	}
 	if (textDirect) resumeHudRendering();
 	if (vpChanged) d3ddev->SetViewport(&savedVp);
+	if (uiVp) d3ddev->SetViewport(&uiSavedVp);
 	if(subbed) resumeHudRendering();
 	//if(onHudRT) {
 	//	if(takeScreenshot) dumpSurface("HUD_PrimUP", rgbaBuffer1Surf);
@@ -1334,7 +1463,7 @@ HRESULT RSManager::redirectD3DXCreateTextureFromFileInMemoryEx(LPDIRECT3DDEVICE9
 }
 
 void RSManager::storeRenderState() {
-	prevStateBlock->Capture();
+	if (prevStateBlock) prevStateBlock->Capture();
 	prevVDecl = NULL;
 	prevDepthStencilSurf = NULL;
 	d3ddev->GetVertexDeclaration(&prevVDecl);
@@ -1351,7 +1480,7 @@ void RSManager::restoreRenderState() {
 	if(prevDepthStencilSurf) {
 		prevDepthStencilSurf->Release();
 	}
-	prevStateBlock->Apply();
+	if (prevStateBlock) prevStateBlock->Apply();
 }
 
 const char* RSManager::getTextureName(IDirect3DBaseTexture9* pTexture) {
@@ -1528,11 +1657,29 @@ bool RSManager::getOverrideShader(UINT32 hash, const char *directory, LPD3DXBUFF
 }
 
 void RSManager::frameTimeManagement() {
-	if (!frameTimer) {
+	// Timer setup, done once.
+	// Windows 10 1803+ / 11: high-resolution waitable timer (unchanged behaviour, wakes 1.5 ms early).
+	// Older Windows (7, 8.1, early 10): that flag does not exist. A normal waitable timer only fires on the ~15.6 ms
+	// system tick there, so the system timer resolution is raised to 1 ms and the timer wakes a little earlier.
+	static bool timerSetupDone = false;
+	static bool highResTimer = false;
+	static double wakeMargin = 1.5;
+	if (!timerSetupDone) {
+		timerSetupDone = true;
 		// CREATE_WAITABLE_TIMER_HIGH_RESOLUTION (0x2) for Windows 10 build 1803+ and Windows 11
 		frameTimer = CreateWaitableTimerExW(NULL, NULL, 0x00000002, TIMER_ALL_ACCESS);
-		if (!frameTimer) {
+		if (frameTimer) {
+			highResTimer = true;
+			SDLOG(0, "Frame pacing: high-resolution waitable timer\n");
+		} else {
+			if (timeBeginPeriod(1) == TIMERR_NOERROR) {
+				SDLOG(0, "Frame pacing: high-resolution timer unavailable, system timer resolution raised to 1 ms\n");
+			} else {
+				SDLOG(0, "Frame pacing: high-resolution timer unavailable, could not raise system timer resolution\n");
+			}
 			frameTimer = CreateWaitableTimer(NULL, TRUE, NULL);
+			wakeMargin = 2.0; // legacy timers can fire up to ~1 ms late even at 1 ms resolution
+			if (!frameTimer) SDLOG(0, "Frame pacing: no waitable timer available, using Sleep(1)\n");
 		}
 	}
 
@@ -1549,14 +1696,20 @@ void RSManager::frameTimeManagement() {
 
 		double timeRemaining = desiredRenderTime - renderTime;
 
-		// 1. Coarse sleep: If we have more than 2.0ms left, yield to the OS using the high-res timer.
-		// Wake up 1.5ms early so OS scheduling variance cannot cause an overshoot.
-		if (timeRemaining > 2.0 && frameTimer) {
-			LARGE_INTEGER li;
-			// 10,000 units = 1 millisecond (negative indicates relative time)
-			li.QuadPart = (LONGLONG)(-(timeRemaining - 1.5) * 10000.0);
-			if (SetWaitableTimer(frameTimer, &li, 0, NULL, NULL, FALSE)) {
-				WaitForSingleObject(frameTimer, INFINITE);
+		// 1. Coarse sleep: If we have more than (margin + 0.5) ms left, yield to the OS using the timer.
+		// Wake up early (1.5 ms with the high-res timer, 2 ms with legacy timers) so OS scheduling variance
+		// cannot cause an overshoot.
+		if (timeRemaining > wakeMargin + 0.5) {
+			if (frameTimer) {
+				LARGE_INTEGER li;
+				// 10,000 units = 1 millisecond (negative indicates relative time)
+				li.QuadPart = (LONGLONG)(-(timeRemaining - wakeMargin) * 10000.0);
+				if (SetWaitableTimer(frameTimer, &li, 0, NULL, NULL, FALSE)) {
+					WaitForSingleObject(frameTimer, INFINITE);
+				}
+			} else {
+				// last resort: 1 ms sleeps (accurate thanks to timeBeginPeriod(1))
+				while (desiredRenderTime - (getElapsedTime() - lastPresentTime) > wakeMargin) Sleep(1);
 			}
 			renderTime = getElapsedTime() - lastPresentTime;
 		}

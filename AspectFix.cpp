@@ -17,6 +17,16 @@ namespace {
     bool g_active = false;
     float g_aspect = kVanillaAspect;
 
+    // last viewport the game requested and the one actually set after correction
+    bool g_vpCorrected = false;
+    bool g_vpLogged = false;
+    D3DVIEWPORT9 g_vpGame = {};
+    D3DVIEWPORT9 g_vpUsed = {};
+
+    bool same_vp(const D3DVIEWPORT9& a, const D3DVIEWPORT9& b) {
+        return a.X == b.X && a.Y == b.Y && a.Width == b.Width && a.Height == b.Height;
+    }
+
     bool near_f(float a, float b, float tol = 0.04f) {
         return std::abs(a - b) < tol;
     }
@@ -176,4 +186,23 @@ bool correctMatrixUpload(const float* data, UINT count, float* out) {
         }
     }
     return changed;
+}
+
+void noteViewport(const D3DVIEWPORT9& game, const D3DVIEWPORT9& used) {
+    g_vpGame = game;
+    g_vpUsed = used;
+    g_vpCorrected = g_active && !same_vp(game, used);
+    if (g_vpCorrected && !g_vpLogged) {
+        g_vpLogged = true;
+        SDLOG(0, "AspectFix: letterbox viewport %lu/%lu %lux%lu expanded to %lu/%lu %lux%lu\n",
+            game.X, game.Y, game.Width, game.Height, used.X, used.Y, used.Width, used.Height);
+    }
+}
+
+bool getGameViewport(const D3DVIEWPORT9& current, D3DVIEWPORT9* out) {
+    if (!g_active || !g_vpCorrected || !out) return false;
+    // D3D resets the viewport on every SetRenderTarget, so only trust the record while it still matches the device
+    if (!same_vp(current, g_vpUsed)) return false;
+    *out = g_vpGame;
+    return true;
 }

@@ -3,15 +3,33 @@
 WindowManager WindowManager::instance;
 
 void WindowManager::applyCursorCapture() {
+	// DSfix 3.0: only hold the cursor while the game window is actually in front. After Alt+Tab the cursor is released
+	// (it used to be clipped to an undefined rectangle because the window lookup failed and was not checked), and
+	// ClipCursor(NULL) is only called when DSfix itself clipped, so other programs' cursor clipping is left alone.
 	if(captureCursor) {
-		RECT clientrect;
-		HWND hwnd = ::GetActiveWindow();
-		::GetClientRect(hwnd, &clientrect);
-		::ClientToScreen(hwnd, (LPPOINT)&clientrect.left);
-		::ClientToScreen(hwnd, (LPPOINT)&clientrect.right);
-		::ClipCursor(&clientrect);
-	} else {
+		HWND fg = ::GetForegroundWindow();
+		DWORD fgPid = 0;
+		if (fg) ::GetWindowThreadProcessId(fg, &fgPid);
+		if (fg && fgPid == ::GetCurrentProcessId()) {
+			HWND hwnd = ::GetActiveWindow();
+			if (!hwnd) hwnd = fg;
+			RECT clientrect;
+			if (::GetClientRect(hwnd, &clientrect) && clientrect.right > clientrect.left && clientrect.bottom > clientrect.top) {
+				POINT topLeft = { clientrect.left, clientrect.top };
+				POINT bottomRight = { clientrect.right, clientrect.bottom };
+				if (::ClientToScreen(hwnd, &topLeft) && ::ClientToScreen(hwnd, &bottomRight)) {
+					RECT screenRect = { topLeft.x, topLeft.y, bottomRight.x, bottomRight.y };
+					if (::ClipCursor(&screenRect)) {
+						cursorClipped = true;
+						return;
+					}
+				}
+			}
+		}
+	}
+	if (cursorClipped) {
 		::ClipCursor(NULL);
+		cursorClipped = false;
 	}
 }
 

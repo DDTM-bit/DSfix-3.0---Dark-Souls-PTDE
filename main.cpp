@@ -100,6 +100,13 @@ DWORD WINAPI BonfireGlitchDetectionThread(LPVOID lpParam) {
 }
 
 typedef BOOL(WINAPI* PFN_SETPROCESSDPIAWARENESSCONTEXT)(HANDLE);
+typedef HANDLE(WINAPI* PFN_GETTHREADDPIAWARENESSCONTEXT)(void);
+typedef int(WINAPI* PFN_GETAWARENESSFROMDPIAWARENESSCONTEXT)(HANDLE);
+
+// DSfix 3.0: these run in DllMain before DSfix.log is open, so their results are stored and written to the log
+// once the log and the settings are loaded (see DllMain).
+static char g_dpiStatus[256] = "not applied";
+static char g_cpuStatus[128] = "not applied";
 
 static void ApplyModernDPIAwareness() {
 	HMODULE hUser32 = GetModuleHandleA("user32.dll");
@@ -108,12 +115,26 @@ static void ApplyModernDPIAwareness() {
 			(PFN_SETPROCESSDPIAWARENESSCONTEXT)GetProcAddress(hUser32, "SetProcessDpiAwarenessContext");
 		if (SetDpiContext) {
 			// -4 corresponds to DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-			SetDpiContext((HANDLE)-4);
+			if (SetDpiContext((HANDLE)-4)) {
+				strcpy_s(g_dpiStatus, "per-monitor DPI aware (v2) - Windows will not scale the game window");
+				return;
+			}
+			const DWORD err = GetLastError();
+			// Report what Windows actually uses instead (0 = unaware, 1 = system aware, 2 = per-monitor aware)
+			int effective = -1;
+			PFN_GETTHREADDPIAWARENESSCONTEXT GetCtx = (PFN_GETTHREADDPIAWARENESSCONTEXT)GetProcAddress(hUser32, "GetThreadDpiAwarenessContext");
+			PFN_GETAWARENESSFROMDPIAWARENESSCONTEXT GetAw = (PFN_GETAWARENESSFROMDPIAWARENESSCONTEXT)GetProcAddress(hUser32, "GetAwarenessFromDpiAwarenessContext");
+			if (GetCtx && GetAw) effective = GetAw(GetCtx());
+			const char* effText = effective == 2 ? "per-monitor aware (OK)" : (effective == 1 ? "system aware" : (effective == 0 ? "UNAWARE - Windows may scale the game window" : "unknown"));
+			sprintf_s(g_dpiStatus, "per-monitor v2 request refused (error %lu%s), effective: %s", err,
+				err == ERROR_ACCESS_DENIED ? ", already fixed by the exe manifest or the compatibility setting 'Override high DPI scaling behavior'" : "",
+				effText);
 			return;
 		}
 	}
 	// Fallback for older Windows builds
-	SetProcessDPIAware();
+	if (SetProcessDPIAware()) strcpy_s(g_dpiStatus, "system DPI aware (legacy fallback, older Windows)");
+	else sprintf_s(g_dpiStatus, "legacy SetProcessDPIAware failed (error %lu)", GetLastError());
 }
 
 #include <vector>
@@ -147,8 +168,12 @@ void OptimizeCPUExecution() {
 
             // 4 corresponds to ProcessPowerThrottling in PROCESS_INFORMATION_CLASS
             if (SetProcInfo(GetCurrentProcess(), 4, &powerThrottling, sizeof(powerThrottling))) {
-                SDLOG(0, "DSfix 3.0: EcoQoS / Power Throttling successfully disabled.\n");
+                strcpy_s(g_cpuStatus, "EcoQoS / power throttling disabled");
+            } else {
+                sprintf_s(g_cpuStatus, "EcoQoS opt-out refused (error %lu)", GetLastError());
             }
+        } else {
+            strcpy_s(g_cpuStatus, "EcoQoS not available on this Windows version (nothing to disable)");
         }
     }
 }
@@ -204,6 +229,8 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
         // MUST load settings immediately so D3D creates buffers at your custom resolution
         Settings::get().load();
         Settings::get().report();
+        SDLOG(0, "DPI awareness: %s\n", g_dpiStatus);
+        SDLOG(0, "CPU power management: %s\n", g_cpuStatus);
 
         KeyActions::get().load();
         KeyActions::get().report();

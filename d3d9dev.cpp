@@ -92,11 +92,15 @@ HRESULT APIENTRY hkIDirect3DDevice9::SetViewport(CONST D3DVIEWPORT9 *pViewport) 
 
 	D3DVIEWPORT9 vp = *pViewport;
 	if (isAspectActive()) {
+		// Screens taller than 16:9 (16:10, 4:3): the game letterboxes its 16:9 picture. Expand that letterbox
+		// viewport to the whole render target (Vert+). The 2D UI is put back into the 16:9 area at draw time
+		// (see RSManager::redirectDraw*PrimitiveUP), so it is not stretched.
 		correctViewport(&vp, m_pD3Ddev);
+		noteViewport(*pViewport, vp);
 	}
 
-	RSManager::get().setViewport(*pViewport);
-	return m_pD3Ddev->SetViewport(pViewport); 
+	RSManager::get().setViewport(*pViewport); // scissor checks keep comparing against the game's own viewport
+	return m_pD3Ddev->SetViewport(&vp); 
 	//D3DVIEWPORT9 copy;
 	//memcpy(&copy, pViewport, sizeof(D3DVIEWPORT9));
 	//if(copy.Height == Settings::get().getRenderHeight() && copy.Width == Settings::get().getRenderWidth()) {
@@ -461,7 +465,11 @@ HRESULT APIENTRY hkIDirect3DDevice9::GetVertexShaderConstantI(UINT StartRegister
 }
 
 HRESULT APIENTRY hkIDirect3DDevice9::GetViewport(D3DVIEWPORT9 *pViewport) {
-	return m_pD3Ddev->GetViewport(pViewport);
+	HRESULT hr = m_pD3Ddev->GetViewport(pViewport);
+	// the game gets back exactly what it set, not our expanded viewport
+	D3DVIEWPORT9 game;
+	if (SUCCEEDED(hr) && pViewport && isAspectActive() && getGameViewport(*pViewport, &game)) *pViewport = game;
+	return hr;
 }
 
 HRESULT APIENTRY hkIDirect3DDevice9::LightEnable(DWORD LightIndex, BOOL bEnable) {
@@ -640,6 +648,8 @@ HRESULT APIENTRY hkIDirect3DDevice9::SetSamplerState(DWORD Sampler, D3DSAMPLERST
 }
 
 HRESULT APIENTRY hkIDirect3DDevice9::SetScissorRect(CONST RECT* pRect) {
+	// NULL is invalid for D3D9 - let the runtime reject it instead of crashing on the dereference below
+	if (!pRect) return m_pD3Ddev->SetScissorRect(pRect);
 	SDLOG(5, "SetScissorRect %s\n", RectToString(pRect));
 
 	// 1. Pass through viewport and hardcoded shadow map rects unchanged

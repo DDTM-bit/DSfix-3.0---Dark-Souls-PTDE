@@ -6,6 +6,7 @@ class WindowManager {
 	static WindowManager instance;
 	
 	bool captureCursor, cursorVisible;
+	bool cursorClipped; // true while DSfix holds a ClipCursor rectangle
 
 	bool borderlessFullscreen;
 	RECT prevWindowRect;
@@ -16,7 +17,7 @@ public:
 		return instance;
 	}
 
-	WindowManager() : captureCursor(false), cursorVisible(true), borderlessFullscreen(false) { }
+	WindowManager() : captureCursor(false), cursorVisible(true), cursorClipped(false), borderlessFullscreen(false) { }
 	void applyCursorCapture();
 	void toggleCursorCapture();
 	void toggleCursorVisibility();
