@@ -16,3 +16,11 @@ bool correctMatrixUpload(const float* data, UINT count, float* out);
 // getGameViewport() returns true (and the game's own 16:9 viewport) if 'current' is a corrected viewport set by us.
 void noteViewport(const D3DVIEWPORT9& game, const D3DVIEWPORT9& used);
 bool getGameViewport(const D3DVIEWPORT9& current, D3DVIEWPORT9* out);
+
+// Fixed-function projection (SetTransform D3DTS_PROJECTION): Vert+ version of a 16:9 perspective matrix.
+// Returns true and fills 'out' only if the matrix was corrected.
+bool correctProjection(const D3DMATRIX* in, D3DMATRIX* out);
+
+// Present with a 16:9 letterbox destination rectangle inside a taller window: returns NULL (whole client area),
+// otherwise the rectangle unchanged.
+const RECT* correctPresentRect(IDirect3DDevice9* device, HWND overrideWindow, const RECT* dst);

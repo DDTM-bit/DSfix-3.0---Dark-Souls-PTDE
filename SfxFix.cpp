@@ -70,12 +70,23 @@ namespace {
         return raised;
     }
 
+    volatile LONG g_effects = 0;
+    volatile LONG g_raised = 0;
+
     void* __stdcall hk_register(const void* name, uint8_t* data, uint32_t size) {
+        int raised = 0;
         __try {
-            raise_intervals(data, size);
+            raised = raise_intervals(data, size);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
             // Failsafe: if parsing fails, gracefully ignore and let the game load the original effect
+            raised = 0;
+        }
+        const LONG effects = InterlockedIncrement(&g_effects);
+        const LONG total = InterlockedExchangeAdd(&g_raised, raised) + raised;
+        // The first effect proves the hook was in place before the common effects loaded; then a running total.
+        if (effects == 1 || effects % 500 == 0) {
+            SDLOG(0, "SfxFix: %ld spawn intervals raised to 1/30 s in the %ld effects loaded so far\n", total, effects);
         }
         return g_orig(name, data, size);
     }
@@ -84,8 +95,9 @@ namespace {
 bool installSfxFix() {
     BYTE* site = (BYTE*)kRegisterEffect;
 
-    // Safety check: mov eax,[0x013787C8] ; push esi ; push edi
-    if (site[0] != 0xA1 || site[1] != 0xC8 || site[2] != 0x87 || site[5] != 0x56) {
+    // Safety check (as in zofrea): mov eax,[0x013787C8] ; push esi ; push edi
+    static const BYTE kExpect[7] = { 0xA1, 0xC8, 0x87, 0x37, 0x01, 0x56, 0x57 };
+    if (std::memcmp(site, kExpect, sizeof(kExpect)) != 0) {
         SDLOG(0, "SfxFix: Memory mismatch, skipping particle effect fix.\n");
         return false;
     }

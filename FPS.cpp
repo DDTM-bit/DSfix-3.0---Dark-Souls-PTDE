@@ -74,7 +74,8 @@ DWORD convertAddress(DWORD Address) {
 
 // Memory
 //------------------------------------
-void updateAnimationStepTime(float stepTime, float minFPS, float maxFPS) {
+// Writes the engine's time step and returns the value written (seconds).
+float updateAnimationStepTime(float stepTime, float minFPS, float maxFPS) {
 	float FPS = 1.0f/(stepTime/1000);
 
 	if (FPS < minFPS)
@@ -87,6 +88,7 @@ void updateAnimationStepTime(float stepTime, float minFPS, float maxFPS) {
 	DWORD data = *(DWORD*)&cappedStep;
 
 	writeToAddress(&data, convertAddress(ADDR_TS), sizeof(data));
+	return cappedStep;
 }
 
 // Timer
@@ -111,10 +113,12 @@ void _stdcall updateFramerate(unsigned int cmd) {
 		lastRenderTime = currentTime;
 
 		// Update step-time using the actual elapsed render time without artificial snapping
-		updateAnimationStepTime((float)deltaTime, (float)minFPS, (float)maxFPS);
+		const float writtenStep = updateAnimationStepTime((float)deltaTime, (float)minFPS, (float)maxFPS);
 
-		// Update physics scalars once per frame (deltaTime is in ms)
-		updatePhysicsDeltas((float)(deltaTime / 1000.0));
+		// DSfix 3.0: physics, ghosts and the ladder fix use exactly the step the engine just received (as in zofrea),
+		// so they cannot drift from game time on hitches, frame-limit jitter or pause. During pause the step is ~0,
+		// which updatePhysicsDeltas clamps to its 1 ms minimum (all per-frame factors are then ~neutral).
+		updatePhysicsDeltas(writtenStep);
 	}
 }
 
@@ -236,6 +240,12 @@ void applyFPSPatch() {
 			FlushInstructionCache(GetCurrentProcess(), jumpSite, 1);
 			SDLOG(0, "FPS: Present catch-up loop disabled.\n");
 		}
+	}
+	else if (jumpSite[0] == 0xEB && jumpSite[1] == 0x36) {
+		SDLOG(0, "FPS: Present catch-up loop was already disabled.\n");
+	}
+	else {
+		SDLOG(0, "FPS: catch-up loop jump at 0x%08X is %02X %02X, not the expected 7E 36 - not patched.\n", kRepeatJump, jumpSite[0], jumpSite[1]);
 	}
 
 	SDLOG(0, "FPS unlocked\n");

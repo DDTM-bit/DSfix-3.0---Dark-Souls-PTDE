@@ -206,3 +206,32 @@ bool getGameViewport(const D3DVIEWPORT9& current, D3DVIEWPORT9* out) {
     *out = g_vpGame;
     return true;
 }
+
+bool correctProjection(const D3DMATRIX* in, D3DMATRIX* out) {
+    if (!g_active || !in || !out) return false;
+    D3DMATRIX copy = *in;
+    if (!correct_matrix(reinterpret_cast<float*>(&copy))) return false;
+    *out = copy;
+    static bool logged = false;
+    if (!logged) { logged = true; SDLOG(0, "AspectFix: a fixed-function 16:9 projection was opened vertically\n"); }
+    return true;
+}
+
+const RECT* correctPresentRect(IDirect3DDevice9* device, HWND overrideWindow, const RECT* dst) {
+    if (!g_active || !dst || !device) return dst;
+    HWND target = overrideWindow;
+    if (!target) {
+        D3DDEVICE_CREATION_PARAMETERS created = {};
+        if (SUCCEEDED(device->GetCreationParameters(&created))) target = created.hFocusWindow;
+    }
+    if (!target) return dst;
+    RECT client = {};
+    if (!GetClientRect(target, &client)) return dst;
+    const LONG bw = client.right - client.left, bh = client.bottom - client.top;
+    if (is_letterbox(dst->left, dst->top, dst->right - dst->left, dst->bottom - dst->top, bw, bh)) {
+        static bool logged = false;
+        if (!logged) { logged = true; SDLOG(0, "AspectFix: Present was letterboxed; using the full window\n"); }
+        return NULL;
+    }
+    return dst;
+}

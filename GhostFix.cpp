@@ -89,16 +89,50 @@ namespace {
 }
 
 bool installGhostFix() {
-    DWORD kPlayDec = 0x00E16533;
-    DWORD kRecDec = 0x00E1DC71;
-    DWORD kRemoteTurn = 0x00E203D4;
-    DWORD kReplayTurn = 0x00E16B2A;
-    DWORD kReplayMove = 0x00E15EEC;
+    const DWORD kPlayDec = 0x00E16533;     // dec dword ptr [esi+274h]                (6 bytes)
+    const DWORD kPlayReload = 0x00E16548;  // mov dword ptr [esi+274h], 0Ah           (10 bytes)
+    const DWORD kRecDec = 0x00E1DC71;      // or edi,-1 ; add [ebx+234h],edi           (9 bytes)
+    const DWORD kRecReload = 0x00E1DDDA;   // mov dword ptr [ebx+334h], 0Ah           (10 bytes)
+    const DWORD kNetReload = 0x00E1DF7F;   // mov dword ptr [ebx+234h], 5             (10 bytes)
+    const DWORD kRemoteTurn = 0x00E203D4;  // movq xmm0,[edi+290h] .. movq [edi+28h]   (29 bytes)
+    const DWORD kReplayTurn = 0x00E16B2A;  // movq xmm0,[esi+260h] .. movq [esi+28h]   (26 bytes)
+    const DWORD kReplayMove = 0x00E15EEC;  // movq xmm0,[eax] .. movq [ecx+78h],xmm0   (19 bytes)
 
-    // Safety checks
-    if (*(BYTE*)kPlayDec != 0xFF || *(BYTE*)kReplayMove != 0xF3) {
-        SDLOG(0, "GhostFix: Memory mismatch, skipping ghost replay fix.\n");
-        return false;
+    // Safety checks (as in zofrea): every site is compared byte for byte BEFORE anything is written,
+    // so a different build is never left half patched.
+    static const BYTE kPlayDecExpect[6] = { 0xFF, 0x8E, 0x74, 0x02, 0x00, 0x00 };
+    static const BYTE kPlayReloadExpect[10] = { 0xC7, 0x86, 0x74, 0x02, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00 };
+    static const BYTE kRecDecExpect[9] = { 0x83, 0xCF, 0xFF, 0x01, 0xBB, 0x34, 0x02, 0x00, 0x00 };
+    static const BYTE kRecReloadExpect[10] = { 0xC7, 0x83, 0x34, 0x03, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00 };
+    static const BYTE kNetReloadExpect[10] = { 0xC7, 0x83, 0x34, 0x02, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00 };
+    static const BYTE kRemoteTurnExpect[29] = { 0xF3, 0x0F, 0x7E, 0x87, 0x90, 0x02, 0x00, 0x00,
+                                                0x66, 0x0F, 0xD6, 0x47, 0x20,
+                                                0x8B, 0x4D, 0x0C,
+                                                0xF3, 0x0F, 0x7E, 0x87, 0x98, 0x02, 0x00, 0x00,
+                                                0x66, 0x0F, 0xD6, 0x47, 0x28 };
+    static const BYTE kReplayTurnExpect[26] = { 0xF3, 0x0F, 0x7E, 0x86, 0x60, 0x02, 0x00, 0x00,
+                                                0x66, 0x0F, 0xD6, 0x46, 0x20,
+                                                0xF3, 0x0F, 0x7E, 0x86, 0x68, 0x02, 0x00, 0x00,
+                                                0x66, 0x0F, 0xD6, 0x46, 0x28 };
+    static const BYTE kReplayMoveExpect[19] = { 0xF3, 0x0F, 0x7E, 0x00,
+                                                0x66, 0x0F, 0xD6, 0x41, 0x70,
+                                                0xF3, 0x0F, 0x7E, 0x40, 0x08,
+                                                0x66, 0x0F, 0xD6, 0x41, 0x78 };
+    struct Check { DWORD va; const BYTE* bytes; size_t size; };
+    const Check checks[] = {
+        { kPlayDec, kPlayDecExpect, sizeof(kPlayDecExpect) },
+        { kPlayReload, kPlayReloadExpect, sizeof(kPlayReloadExpect) },
+        { kRecDec, kRecDecExpect, sizeof(kRecDecExpect) },
+        { kRecReload, kRecReloadExpect, sizeof(kRecReloadExpect) },
+        { kNetReload, kNetReloadExpect, sizeof(kNetReloadExpect) },
+        { kRemoteTurn, kRemoteTurnExpect, sizeof(kRemoteTurnExpect) },
+        { kReplayTurn, kReplayTurnExpect, sizeof(kReplayTurnExpect) },
+        { kReplayMove, kReplayMoveExpect, sizeof(kReplayMoveExpect) } };
+    for (const Check& c : checks) {
+        if (memcmp((const void*)c.va, c.bytes, c.size) != 0) {
+            SDLOG(0, "GhostFix: site 0x%08X does not match this build, skipping ghost replay fix.\n", c.va);
+            return false;
+        }
     }
 
     DWORD oldProtect;
@@ -109,6 +143,7 @@ bool installGhostFix() {
         p[0] = 0xE8; *(DWORD*)(p + 1) = (DWORD)play_dec_stub - (kPlayDec + 5);
         p[5] = 0x90;
         VirtualProtect((LPVOID)kPlayDec, 6, oldProtect, &oldProtect);
+        FlushInstructionCache(GetCurrentProcess(), (LPCVOID)kPlayDec, 6);
     }
     else return false;
 
@@ -118,6 +153,7 @@ bool installGhostFix() {
         p[0] = 0xE8; *(DWORD*)(p + 1) = (DWORD)rec_dec_stub - (kRecDec + 5);
         memset(p + 5, 0x90, 4);
         VirtualProtect((LPVOID)kRecDec, 9, oldProtect, &oldProtect);
+        FlushInstructionCache(GetCurrentProcess(), (LPCVOID)kRecDec, 9);
     }
     else return false;
 
@@ -127,6 +163,7 @@ bool installGhostFix() {
         p[0] = 0xE8; *(DWORD*)(p + 1) = (DWORD)remote_turn_stub - (kRemoteTurn + 5);
         memset(p + 5, 0x90, 24);
         VirtualProtect((LPVOID)kRemoteTurn, 29, oldProtect, &oldProtect);
+        FlushInstructionCache(GetCurrentProcess(), (LPCVOID)kRemoteTurn, 29);
     }
     else return false;
 
@@ -136,6 +173,7 @@ bool installGhostFix() {
         p[0] = 0xE8; *(DWORD*)(p + 1) = (DWORD)replay_turn_stub - (kReplayTurn + 5);
         memset(p + 5, 0x90, 21);
         VirtualProtect((LPVOID)kReplayTurn, 26, oldProtect, &oldProtect);
+        FlushInstructionCache(GetCurrentProcess(), (LPCVOID)kReplayTurn, 26);
     }
     else return false;
 
@@ -145,13 +183,14 @@ bool installGhostFix() {
         p[0] = 0xE8; *(DWORD*)(p + 1) = (DWORD)replay_move_stub - (kReplayMove + 5);
         memset(p + 5, 0x90, 14);
         VirtualProtect((LPVOID)kReplayMove, 19, oldProtect, &oldProtect);
+        FlushInstructionCache(GetCurrentProcess(), (LPCVOID)kReplayMove, 19);
     }
     else return false;
 
     // Convert fixed 10/5-frame reloads into fixed-point 65536 ADD operations
-    convert_mov_to_add(0x00E16548, 10);
-    convert_mov_to_add(0x00E1DDDA, 10);
-    convert_mov_to_add(0x00E1DF7F, 5);
+    convert_mov_to_add(kPlayReload, 10);
+    convert_mov_to_add(kRecReload, 10);
+    convert_mov_to_add(kNetReload, 5);
 
     SDLOG(0, "GhostFix: Phantoms and bloodstains perfectly patched (v1.5.0 logic).\n");
     return true;

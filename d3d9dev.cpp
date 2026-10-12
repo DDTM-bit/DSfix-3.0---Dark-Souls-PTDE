@@ -30,7 +30,9 @@ HRESULT APIENTRY hkIDirect3DDevice9::Present(CONST RECT *pSourceRect, CONST RECT
 	KeyActions::get().processIO();
 	WindowManager::get().applyCursorCapture();
 	SaveManager::get().tick();
-	return RSManager::get().redirectPresent(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+	// 16:10 / Steam Deck: a letterboxed Present destination is opened up to the whole window (as in zofrea)
+	const RECT* dst = isAspectActive() ? correctPresentRect(m_pD3Ddev, hDestWindowOverride, pDestRect) : pDestRect;
+	return RSManager::get().redirectPresent(pSourceRect, dst, hDestWindowOverride, pDirtyRegion);
 }
 
 HRESULT APIENTRY hkIDirect3DDevice9::SetVertexShaderConstantF(UINT StartRegister, CONST float* pConstantData, UINT Vector4fCount) {
@@ -690,7 +692,12 @@ HRESULT APIENTRY hkIDirect3DDevice9::SetTextureStageState(DWORD Stage, D3DTEXTUR
 }
 
 HRESULT APIENTRY hkIDirect3DDevice9::SetTransform(D3DTRANSFORMSTATETYPE State, CONST D3DMATRIX *pMatrix) {
-	SDLOG(0, "SetTransform state: %u matrix: \n%s\n", State, D3DMatrixToString(pMatrix));
+	// was logged at level 0 (every call, with the whole matrix) - far too noisy for logLevel 1
+	SDLOG(10, "SetTransform state: %u matrix: \n%s\n", State, D3DMatrixToString(pMatrix));
+	if (State == D3DTS_PROJECTION && isAspectActive()) {
+		D3DMATRIX corrected;
+		if (correctProjection(pMatrix, &corrected)) return m_pD3Ddev->SetTransform(State, &corrected);
+	}
 	return m_pD3Ddev->SetTransform(State, pMatrix);	
 }
 
