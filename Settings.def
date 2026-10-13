@@ -68,6 +68,15 @@ SETTING(float, HudBottomRightTop, "hudBottomRightTop", 0.86f)
 SETTING(float, HudTopLeftOpacity, "hudTopLeftOpacity", 1.0f)
 SETTING(float, HudBottomLeftOpacity, "hudBottomLeftOpacity", 1.0f)
 SETTING(float, HudBottomRightOpacity, "hudBottomRightOpacity", 1.0f)
+// Window scaling (in game, needs enableHudMod). 1.0 = unchanged; smaller shrinks the window (lowest 0.5).
+// menuScale: quick menu and main menu (Inventory, Equipment, Magic, Status, System, Level Up, their popups), toward the top-right corner
+// listWindowScale: bonfire menu and the other list windows on the left (NPC choices), toward their top-left corner
+// promptScale: interaction prompts, yes/no questions and item pickup popups, toward the bottom centre
+// subtitleScale: NPC dialogue subtitles, toward the bottom centre
+SETTING(float, MenuScale, "menuScale", 1.0f)
+SETTING(float, ListWindowScale, "listWindowScale", 1.0f)
+SETTING(float, PromptScale, "promptScale", 1.0f)
+SETTING(float, SubtitleScale, "subtitleScale", 1.0f)
 
 // Screen Options
 SETTING(bool, BorderlessFullscreen, "borderlessFullscreen", false);

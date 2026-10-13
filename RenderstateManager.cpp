@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdarg>
+#include <cmath>
 
 #include "d3dutil.h"
 #include "Settings.h"
@@ -234,6 +235,9 @@ namespace {
 	};
 
 
+	// Part of the frame the UI is drawn in (x, y, width, height as fractions); not the whole frame only with the 16:10 correction.
+	float g_uiFrac[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+
 	// With the 16:10 / 4:3 letterbox correction active, 2D UI draws (INT16 quads, stride 12, and text, stride 24) are
 	// drawn inside the game's own 16:9 viewport so the HUD and menus are not stretched. Full-screen quads (fades,
 	// menu backgrounds) keep the expanded viewport so they still cover the whole screen.
@@ -247,6 +251,12 @@ namespace {
 		D3DVIEWPORT9 cur, game;
 		if (FAILED(dev->GetViewport(&cur)) || !getGameViewport(cur, &game)) return false;
 		saved = cur;
+		if (cur.Width && cur.Height) { // where the UI sits inside the frame, for the menu mouse mapping
+			g_uiFrac[0] = (float)((int)game.X - (int)cur.X) / cur.Width;
+			g_uiFrac[1] = (float)((int)game.Y - (int)cur.Y) / cur.Height;
+			g_uiFrac[2] = (float)game.Width / cur.Width;
+			g_uiFrac[3] = (float)game.Height / cur.Height;
+		}
 		return SUCCEEDED(dev->SetViewport(&game));
 	}
 
@@ -277,6 +287,16 @@ namespace {
 	bool g_dumpRequested = false;
 	bool g_dumpActive = false;
 	std::vector<std::string> g_dumpLines;
+	bool g_dumpIsRequested = false;  // the frame being recorded is the one asked for with the hotkey (-> hud_dump.txt)
+	// menu-open capture: after the hotkey, the first frame in which a menu appears (and the 3 frames after it) are written
+	// to menu_open_dump.txt, so the frames right after pressing Start can be seen. Armed for about 10 seconds.
+	int  g_menuCapArmFrames = 0;
+	int  g_menuCapLeft = 0;
+	int  g_menuCapFrameNo = 0;
+	bool g_frameHadMenu = false;
+	bool g_prevFrameHadMenu = false;
+	// frames since the last frame with a HUD window (in game); the title screen never has one
+	int  g_framesSinceHud = 1000;
 
 	// ---- AA/SSAO placement hold ----
 	// DSfix finds the scene image and the depth image by the order of the frame's SetRenderTarget calls (1st and 11th).
@@ -305,23 +325,41 @@ namespace {
 		g_rtDumpLines.push_back(buf);
 	}
 
-	void dumpHudDraw(const char* api, const char* state, const char* tex, int grp, UINT prims, UINT stride, UINT first, UINT nv, const void* data) {
+	// Vertex position i of a UI draw in normalized screen coordinates. INT16 quads (stride 12) use the 10240x5760 space,
+	// text (stride 24) floats in 1280x720 UI pixels. False for other formats or garbage.
+	bool dumpVertexPos(const void* data, UINT stride, UINT i, float& x, float& y) {
+		if (stride == 12) {
+			const INT16* p = (const INT16*)((const BYTE*)data + (size_t)i * stride);
+			x = p[0] / kUiW; y = p[1] / kUiH;
+			return true;
+		}
+		if (stride == 24) {
+			const float* p = (const float*)((const BYTE*)data + (size_t)i * stride);
+			x = p[0] / 1280.0f; y = p[1] / 720.0f;
+			return x > -2.0f && x < 3.0f && y > -2.0f && y < 3.0f; // also rejects NaN
+		}
+		return false;
+	}
+
+	// One dump line per draw; draws made of several glyphs / quads also get one "run" line per row of neighbouring pieces,
+	// so it shows where every string of a text batch is.
+	void dumpHudDraw(const char* api, const char* state, const char* tex, int grp, UINT prims, UINT stride, UINT first, UINT nv, const void* data, UINT piece = 0) {
 		char buf[600];
 		float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
-		const INT16* v = (const INT16*)data;
-		if (v && stride >= 4 && nv > 0) {
-			const UINT n = nv > 4096 ? 4096 : nv;
-			const UINT step = stride / 2;
+		const UINT n = nv > 8192 ? 8192 : nv;
+		if (data && n > 0 && (stride == 12 || stride == 24)) {
 			x0 = y0 = 1e9f; x1 = y1 = -1e9f;
 			for (UINT i = first; i < first + n; ++i) {
-				const INT16* p = v + (size_t)i * step;
-				const float x = p[0] / kUiW, y = p[1] / kUiH;
+				float x, y;
+				if (!dumpVertexPos(data, stride, i, x, y)) continue;
 				if (x < x0) x0 = x;
 				if (x > x1) x1 = x;
 				if (y < y0) y0 = y;
 				if (y > y1) y1 = y;
 			}
+			if (x0 > x1) { x0 = y0 = x1 = y1 = 0.0f; }
 		}
+		const INT16* v = (const INT16*)data;
 		INT16 r[6] = { 0, 0, 0, 0, 0, 0 };
 		float f[3] = { 0.0f, 0.0f, 0.0f };
 		if (v && stride >= 12) { for (int i = 0; i < 6; ++i) r[i] = v[i]; memcpy(f, data, sizeof(f)); }
@@ -330,11 +368,325 @@ namespace {
 		sprintf_s(buf, sizeof(buf), "%s %s phase=%d tex=%s grp=%d prims=%u stride=%u nv=%u bbox=[%.3f %.3f %.3f %.3f] raw16=[%d %d %d %d %d %d] f32=[%g %g %g] tail=[%08lx %08lx %08lx]",
 			api, state, g_hudScalePhase ? 1 : 0, tex, grp, prims, stride, nv, x0, y0, x1, y1, r[0], r[1], r[2], r[3], r[4], r[5], f[0], f[1], f[2], tail[0], tail[1], tail[2]);
 		g_dumpLines.push_back(buf);
+
+		// pieces: 6 vertices per glyph for text triangle lists, 4 per quad otherwise
+		if (!piece) piece = 4;
+		if (!data || n < piece * 2 || (stride != 12 && stride != 24)) return;
+		const UINT pieces = n / piece;
+		float rx0 = 0, ry0 = 0, rx1 = 0, ry1 = 0;
+		UINT rcount = 0, runs = 0;
+		auto flush = [&]() {
+			if (!rcount) return;
+			if (runs < 200) {
+				char rb[160];
+				sprintf_s(rb, sizeof(rb), "    run %u: [%.3f %.3f %.3f %.3f] pieces=%u", runs, rx0, ry0, rx1, ry1, rcount);
+				g_dumpLines.push_back(rb);
+			}
+			++runs;
+			rcount = 0;
+			};
+		for (UINT k = 0; k < pieces; ++k) {
+			float px0 = 1e9f, py0 = 1e9f, px1 = -1e9f, py1 = -1e9f;
+			bool ok = true;
+			for (UINT j = 0; j < piece; ++j) {
+				float x, y;
+				if (!dumpVertexPos(data, stride, first + k * piece + j, x, y)) { ok = false; break; }
+				if (x < px0) px0 = x;
+				if (x > px1) px1 = x;
+				if (y < py0) py0 = y;
+				if (y > py1) py1 = y;
+			}
+			if (!ok) continue;
+			if (rcount) {
+				// same row (vertical overlap) and close to the previous piece -> same run
+				const float ph = py1 - py0, rh = ry1 - ry0;
+				const float overlap = (py1 < ry1 ? py1 : ry1) - (py0 > ry0 ? py0 : ry0);
+				const float gap = px0 - rx1;
+				const float lim = (ph > rh ? ph : rh);
+				if (overlap > 0.5f * (ph < rh ? ph : rh) && gap < 1.5f * lim && gap > -lim) {
+					if (px0 < rx0) rx0 = px0;
+					if (px1 > rx1) rx1 = px1;
+					if (py0 < ry0) ry0 = py0;
+					if (py1 > ry1) ry1 = py1;
+					++rcount;
+					continue;
+				}
+				flush();
+			}
+			rx0 = px0; ry0 = py0; rx1 = px1; ry1 = py1;
+			rcount = 1;
+		}
+		flush();
+		if (runs > 200) {
+			char rb[64];
+			sprintf_s(rb, sizeof(rb), "    (%u more runs not listed)", runs - 200);
+			g_dumpLines.push_back(rb);
+		}
+	}
+
+	// "Name/WxH/pointer" for the dump, so textures the code has no name for can still be told apart
+	std::string dumpTexInfo(IDirect3DBaseTexture9* t, const char* name) {
+		char b[96];
+		UINT w = 0, h = 0;
+		if (t && t->GetType() == D3DRTYPE_TEXTURE) {
+			D3DSURFACE_DESC d;
+			if (SUCCEEDED(((IDirect3DTexture9*)t)->GetLevelDesc(0, &d))) { w = d.Width; h = d.Height; }
+		}
+		sprintf_s(b, sizeof(b), "%s/%ux%u/%p", name ? name : "none", w, h, (void*)t);
+		return b;
+	}
+
+
+	// ---- window scaling (main menu, quick menu, list windows, prompts / popups, subtitles) ----
+	// Only active with enableHudMod and only in frames where the HUD window was started (in game; the title screen menus are
+	// left alone). Each window starts with one background quad; when it is seen (after the HUD, in draw order) the window
+	// is active for the rest of the frame. The main menu then owns every later UI draw (its "View" explanation darkens
+	// the screen with huge quads around the highlighted line, so it cannot be limited to a rectangle); the other windows own
+	// the later UI draws whose centre lies inside their rectangle. Owned draws are drawn directly with their vertices moved
+	// toward the window's anchor: the pieces and the game's own font are rasterized smaller (no buffer, no resampling of an
+	// image, no viewport clipping). Window pieces are never scaled as HUD pieces.
+	enum WinKind { WK_PANEL = 0, WK_QUICK, WK_LIST, WK_POPUP, WK_PROMPT, WK_COUNT };
+	struct WinState { bool active; float r[4]; float ax, ay; };
+	WinState g_win[WK_COUNT] = {};
+	const char* const kWinNames[WK_COUNT] = { "menu", "quick menu (unused)", "list window", "popup", "prompt" };
+	const float kMenuAnchorX = 0.977f, kMenuAnchorY = 0.019f;   // top-right corner of the main menu
+	const float kPromptAnchorX = 0.5f, kPromptAnchorY = 0.90f;  // bottom centre of the prompt / popup area
+
+	void resetWindows() { for (int k = 0; k < WK_COUNT; ++k) g_win[k].active = false; }
+	bool anyWindowActive() { for (int k = 0; k < WK_COUNT; ++k) if (g_win[k].active) return true; return false; }
+
+	float clampScale(float s) {
+		if (!(s < 1.0f)) return 1.0f; // also NaN
+		return s < 0.5f ? 0.5f : s;
+	}
+	float windowScale(int k) {
+		if (k == WK_PANEL || k == WK_QUICK) return clampScale(Settings::get().getMenuScale());
+		if (k == WK_LIST) return clampScale(Settings::get().getListWindowScale());
+		if (k == WK_POPUP || k == WK_PROMPT) return clampScale(Settings::get().getPromptScale());
+		return 1.0f;
+	}
+
+	void activateWindow(int k, float x0, float y0, float x1, float y1, float ax, float ay) {
+		WinState& w = g_win[k];
+		w.active = true;
+		w.r[0] = x0; w.r[1] = y0; w.r[2] = x1; w.r[3] = y1;
+		w.ax = ax; w.ay = ay;
+		if (g_dumpActive) {
+			char b[160];
+			sprintf_s(b, sizeof(b), "--- WINDOW DETECTED: %s [%.3f %.3f %.3f %.3f] anchor %.3f %.3f scale %.2f ---", kWinNames[k], x0, y0, x1, y1, ax, ay, windowScale(k));
+			g_dumpLines.push_back(b);
+		}
+	}
+
+	bool texSize(IDirect3DBaseTexture9* tex, UINT& w, UINT& h) {
+		w = h = 0;
+		if (!tex || tex->GetType() != D3DRTYPE_TEXTURE) return false;
+		D3DSURFACE_DESC d;
+		if (FAILED(((IDirect3DTexture9*)tex)->GetLevelDesc(0, &d))) return false;
+		w = d.Width; h = d.Height;
+		return true;
+	}
+
+	// Called for single INT16 quads drawn after the HUD. 'b' = normalized bounding box. 'healthbarTex' / 'guiTex': the quad
+	// uses the HudHealthbar / GuiElements1 texture.
+	void detectWindow(const float* b, IDirect3DBaseTexture9* tex, bool healthbarTex, bool guiTex, bool hudDone) {
+		if (g_win[WK_PANEL].active) return; // inside the main menu everything belongs to the menu
+		UINT tw, th;
+		if (!texSize(tex, tw, th)) return;
+		const float w = b[2] - b[0], h = b[3] - b[1], cx = (b[0] + b[2]) * 0.5f, cy = (b[1] + b[3]) * 0.5f;
+		// Quick menu (Start), top-right corner: backdrop [0.647 0.072 0.919 0.247] (HudHealthbar texture), frame lines
+		// (GuiElements1), icon tiles (512x256 menu icon texture). It is drawn first in every menu frame, so from its first
+		// piece on everything belongs to the menu, also while the quick menu itself grows in and while the main menu grows
+		// out of it (the pieces do not have their final size and place yet then; the menu used to pop to the scaled size).
+		// Any of its pieces counts, at any size, as long as it is in the top-right corner (enemy health bars, the only
+		// other HudHealthbar quads, are thin and drawn inside the HUD window).
+		if (cx > 0.60f && cx < 1.35f && cy > -0.30f && cy < 0.32f && w < 0.60f && h < 0.40f &&
+			(guiTex || (tw == 512 && th == 256) ||
+				(healthbarTex && (hudDone ? (w > 0.05f && h > 0.03f)
+					// inside the HUD only the exact backdrop (HUD pieces use this texture too)
+					: (b[0] > 0.63f && b[0] < 0.67f && b[1] > 0.055f && b[1] < 0.09f && b[2] > 0.90f && b[2] < 0.94f && b[3] > 0.23f && b[3] < 0.27f))))) {
+			activateWindow(WK_PANEL, 0.0f, 0.0f, 1.0f, 1.0f, kMenuAnchorX, kMenuAnchorY);
+			return;
+		}
+		// the other windows are only ever drawn after the HUD
+		if (!hudDone || tw != 1024 || th != 1024) return;
+		// main menu, left background piece: [0.028 0.022 0.827 0.992] (Inventory, Status, Level Up...) or [0.028 0.021 0.827 0.293] (System)
+		if (b[0] > 0.015f && b[0] < 0.045f && b[1] > 0.005f && b[1] < 0.04f && b[2] > 0.80f && b[2] < 0.85f && h > 0.2f) {
+			activateWindow(WK_PANEL, 0.0f, 0.0f, 1.0f, 1.0f, kMenuAnchorX, kMenuAnchorY);
+			return;
+		}
+		// list window on the left: bonfire menu [0.058 0.155 0.433 0.878]
+		if (!g_win[WK_LIST].active && b[0] > 0.03f && b[0] < 0.10f && w > 0.30f && w < 0.45f && h > 0.50f && h < 0.80f) {
+			activateWindow(WK_LIST, b[0] - 0.01f, b[1] - 0.01f, b[2] + 0.01f, b[3] + 0.01f, b[0], b[1]);
+			return;
+		}
+		// interaction prompt [0.258 0.782 0.743 0.846] (+ a second piece below, to 0.887) and the yes/no question [0.259 0.782 0.741 0.922]
+		if (!g_win[WK_PROMPT].active && cx > 0.45f && cx < 0.55f && w > 0.40f && w < 0.60f && h > 0.035f && h < 0.20f && b[1] > 0.70f && b[1] < 0.85f) {
+			const float y1 = (b[3] > b[1] + 0.105f) ? b[3] : b[1] + 0.105f;
+			activateWindow(WK_PROMPT, b[0] - 0.01f, b[1] - 0.01f, b[2] + 0.01f, y1 + 0.01f, kPromptAnchorX, kPromptAnchorY);
+			return;
+		}
+		// item popup above the prompt, left piece [0.277 0.643 0.641 0.785] (taller with several items)
+		if (!g_win[WK_POPUP].active && b[0] > 0.20f && b[0] < 0.35f && w > 0.25f && w < 0.50f && h > 0.08f && h < 0.45f && b[1] > 0.30f && b[1] < 0.75f && b[3] < 0.83f) {
+			activateWindow(WK_POPUP, 0.20f, b[1] - 0.02f, 0.80f, b[3] + 0.015f, kPromptAnchorX, kPromptAnchorY);
+			return;
+		}
+	}
+
+	// The window a UI draw belongs to (-1 = none). 'b' = normalized bounding box of the draw.
+	int windowFor(const float* b, bool hudDone) {
+		if (g_win[WK_PANEL].active && !hudDone) {
+			// The quick menu was drawn before the HUD was finished (the first frame after pressing Start can do that):
+			// only its own corner belongs to the menu, the HUD pieces drawn after it are left to the HUD code.
+			const float cx = (b[0] + b[2]) * 0.5f, cy = (b[1] + b[3]) * 0.5f;
+			return (cx > 0.60f && cx < 1.35f && cy > -0.30f && cy < 0.32f && (b[2] - b[0]) < 0.6f) ? WK_PANEL : -1;
+		}
+		if (!hudDone) return -1;
+		if (g_win[WK_PANEL].active) {
+			// a real full-screen fade (quitting from the System menu...) stays full-screen
+			if (b[0] > -0.01f && b[1] > -0.01f && b[2] < 1.01f && b[3] < 1.01f && (b[2] - b[0]) > 0.97f && (b[3] - b[1]) > 0.97f) return -1;
+			return WK_PANEL;
+		}
+		if ((b[2] - b[0]) > 0.97f && (b[3] - b[1]) > 0.97f) return -1;
+		const float cx = (b[0] + b[2]) * 0.5f, cy = (b[1] + b[3]) * 0.5f;
+		for (int k = WK_QUICK; k < WK_COUNT; ++k) {
+			const WinState& win = g_win[k];
+			if (win.active && cx >= win.r[0] && cx <= win.r[2] && cy >= win.r[1] && cy <= win.r[3]) return k;
+		}
+		return -1;
+	}
+
+	INT16 toInt16(float v) {
+		if (v < -32768.0f) return -32768;
+		if (v > 32767.0f) return 32767;
+		return (INT16)(v < 0.0f ? v - 0.5f : v + 0.5f);
+	}
+
+	// Copies the vertices [0, first + count) into 'out' and moves [first, first + count) toward the anchor (ax, ay, normalized)
+	// by s. INT16 quads (stride 12) live in the 10240x5760 space, text (stride 24) in 1280x720 UI pixels.
+	const void* scaleUiVertices(std::vector<BYTE>& out, const void* data, UINT stride, UINT first, UINT count, float s, float ax, float ay) {
+		if (!data || s >= 1.0f || count == 0 || count > 65536 || (stride != 12 && stride != 24)) return data;
+		const size_t total = (size_t)(first + count) * stride;
+		out.assign((const BYTE*)data, (const BYTE*)data + total);
+		if (stride == 12) {
+			const float axv = ax * kUiW, ayv = ay * kUiH;
+			for (UINT i = first; i < first + count; ++i) {
+				INT16* p = (INT16*)(&out[0] + (size_t)i * stride);
+				p[0] = toInt16(axv + (p[0] - axv) * s);
+				p[1] = toInt16(ayv + (p[1] - ayv) * s);
+			}
+		}
+		else {
+			const float axp = ax * 1280.0f, ayp = ay * 720.0f;
+			for (UINT i = first; i < first + count; ++i) {
+				float* p = (float*)(&out[0] + (size_t)i * stride);
+				p[0] = axp + (p[0] - axp) * s;
+				p[1] = ayp + (p[1] - ayp) * s;
+			}
+		}
+		return &out[0];
+	}
+
+	// If the draw uses a scissor rectangle (lists that scroll), it is moved and shrunk the same way.
+	// Returns true if it was changed; the caller restores 'saved' after the draw.
+	bool scaleWindowScissor(IDirect3DDevice9* dev, float s, float ax, float ay, RECT& saved) {
+		if (!dev || s >= 1.0f) return false;
+		DWORD sc = FALSE;
+		if (FAILED(dev->GetRenderState(D3DRS_SCISSORTESTENABLE, &sc)) || !sc) return false;
+		D3DVIEWPORT9 vp;
+		if (FAILED(dev->GetViewport(&vp)) || FAILED(dev->GetScissorRect(&saved))) return false;
+		const float axp = vp.X + ax * vp.Width, ayp = vp.Y + ay * vp.Height;
+		RECT r;
+		r.left = (LONG)floorf(axp + (saved.left - axp) * s);
+		r.top = (LONG)floorf(ayp + (saved.top - ayp) * s);
+		r.right = (LONG)ceilf(axp + (saved.right - axp) * s);
+		r.bottom = (LONG)ceilf(ayp + (saved.bottom - ayp) * s);
+		return SUCCEEDED(dev->SetScissorRect(&r));
+	}
+
+	// Subtitles (NPC dialogue, Text00 font, lower part of the screen) shrink toward the bottom centre.
+	float subtitleScale() { return clampScale(Settings::get().getSubtitleScale()); }
+
+	// ---- mouse: the game reads the cursor with GetCursorPos (hooked in main.cpp). While a shrunk main menu or list window
+	// is open, the cursor position is moved back to where that spot was before the shrink, so hovering and clicking hit
+	// what is drawn under the cursor. Written on the render thread at every Present, read on the game's thread.
+	struct MouseMapData {
+		bool panel, list;
+		float pax, pay, ps;           // main menu anchor and scale
+		float lax, lay, ls, lr[4];    // list window anchor, scale and (unscaled) rectangle
+		LONG cx, cy, cw, ch;          // client area of the game window, screen coordinates
+		float f[4];                   // UI part of the frame
+	};
+	volatile LONG g_mouseSeq = 0;     // odd while being written
+	MouseMapData g_mouseMap = {};
+
+	void publishMouseMap(IDirect3DDevice9* dev) {
+		MouseMapData m = {};
+		m.panel = g_win[WK_PANEL].active && windowScale(WK_PANEL) < 1.0f;
+		m.list = !m.panel && g_win[WK_LIST].active && windowScale(WK_LIST) < 1.0f;
+		if (m.panel || m.list) {
+			HWND hwnd = NULL;
+			D3DDEVICE_CREATION_PARAMETERS cp;
+			if (dev && SUCCEEDED(dev->GetCreationParameters(&cp))) hwnd = cp.hFocusWindow;
+			RECT rc;
+			POINT o = { 0, 0 };
+			if (!hwnd || !::GetClientRect(hwnd, &rc) || !::ClientToScreen(hwnd, &o) || rc.right <= 0 || rc.bottom <= 0) {
+				m.panel = m.list = false;
+			}
+			else {
+				m.cx = o.x; m.cy = o.y; m.cw = rc.right; m.ch = rc.bottom;
+				for (int i = 0; i < 4; ++i) m.f[i] = g_uiFrac[i];
+				m.pax = g_win[WK_PANEL].ax; m.pay = g_win[WK_PANEL].ay; m.ps = windowScale(WK_PANEL);
+				m.lax = g_win[WK_LIST].ax; m.lay = g_win[WK_LIST].ay; m.ls = windowScale(WK_LIST);
+				for (int i = 0; i < 4; ++i) m.lr[i] = g_win[WK_LIST].r[i];
+			}
+		}
+		if (!m.panel && !m.list && !g_mouseMap.panel && !g_mouseMap.list) return; // nothing to change
+		InterlockedIncrement(&g_mouseSeq);
+		g_mouseMap = m;
+		InterlockedIncrement(&g_mouseSeq);
 	}
 }
 
-// called from the hotkey action; the next frame that contains a HUD window is written to hud_dump.txt
-void requestHudDump() { g_dumpRequested = true; g_rtDumpFrames = 8; }
+// Called from the GetCursorPos hook (main.cpp) with the real cursor position in screen coordinates.
+void remapMenuCursor(POINT* p) {
+	if (!p) return;
+	MouseMapData m = {};
+	LONG a = 0, b = 1;
+	for (int tries = 0; tries < 4 && (a != b || (a & 1)); ++tries) {
+		a = g_mouseSeq;
+		MemoryBarrier();
+		m = g_mouseMap;
+		MemoryBarrier();
+		b = g_mouseSeq;
+	}
+	if (a != b || (a & 1) || (!m.panel && !m.list) || m.cw <= 0 || m.ch <= 0 || m.f[2] <= 0.0f || m.f[3] <= 0.0f) return;
+	// screen -> normalized UI coordinates
+	float u = (((float)(p->x - m.cx) / m.cw) - m.f[0]) / m.f[2];
+	float v = (((float)(p->y - m.cy) / m.ch) - m.f[1]) / m.f[3];
+	if (m.panel) {
+		u = m.pax + (u - m.pax) / m.ps;
+		v = m.pay + (v - m.pay) / m.ps;
+	}
+	else {
+		// only over the shrunk list window itself
+		const float x0 = m.lax + (m.lr[0] - m.lax) * m.ls, x1 = m.lax + (m.lr[2] - m.lax) * m.ls;
+		const float y0 = m.lay + (m.lr[1] - m.lay) * m.ls, y1 = m.lay + (m.lr[3] - m.lay) * m.ls;
+		if (u < x0 || u > x1 || v < y0 || v > y1) return;
+		u = m.lax + (u - m.lax) / m.ls;
+		v = m.lay + (v - m.lay) / m.ls;
+	}
+	// normalized UI -> screen
+	p->x = m.cx + (LONG)floorf((m.f[0] + u * m.f[2]) * m.cw + 0.5f);
+	p->y = m.cy + (LONG)floorf((m.f[1] + v * m.f[3]) * m.ch + 0.5f);
+}
+
+namespace {
+
+}
+
+// called from the hotkey action; the whole next frame (all UI draws, with or without the HUD) is written to hud_dump.txt
+void requestHudDump() { g_dumpRequested = true; g_rtDumpFrames = 8; g_menuCapArmFrames = 1500; g_menuCapLeft = 0; }
 
 extern bool g_Force30FPS;
 
@@ -564,6 +916,7 @@ void RSManager::releaseResources() {
 	g_effectsDone = false;
 	g_rtDumpFrames = 0;
 	g_rtDumpLines.clear();
+	resetWindows();
 
 	SDLOG(0, "RenderstateManager resource release completed\n");
 }
@@ -589,13 +942,48 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 	}
 	skippedPresents = 0;
 	if (g_dumpActive) {
-		std::ofstream df(GetDirectoryFile("hud_dump.txt"), std::ios::app);
-		df << "=== HUD FRAME DUMP ===\n";
-		for (size_t i = 0; i < g_dumpLines.size(); ++i) df << g_dumpLines[i] << "\n";
-		df << "=== END ===\n\n";
+		if (g_dumpIsRequested) {
+			std::ofstream df(GetDirectoryFile("hud_dump.txt"), std::ios::app);
+			df << "=== HUD FRAME DUMP ===\n";
+			for (size_t i = 0; i < g_dumpLines.size(); ++i) df << g_dumpLines[i] << "\n";
+			df << "=== END ===\n\n";
+			g_dumpIsRequested = false;
+		}
+		bool writeCap = false;
+		if (g_menuCapLeft > 0) {
+			writeCap = true;
+			--g_menuCapLeft;
+		}
+		else if (g_menuCapArmFrames > 0) {
+			if (g_frameHadMenu && !g_prevFrameHadMenu && g_menuCapArmFrames < 1500) { // the first frame with a menu
+				writeCap = true;
+				g_menuCapLeft = 3;
+				g_menuCapArmFrames = 0;
+				g_menuCapFrameNo = 0;
+			}
+			else {
+				--g_menuCapArmFrames;
+			}
+		}
+		if (writeCap) {
+			std::ofstream mf(GetDirectoryFile("menu_open_dump.txt"), std::ios::app);
+			mf << "=== MENU OPEN CAPTURE, frame " << ++g_menuCapFrameNo << " ===\n";
+			for (size_t i = 0; i < g_dumpLines.size(); ++i) mf << g_dumpLines[i] << "\n";
+			mf << "=== END ===\n\n";
+		}
 		g_dumpActive = false;
 		g_dumpLines.clear();
 	}
+	g_prevFrameHadMenu = g_frameHadMenu;
+	g_frameHadMenu = false;
+	g_framesSinceHud = g_hudWindowSeen ? 0 : (g_framesSinceHud < 1000 ? g_framesSinceHud + 1 : 1000);
+	if (g_dumpRequested) { // record the whole next frame
+		g_dumpRequested = false;
+		g_dumpIsRequested = true;
+		g_dumpActive = true;
+	}
+	if (g_menuCapArmFrames > 0 || g_menuCapLeft > 0) g_dumpActive = true; // the capture records every frame until it is done
+	if (g_dumpActive) g_dumpLines.push_back("--- FRAME START ---");
 	hudStarted = false;
 	g_hudScalePhase = false;
 	g_hudWindowSeen = false;
@@ -619,6 +1007,8 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 	g_heldMainUses = 0;
 	g_heldZSeen = false;
 	g_effectsDone = false;
+	publishMouseMap(d3ddev); // this frame's shrunk windows, for the cursor mapping until the next Present
+	resetWindows();
 
 	// Pace the frame BEFORE submitting to the D3D presentation queue
 	frameTimeManagement();
@@ -924,7 +1314,7 @@ HRESULT RSManager::redirectSetRenderTarget(DWORD RenderTargetIndex, IDirect3DSur
 					g_hudScalePhase = true;
 					g_hudWindowSeen = true;
 					g_lastHudGroup = HG_NONE;
-					if (g_dumpRequested) { g_dumpRequested = false; g_dumpActive = true; g_dumpLines.clear(); g_dumpLines.push_back("--- WINDOW START ---"); }
+					if (g_dumpActive) g_dumpLines.push_back("--- WINDOW START ---");
 					d3ddev->SetRenderTarget(0, rgbaBuffer1Surf);
 					d3ddev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_RGBA(0, 0, 0, 0), 0.0f, 0);
 					prevRenderTex = tex;
@@ -1197,7 +1587,7 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 					g_hudScalePhase = true;
 					g_hudWindowSeen = true;
 					g_lastHudGroup = HG_NONE;
-					if (g_dumpRequested) { g_dumpRequested = false; g_dumpActive = true; g_dumpLines.clear(); g_dumpLines.push_back("--- WINDOW START (fallback) ---"); }
+					if (g_dumpActive) g_dumpLines.push_back("--- WINDOW START (fallback) ---");
 					prevRenderTex = ctex;
 					prevRenderTarget = cur;
 					d3ddev->SetRenderTarget(0, rgbaBuffer1Surf);
@@ -1293,10 +1683,41 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		if (hudGrp == HG_BOSS && !idxIsHealthbarTex) hudGrp = HG_NONE;
 		g_lastHudGroup = hudGrp;
 	}
+	// windows (main menu, list windows, prompts): drawn after the HUD, never part of it
+	int winK = -1;
+	// "in game": a HUD window in this frame or in one of the last frames (the quick menu can come before the HUD)
+	const bool hudDoneNow = g_hudWindowSeen && !onHudRT && !pausedHudRT;
+	if (hud && doHud && (g_hudWindowSeen || g_framesSinceHud < 30) && VertexStreamZeroStride == 12 && pVertexStreamZeroData) {
+		float wb[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		bool wok = false;
+		classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, &wok, wb);
+		if (wok && PrimitiveCount == 2) {
+			IDirect3DBaseTexture9* wt = NULL;
+			d3ddev->GetTexture(0, &wt);
+			if (wt) detectWindow(wb, wt, isTextureHudHealthbar(wt), isTextureGuiElements1(wt), hudDoneNow);
+			if (wt) wt->Release();
+		}
+		// the "View" explanation darkens the screen with quads reaching far off-screen (not "valid" UI boxes); inside the
+		// open menu they are menu pieces like everything else
+		if (NumVertices && (wok || g_win[WK_PANEL].active)) winK = windowFor(wb, hudDoneNow);
+		if (winK >= 0) {
+			hudGrp = HG_NONE;
+			g_lastHudGroup = HG_NONE;
+		}
+	}
 	if (g_dumpActive) {
 		IDirect3DBaseTexture9* dt = NULL;
 		d3ddev->GetTexture(0, &dt);
-		dumpHudDraw("IDX", onHudRT ? "WINDOW" : (pausedHudRT ? "PAUSED" : "DIRECT"), dt ? getTextureName(dt) : "none", (int)hudGrp, PrimitiveCount, VertexStreamZeroStride, MinIndex, NumVertices, pVertexStreamZeroData);
+		dumpHudDraw("IDX", onHudRT ? "WINDOW" : (pausedHudRT ? "PAUSED" : "DIRECT"), dumpTexInfo(dt, dt ? getTextureName(dt) : "none").c_str(), winK >= 0 ? 10 + winK : (int)hudGrp, PrimitiveCount, VertexStreamZeroStride, MinIndex, NumVertices, pVertexStreamZeroData);
+		// menu-open capture: does this frame show a menu? (GuiElements1 or menu icon quads in the top-right corner)
+		if ((g_menuCapArmFrames > 0 || g_menuCapLeft > 0) && dt && VertexStreamZeroStride == 12 && pVertexStreamZeroData && NumVertices) {
+			float mb[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, NULL, mb);
+			UINT mw, mh;
+			const bool menuTex = isTextureGuiElements1(dt) || (texSize(dt, mw, mh) && mw == 512 && mh == 256);
+			const float mcx = (mb[0] + mb[2]) * 0.5f, mcy = (mb[1] + mb[3]) * 0.5f;
+			if (menuTex && mcx > 0.60f && mcx < 1.35f && mcy > -0.30f && mcy < 0.32f) g_frameHadMenu = true;
+		}
 		if (dt) dt->Release();
 	}
 	// The boss bar (frame, ruler and fill) and the souls box are drawn directly onto the frame, in the game's own
@@ -1323,16 +1744,27 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 	D3DVIEWPORT9 uiSavedVp;
 	const bool uiVp = enterUiViewport(d3ddev, VertexStreamZeroStride, pVertexStreamZeroData, MinIndex, NumVertices, uiSavedVp);
 	D3DVIEWPORT9 savedVp;
-	const bool vpChanged = applyHudViewport(d3ddev, hudGrp, savedVp);
+	const bool vpChanged = applyHudViewport(d3ddev, hudGrp, savedVp); // no-op for window draws (hudGrp is HG_NONE)
+	// window draws: vertices moved toward the window's anchor (and the scissor rectangle with them)
+	std::vector<BYTE> wcopy;
+	const void* srcData = pVertexStreamZeroData;
+	RECT savedSc;
+	bool scChanged = false;
+	if (winK >= 0) {
+		const float ws = windowScale(winK);
+		srcData = scaleUiVertices(wcopy, pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, ws, g_win[winK].ax, g_win[winK].ay);
+		scChanged = scaleWindowScissor(d3ddev, ws, g_win[winK].ax, g_win[winK].ay, savedSc);
+	}
 	HRESULT hr;
 	{
 		// draws that bypass the HUD buffer get their corner's opacity here (buffered ones get it when the buffer is composited)
 		const float op = (!onHudRT && hudGrp != HG_NONE && VertexStreamZeroStride == 12) ? hudGroupOpacity(hudGrp) : 1.0f;
 		std::vector<BYTE> vcopy;
-		const void* vdata = applyVertexOpacity(vcopy, pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, 4, op, d3ddev);
+		const void* vdata = applyVertexOpacity(vcopy, srcData, VertexStreamZeroStride, MinIndex, NumVertices, 4, op, d3ddev);
 		AlphaRefGuard arg(d3ddev, op);
 		hr = d3ddev->DrawIndexedPrimitiveUP(PrimitiveType, MinIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, vdata, VertexStreamZeroStride);
 	}
+	if (scChanged) d3ddev->SetScissorRect(&savedSc);
 	if (vpChanged) d3ddev->SetViewport(&savedVp);
 	if (uiVp) d3ddev->SetViewport(&uiSavedVp);
 	if (routedDirect) resumeHudRendering();
@@ -1385,15 +1817,32 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 	// Text / button glyphs (vertex format: float x,y,z in 1280x720 UI pixels, colour, u, v; stride 24).
 	// They are moved to where their element ended up, but drawn at hudTextScale so they stay sharp.
 	HudGroup hudGrp = HG_NONE;
-	UINT dumpNv = 0;   // for the dump (INT16 layout only)
 	UINT primNv = 0;   // vertex count of this draw
 	if (PrimitiveType == D3DPT_TRIANGLELIST) primNv = PrimitiveCount * 3;
 	else if (PrimitiveType == D3DPT_TRIANGLESTRIP || PrimitiveType == D3DPT_TRIANGLEFAN) primNv = PrimitiveCount + 2;
-	if (VertexStreamZeroStride == 12) dumpNv = primNv;
 	std::vector<BYTE> textCopy;
 	CONST void* drawData = pVertexStreamZeroData;
 	bool textDirect = false;
-	if (g_hudScalePhase && hud && doHud) {
+	// pieces and text of a window (main menu, list window, prompt) detected earlier in this frame
+	int winK = -1;
+	const bool hudDoneNow = g_hudWindowSeen && !onHudRT && !pausedHudRT;
+	if (hud && doHud && primNv && pVertexStreamZeroData && anyWindowActive()) {
+		float wb[4];
+		bool wok = false;
+		if (VertexStreamZeroStride == 24) {
+			float x0, y0, x1, y1;
+			if (textBox(pVertexStreamZeroData, VertexStreamZeroStride, primNv, x0, y0, x1, y1)) {
+				wb[0] = x0 / 1280.0f; wb[1] = y0 / 720.0f; wb[2] = x1 / 1280.0f; wb[3] = y1 / 720.0f;
+				wok = true;
+			}
+		}
+		else if (VertexStreamZeroStride == 12) {
+			classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, 0, primNv, &wok, wb);
+			if (g_win[WK_PANEL].active) wok = true; // off-screen pieces of the open menu too
+		}
+		if (wok) winK = windowFor(wb, hudDoneNow);
+	}
+	if (winK < 0 && g_hudScalePhase && hud && doHud) {
 		IDirect3DBaseTexture9* tt = NULL;
 		d3ddev->GetTexture(0, &tt);
 		const bool sub = tt && isTextureText00(tt);
@@ -1438,14 +1887,34 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 	if (g_dumpActive) {
 		IDirect3DBaseTexture9* dt = NULL;
 		d3ddev->GetTexture(0, &dt);
-		dumpHudDraw("PRIM", onHudRT ? "WINDOW" : (pausedHudRT ? "PAUSED" : "DIRECT"), dt ? getTextureName(dt) : "none", (int)hudGrp, PrimitiveCount, VertexStreamZeroStride, 0, dumpNv, pVertexStreamZeroData);
+		dumpHudDraw("PRIM", onHudRT ? "WINDOW" : (pausedHudRT ? "PAUSED" : "DIRECT"), dumpTexInfo(dt, dt ? getTextureName(dt) : "none").c_str(), winK >= 0 ? 10 + winK : (int)hudGrp, PrimitiveCount, VertexStreamZeroStride, 0, primNv, pVertexStreamZeroData, PrimitiveType == D3DPT_TRIANGLELIST ? 6 : 4);
 		if (dt) dt->Release();
 	}
 	D3DVIEWPORT9 uiSavedVp;
 	const bool uiVp = enterUiViewport(d3ddev, VertexStreamZeroStride, pVertexStreamZeroData, 0, primNv, uiSavedVp);
 	D3DVIEWPORT9 savedVp;
-	// float text was already moved above; other formats (unknown/INT16) still use the viewport transform
-	const bool vpChanged = (VertexStreamZeroStride == 24) ? false : applyHudViewport(d3ddev, hudGrp, savedVp);
+	// float HUD text was already moved above; other formats (unknown/INT16) still use the viewport transform
+	const bool vpChanged = (VertexStreamZeroStride == 24 || winK >= 0) ? false : applyHudViewport(d3ddev, hudGrp, savedVp);
+	RECT savedSc;
+	bool scChanged = false;
+	if (winK >= 0) {
+		// window pieces and window text: vertices moved toward the window's anchor
+		const float ws = windowScale(winK);
+		drawData = scaleUiVertices(textCopy, pVertexStreamZeroData, VertexStreamZeroStride, 0, primNv, ws, g_win[winK].ax, g_win[winK].ay);
+		scChanged = scaleWindowScissor(d3ddev, ws, g_win[winK].ax, g_win[winK].ay, savedSc);
+	}
+	else if (hud && doHud && VertexStreamZeroStride == 24 && primNv && pVertexStreamZeroData && subtitleScale() < 1.0f) {
+		// subtitles (Text00 font in the lower part of the screen) shrink toward the bottom centre
+		IDirect3DBaseTexture9* st = NULL;
+		d3ddev->GetTexture(0, &st);
+		const bool isSubText = st && isTextureText00(st);
+		if (st) st->Release();
+		float x0, y0, x1, y1;
+		if (isSubText && textBox(pVertexStreamZeroData, VertexStreamZeroStride, primNv, x0, y0, x1, y1) &&
+			(y0 + y1) * 0.5f / 720.0f > 0.70f && (x1 - x0) / 1280.0f < 0.98f) {
+			drawData = scaleUiVertices(textCopy, pVertexStreamZeroData, VertexStreamZeroStride, 0, primNv, subtitleScale(), 0.5f, 0.925f);
+		}
+	}
 	if (textDirect) pauseHudRendering();
 	HRESULT hr;
 	{
@@ -1462,6 +1931,7 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 		hr = d3ddev->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, drawData, VertexStreamZeroStride);
 	}
 	if (textDirect) resumeHudRendering();
+	if (scChanged) d3ddev->SetScissorRect(&savedSc);
 	if (vpChanged) d3ddev->SetViewport(&savedVp);
 	if (uiVp) d3ddev->SetViewport(&uiSavedVp);
 	if (subbed) resumeHudRendering();

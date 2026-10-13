@@ -178,6 +178,53 @@ void OptimizeCPUExecution() {
     }
 }
 
+// DSfix 3.0: menu mouse mapping (only with enableHudMod). The game reads the cursor for its menus with GetCursorPos
+// (found with a probe: no GetMessagePos / raw input). While a menu window is shrunk, remapMenuCursor (RenderstateManager.cpp)
+// moves the reported position back to where that spot of the menu was before the shrink, so hover and clicks hit what
+// is drawn under the cursor. With no shrunk window open the real position is passed through unchanged.
+void remapMenuCursor(POINT* p); // RenderstateManager.cpp
+namespace {
+    typedef BOOL (WINAPI* GetCursorPos_t)(LPPOINT);
+    GetCursorPos_t oGetCursorPos = NULL;
+    BOOL WINAPI hkGetCursorPos(LPPOINT p) {
+        const BOOL ok = oGetCursorPos(p);
+        if (ok) remapMenuCursor(p);
+        return ok;
+    }
+
+    // Replaces the game's import-table entry of dll!fn. Returns false if the game does not import it by name.
+    bool patchGameImport(const char* dll, const char* fn, void* hook, void** orig) {
+        BYTE* base = (BYTE*)GetModuleHandle(NULL);
+        IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)base;
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+        IMAGE_NT_HEADERS32* nt = (IMAGE_NT_HEADERS32*)(base + dos->e_lfanew);
+        const IMAGE_DATA_DIRECTORY& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+        if (!dir.VirtualAddress) return false;
+        for (IMAGE_IMPORT_DESCRIPTOR* d = (IMAGE_IMPORT_DESCRIPTOR*)(base + dir.VirtualAddress); d->Name; ++d) {
+            if (_stricmp((const char*)(base + d->Name), dll) != 0) continue;
+            IMAGE_THUNK_DATA32* names = (IMAGE_THUNK_DATA32*)(base + (d->OriginalFirstThunk ? d->OriginalFirstThunk : d->FirstThunk));
+            void** slots = (void**)(base + d->FirstThunk);
+            for (int i = 0; names[i].u1.AddressOfData; ++i) {
+                if (names[i].u1.Ordinal & IMAGE_ORDINAL_FLAG32) continue;
+                IMAGE_IMPORT_BY_NAME* byName = (IMAGE_IMPORT_BY_NAME*)(base + names[i].u1.AddressOfData);
+                if (strcmp((const char*)byName->Name, fn) != 0) continue;
+                DWORD old;
+                if (!VirtualProtect(&slots[i], sizeof(void*), PAGE_READWRITE, &old)) return false;
+                *orig = slots[i];
+                slots[i] = hook;
+                VirtualProtect(&slots[i], sizeof(void*), old, &old);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void installMenuMouseMapping() {
+        const bool ok = patchGameImport("user32.dll", "GetCursorPos", (void*)hkGetCursorPos, (void**)&oGetCursorPos);
+        SDLOG(0, "Menu mouse mapping: %s\n", ok ? "GetCursorPos hooked" : "GetCursorPos not imported by the game, not active");
+    }
+}
+
 HMODULE g_hModule = NULL;
 bool g_dsfixInitialized = false;
 
@@ -188,6 +235,8 @@ void InitializeDSfix() {
 
     // Launch the Bonfire Softlock Monitor safely outside loader lock
     CreateThread(NULL, 0, BonfireGlitchDetectionThread, NULL, 0, NULL);
+
+    if (Settings::get().getEnableHudMod()) installMenuMouseMapping();
 
     // load original dinput8.dll safely outside loader lock
     HMODULE hMod;
