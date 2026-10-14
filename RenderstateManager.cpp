@@ -291,6 +291,13 @@ namespace {
 	// menu-open capture: after the hotkey, the first frame in which a menu appears (and the 3 frames after it) are written
 	// to menu_open_dump.txt, so the frames right after pressing Start can be seen. Armed for about 10 seconds.
 	int  g_menuCapArmFrames = 0;
+	// flight recorder: armed by the hotkey for about 30 seconds; it keeps the dumps of the last frames, and a second hotkey
+	// press writes them to flight_dump.txt (for short glitches that are over before the hotkey can be pressed)
+	int  g_recArmFrames = 0;
+	bool g_recWrite = false;
+	const size_t kRecFrames = 240;
+	std::vector< std::vector<std::string> > g_recRing;
+	size_t g_recNext = 0;
 	int  g_menuCapLeft = 0;
 	int  g_menuCapFrameNo = 0;
 	bool g_frameHadMenu = false;
@@ -453,6 +460,16 @@ namespace {
 	const float kPromptAnchorX = 0.5f, kPromptAnchorY = 0.90f;  // bottom centre of the prompt / popup area
 
 	void resetWindows() { for (int k = 0; k < WK_COUNT; ++k) g_win[k].active = false; }
+
+	// An opaque quad covering the whole screen (the black background of the loading screen after "Quit Game") ends all
+	// windows for the rest of the frame: what is drawn after it belongs to the next screen. Without this the loading
+	// screen's item window was shrunk while the menu was still fading out in the corner, then popped back to full size.
+	// A see-through full-screen layer counts too while a window is open; with no window open (the fade at the end of the
+	// "BONFIRE LIT" banner, about 20 % opaque) it is ignored, so the prompt drawn after it is still a prompt.
+	bool g_screenCovered = false;
+	bool isWholeScreen(const float* b) {
+		return b[0] > -0.01f && b[1] > -0.01f && b[2] < 1.01f && b[3] < 1.01f && (b[2] - b[0]) > 0.97f && (b[3] - b[1]) > 0.97f;
+	}
 	bool anyWindowActive() { for (int k = 0; k < WK_COUNT; ++k) if (g_win[k].active) return true; return false; }
 
 	float clampScale(float s) {
@@ -490,6 +507,7 @@ namespace {
 	// Called for single INT16 quads drawn after the HUD. 'b' = normalized bounding box. 'healthbarTex' / 'guiTex': the quad
 	// uses the HudHealthbar / GuiElements1 texture.
 	void detectWindow(const float* b, IDirect3DBaseTexture9* tex, bool healthbarTex, bool guiTex, bool hudDone) {
+		if (g_screenCovered) return;          // the next screen (loading screen) is being drawn
 		if (g_win[WK_PANEL].active) return; // inside the main menu everything belongs to the menu
 		UINT tw, th;
 		if (!texSize(tex, tw, th)) return;
@@ -534,7 +552,20 @@ namespace {
 	}
 
 	// The window a UI draw belongs to (-1 = none). 'b' = normalized bounding box of the draw.
-	int windowFor(const float* b, bool hudDone) {
+	int windowFor(const float* b, bool hudDone, bool opaque) {
+		if (isWholeScreen(b)) {
+			// A see-through fade with no window open yet (the "BONFIRE LIT" banner ending) is ignored, so a prompt drawn
+			// after it is still detected. With a window open (the menu while "Quit Game" fades to the loading screen)
+			// any full-screen layer ends the windows, as before.
+			if (!opaque && !anyWindowActive()) return -1;
+			if (anyWindowActive()) {
+				resetWindows();
+				if (g_dumpActive) g_dumpLines.push_back("--- WHOLE SCREEN COVERED: windows ended for this frame ---");
+			}
+			g_screenCovered = true;
+			return -1;
+		}
+		if (g_screenCovered) return -1;
 		if (g_win[WK_PANEL].active && !hudDone) {
 			// The quick menu was drawn before the HUD was finished (the first frame after pressing Start can do that):
 			// only its own corner belongs to the menu, the HUD pieces drawn after it are left to the HUD code.
@@ -542,11 +573,7 @@ namespace {
 			return (cx > 0.60f && cx < 1.35f && cy > -0.30f && cy < 0.32f && (b[2] - b[0]) < 0.6f) ? WK_PANEL : -1;
 		}
 		if (!hudDone) return -1;
-		if (g_win[WK_PANEL].active) {
-			// a real full-screen fade (quitting from the System menu...) stays full-screen
-			if (b[0] > -0.01f && b[1] > -0.01f && b[2] < 1.01f && b[3] < 1.01f && (b[2] - b[0]) > 0.97f && (b[3] - b[1]) > 0.97f) return -1;
-			return WK_PANEL;
-		}
+		if (g_win[WK_PANEL].active) return WK_PANEL;
 		if ((b[2] - b[0]) > 0.97f && (b[3] - b[1]) > 0.97f) return -1;
 		const float cx = (b[0] + b[2]) * 0.5f, cy = (b[1] + b[3]) * 0.5f;
 		for (int k = WK_QUICK; k < WK_COUNT; ++k) {
@@ -602,6 +629,40 @@ namespace {
 		r.right = (LONG)ceilf(axp + (saved.right - axp) * s);
 		r.bottom = (LONG)ceilf(ayp + (saved.bottom - ayp) * s);
 		return SUCCEEDED(dev->SetScissorRect(&r));
+	}
+
+	// ---- swapConfirmIcons / swapXYIcons: two button icons swap places in the button texture (ButtonsEffects).
+	// The face buttons are cells of one row (v = 0): Y / triangle u = 0, X / square 56/1024, B / circle 112/1024,
+	// A / cross 168/1024 (found in the menu hints, e.g. "A:Enter B:Close X:Unequip Item Y:Toggle Status").
+	// A glyph is drawn as one quad (6 vertices: float x y z, u v, colour). Glyphs whose cell is one of a swapped pair
+	// are moved to the other cell of the pair. Only the texture coordinates change, so a replaced texture
+	// (PlayStation icons from tex_override) is swapped just the same.
+	const float kIconYU = 0.0f;         // Y / triangle
+	const float kIconXU = 0.0546875f;   // X / square
+	const float kIconBU = 0.109375f;    // B / circle
+	const float kIconAU = 0.1640625f;   // A / cross
+	const float kIconRowV = 0.0f;
+	void swapButtonIcons(BYTE* verts, UINT count, D3DPRIMITIVETYPE type, bool swapAB, bool swapXY) {
+		const UINT per = (type == D3DPT_TRIANGLELIST) ? 6 : ((type == D3DPT_TRIANGLESTRIP || type == D3DPT_TRIANGLEFAN) ? 4 : 0);
+		if (!per || count < per) return;
+		for (UINT g = 0; g + per <= count; g += per) {
+			float minU = 1e9f, maxU = -1e9f, minV = 1e9f;
+			for (UINT i = g; i < g + per; ++i) {
+				const float* uv = (const float*)(verts + (size_t)i * 24 + 12);
+				if (!(uv[0] > -0.01f && uv[0] < 1.01f && uv[1] > -0.01f && uv[1] < 1.01f)) { minU = 1e9f; break; } // not a UV pair
+				if (uv[0] < minU) minU = uv[0];
+				if (uv[0] > maxU) maxU = uv[0];
+				if (uv[1] < minV) minV = uv[1];
+			}
+			if (minU > 1.0f || maxU - minU > 0.06f || fabsf(minV - kIconRowV) > 0.0005f) continue;
+			float delta = 0.0f;
+			if (swapAB && fabsf(minU - kIconAU) < 0.0005f) delta = kIconBU - kIconAU;
+			else if (swapAB && fabsf(minU - kIconBU) < 0.0005f) delta = kIconAU - kIconBU;
+			else if (swapXY && fabsf(minU - kIconXU) < 0.0005f) delta = kIconYU - kIconXU;
+			else if (swapXY && fabsf(minU - kIconYU) < 0.0005f) delta = kIconXU - kIconYU;
+			if (delta == 0.0f) continue;
+			for (UINT i = g; i < g + per; ++i) ((float*)(verts + (size_t)i * 24 + 12))[0] += delta;
+		}
 	}
 
 	// Subtitles (NPC dialogue, Text00 font, lower part of the screen) shrink toward the bottom centre.
@@ -686,7 +747,16 @@ namespace {
 }
 
 // called from the hotkey action; the whole next frame (all UI draws, with or without the HUD) is written to hud_dump.txt
-void requestHudDump() { g_dumpRequested = true; g_rtDumpFrames = 8; g_menuCapArmFrames = 1500; g_menuCapLeft = 0; }
+void requestHudDump() {
+	if (g_recArmFrames > 0) { g_recWrite = true; return; } // second press: write what the recorder kept
+	g_dumpRequested = true;
+	g_rtDumpFrames = 8;
+	g_menuCapArmFrames = 1500;
+	g_menuCapLeft = 0;
+	g_recArmFrames = 3600;
+	g_recRing.clear();
+	g_recNext = 0;
+}
 
 extern bool g_Force30FPS;
 
@@ -971,6 +1041,36 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 			for (size_t i = 0; i < g_dumpLines.size(); ++i) mf << g_dumpLines[i] << "\n";
 			mf << "=== END ===\n\n";
 		}
+		if (g_recArmFrames > 0) {
+			if (g_recRing.size() < kRecFrames) {
+				g_recRing.push_back(std::vector<std::string>());
+				g_recRing.back().swap(g_dumpLines);
+			}
+			else {
+				g_recRing[g_recNext].swap(g_dumpLines); // overwrite the oldest frame
+				g_recNext = (g_recNext + 1) % kRecFrames;
+			}
+			if (g_recWrite) {
+				std::ofstream rf(GetDirectoryFile("flight_dump.txt"), std::ios::app);
+				rf << "##### FLIGHT RECORDER: last " << g_recRing.size() << " frames, oldest first #####\n\n";
+				const size_t n = g_recRing.size();
+				const size_t start = (n < kRecFrames) ? 0 : g_recNext; // oldest frame
+				for (size_t k = 0; k < n; ++k) {
+					const std::vector<std::string>& fr = g_recRing[(start + k) % n];
+					rf << "=== FRAME -" << (n - 1 - k) << " ===\n";
+					for (size_t i = 0; i < fr.size(); ++i) rf << fr[i] << "\n";
+					rf << "=== END ===\n\n";
+				}
+				g_recWrite = false;
+				g_recArmFrames = 0;
+				g_recRing.clear();
+				g_recNext = 0;
+			}
+			else {
+				--g_recArmFrames;
+				if (g_recArmFrames == 0) { g_recRing.clear(); g_recNext = 0; }
+			}
+		}
 		g_dumpActive = false;
 		g_dumpLines.clear();
 	}
@@ -982,7 +1082,7 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 		g_dumpIsRequested = true;
 		g_dumpActive = true;
 	}
-	if (g_menuCapArmFrames > 0 || g_menuCapLeft > 0) g_dumpActive = true; // the capture records every frame until it is done
+	if (g_menuCapArmFrames > 0 || g_menuCapLeft > 0 || g_recArmFrames > 0) g_dumpActive = true; // captures record every frame
 	if (g_dumpActive) g_dumpLines.push_back("--- FRAME START ---");
 	hudStarted = false;
 	g_hudScalePhase = false;
@@ -1009,6 +1109,7 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 	g_effectsDone = false;
 	publishMouseMap(d3ddev); // this frame's shrunk windows, for the cursor mapping until the next Present
 	resetWindows();
+	g_screenCovered = false;
 
 	// Pace the frame BEFORE submitting to the D3D presentation queue
 	frameTimeManagement();
@@ -1699,7 +1800,16 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		}
 		// the "View" explanation darkens the screen with quads reaching far off-screen (not "valid" UI boxes); inside the
 		// open menu they are menu pieces like everything else
-		if (NumVertices && (wok || g_win[WK_PANEL].active)) winK = windowFor(wb, hudDoneNow);
+		if (NumVertices && (wok || g_win[WK_PANEL].active || isWholeScreen(wb))) {
+			// opaque = every vertex at least ~94 % alpha (D3DCOLOR at byte 4, alpha in its top byte)
+			bool opaque = isWholeScreen(wb);
+			const UINT n = NumVertices > 64 ? 64 : NumVertices;
+			for (UINT i = MinIndex; opaque && i < MinIndex + n; ++i) {
+				const BYTE* c = (const BYTE*)pVertexStreamZeroData + (size_t)i * 12 + 4;
+				if (c[3] < 0xF0) opaque = false;
+			}
+			winK = windowFor(wb, hudDoneNow, opaque);
+		}
 		if (winK >= 0) {
 			hudGrp = HG_NONE;
 			g_lastHudGroup = HG_NONE;
@@ -1840,7 +1950,7 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 			classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, 0, primNv, &wok, wb);
 			if (g_win[WK_PANEL].active) wok = true; // off-screen pieces of the open menu too
 		}
-		if (wok) winK = windowFor(wb, hudDoneNow);
+		if (wok) winK = windowFor(wb, hudDoneNow, false);
 	}
 	if (winK < 0 && g_hudScalePhase && hud && doHud) {
 		IDirect3DBaseTexture9* tt = NULL;
@@ -1913,6 +2023,21 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 		if (isSubText && textBox(pVertexStreamZeroData, VertexStreamZeroStride, primNv, x0, y0, x1, y1) &&
 			(y0 + y1) * 0.5f / 720.0f > 0.70f && (x1 - x0) / 1280.0f < 0.98f) {
 			drawData = scaleUiVertices(textCopy, pVertexStreamZeroData, VertexStreamZeroStride, 0, primNv, subtitleScale(), 0.5f, 0.925f);
+		}
+	}
+	const bool swapAB = Settings::get().getSwapConfirmIcons(), swapXY = Settings::get().getSwapXYIcons();
+	if ((swapAB || swapXY) && VertexStreamZeroStride == 24 && primNv && primNv <= 65536 && drawData) {
+		IDirect3DBaseTexture9* bt = NULL;
+		d3ddev->GetTexture(0, &bt);
+		const bool isButton = bt && isTextureButtonsEffects(bt);
+		if (bt) bt->Release();
+		if (isButton) {
+			if (textCopy.empty() || drawData != (const void*)&textCopy[0]) {
+				std::vector<BYTE> tmp((const BYTE*)drawData, (const BYTE*)drawData + (size_t)primNv * 24);
+				textCopy.swap(tmp);
+				drawData = &textCopy[0];
+			}
+			swapButtonIcons(&textCopy[0], primNv, PrimitiveType, swapAB, swapXY);
 		}
 	}
 	if (textDirect) pauseHudRendering();

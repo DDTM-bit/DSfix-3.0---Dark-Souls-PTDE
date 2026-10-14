@@ -77,6 +77,11 @@ SETTING(float, MenuScale, "menuScale", 1.0f)
 SETTING(float, ListWindowScale, "listWindowScale", 1.0f)
 SETTING(float, PromptScale, "promptScale", 1.0f)
 SETTING(float, SubtitleScale, "subtitleScale", 1.0f)
+// swapConfirmIcons: shows the B / circle icon wherever the game shows A / cross and the other way round (button prompts, menu hints).
+// For Japanese-style controls (circle = confirm) set up in Steam Input, DS4Windows or another controller mapper.
+SETTING(bool, SwapConfirmIcons, "swapConfirmIcons", false)
+// swapXYIcons: shows the Y / triangle icon wherever the game shows X / square and the other way round.
+SETTING(bool, SwapXYIcons, "swapXYIcons", false)
 
 // Screen Options
 SETTING(bool, BorderlessFullscreen, "borderlessFullscreen", false);
