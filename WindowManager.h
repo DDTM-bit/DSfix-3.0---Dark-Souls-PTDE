@@ -1,3 +1,4 @@
+
 #pragma once
 
 #include <Windows.h>
@@ -23,4 +24,9 @@ public:
 	void toggleCursorVisibility();
 	void toggleBorderlessFullscreen();
 	void resize(unsigned clientW, unsigned clientH);
+
+	// DSfix 3.0: remembers the start of user32!ClipCursor before other mods are loaded (called from DllMain)
+	static void rememberClipCursor();
 };
+
+

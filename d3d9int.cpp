@@ -1,3 +1,4 @@
+
 /*	Direct3D9 Interface */
 
 #include <windows.h>
@@ -7,6 +8,8 @@
 
 #include "Settings.h"
 #include "RenderstateManager.h"
+
+void applyDisplayOverrides(IDirect3D9* d3d, UINT adapter, D3DPRESENT_PARAMETERS* pp); // RenderstateManager.cpp
 
 HRESULT APIENTRY hkIDirect3D9::QueryInterface(REFIID riid,  void **ppvObj) {
 	SDLOG(1, "hkIDirect3D9::QueryInterface\n");
@@ -51,6 +54,7 @@ HRESULT APIENTRY hkIDirect3D9::CreateDevice(UINT Adapter, D3DDEVTYPE DeviceType,
 		SDLOG(0, " - Adapter override to %d\n", Settings::get().getD3DAdapterOverride());
 		Adapter = Settings::get().getD3DAdapterOverride();
 	}
+	applyDisplayOverrides(m_pD3Dint, Adapter, &adjusted); // fullscreenHz / enableVsync (game's fullscreen mode only)
 	//if(Settings::get().getEnableTripleBuffering()) {
 	//	D3DDISPLAYMODEEX modeEx;
 	//	D3DDISPLAYMODEEX *pModeEx = NULL;
@@ -108,3 +112,4 @@ HRESULT APIENTRY hkIDirect3D9::RegisterSoftwareDevice(void *pInitializeFunction)
 ULONG APIENTRY hkIDirect3D9::Release() {
 	return m_pD3Dint->Release();
 }
+

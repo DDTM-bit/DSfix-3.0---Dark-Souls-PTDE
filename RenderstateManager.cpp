@@ -1,3 +1,4 @@
+
 #include "RenderstateManager.h"
 
 #include <time.h>
@@ -21,6 +22,7 @@
 #include "resource1.h"
 #include <atlbase.h>
 #include "AspectFix.h"
+#include "Effect.h"
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
 
@@ -275,7 +277,11 @@ namespace {
 	}
 	SSAO::Type ssaoTypeFromSettings() {
 		const std::string& t = Settings::get().getSsaoType();
-		return (t == "VSSAO") ? SSAO::VSSAO : ((t == "HBAO") ? SSAO::HBAO : SSAO::SCAO);
+		// DSfix 3.0: VSSAO2 used to fall through to SCAO (it was never loaded)
+		if (t == "VSSAO") return SSAO::VSSAO;
+		if (t == "HBAO") return SSAO::HBAO;
+		if (t == "VSSAO2") return SSAO::VSSAO2;
+		return SSAO::SCAO;
 	}
 	void dofBufferSize(unsigned& w, unsigned& h) {
 		const unsigned dofRes = Settings::get().getDOFOverrideResolution();
@@ -576,7 +582,10 @@ namespace {
 		if (g_win[WK_PANEL].active) return WK_PANEL;
 		if ((b[2] - b[0]) > 0.97f && (b[3] - b[1]) > 0.97f) return -1;
 		const float cx = (b[0] + b[2]) * 0.5f, cy = (b[1] + b[3]) * 0.5f;
-		for (int k = WK_QUICK; k < WK_COUNT; ++k) {
+		// Prompts and popups are drawn on top of a list window (the bonfire's "Warp to selected bonfire" confirmation over
+		// the warp list), so where they overlap the popup wins: its left half and the OK button used to be shrunk with the
+		// list. (Popup and prompt share scale and anchor, so their order between themselves does not matter.)
+		for (int k = WK_COUNT - 1; k >= WK_QUICK; --k) {
 			const WinState& win = g_win[k];
 			if (win.active && cx >= win.r[0] && cx <= win.r[2] && cy >= win.r[1] && cy <= win.r[3]) return k;
 		}
@@ -672,9 +681,10 @@ namespace {
 	// is open, the cursor position is moved back to where that spot was before the shrink, so hovering and clicking hit
 	// what is drawn under the cursor. Written on the render thread at every Present, read on the game's thread.
 	struct MouseMapData {
-		bool panel, list;
+		bool panel, list, pop;
 		float pax, pay, ps;           // main menu anchor and scale
 		float lax, lay, ls, lr[4];    // list window anchor, scale and (unscaled) rectangle
+		float oax, oay, os, orr[4];   // popup / prompt open over the list window: anchor, scale and (unscaled) rectangle
 		LONG cx, cy, cw, ch;          // client area of the game window, screen coordinates
 		float f[4];                   // UI part of the frame
 	};
@@ -700,6 +710,19 @@ namespace {
 				m.pax = g_win[WK_PANEL].ax; m.pay = g_win[WK_PANEL].ay; m.ps = windowScale(WK_PANEL);
 				m.lax = g_win[WK_LIST].ax; m.lay = g_win[WK_LIST].ay; m.ls = windowScale(WK_LIST);
 				for (int i = 0; i < 4; ++i) m.lr[i] = g_win[WK_LIST].r[i];
+				// a confirmation popup over the list window: the cursor over it must not be moved as if it were over the list
+				if (m.list && (g_win[WK_POPUP].active || g_win[WK_PROMPT].active)) {
+					m.pop = true;
+					m.orr[0] = m.orr[1] = 1e9f; m.orr[2] = m.orr[3] = -1e9f;
+					for (int k = WK_POPUP; k <= WK_PROMPT; ++k) {
+						if (!g_win[k].active) continue;
+						m.oax = g_win[k].ax; m.oay = g_win[k].ay; m.os = windowScale(k);
+						if (g_win[k].r[0] < m.orr[0]) m.orr[0] = g_win[k].r[0];
+						if (g_win[k].r[1] < m.orr[1]) m.orr[1] = g_win[k].r[1];
+						if (g_win[k].r[2] > m.orr[2]) m.orr[2] = g_win[k].r[2];
+						if (g_win[k].r[3] > m.orr[3]) m.orr[3] = g_win[k].r[3];
+					}
+				}
 			}
 		}
 		if (!m.panel && !m.list && !g_mouseMap.panel && !g_mouseMap.list) return; // nothing to change
@@ -730,6 +753,19 @@ void remapMenuCursor(POINT* p) {
 		v = m.pay + (v - m.pay) / m.ps;
 	}
 	else {
+		// a popup over the list window: over the (shrunk) popup the cursor follows the popup, not the list
+		if (m.pop) {
+			const float px0 = m.oax + (m.orr[0] - m.oax) * m.os, px1 = m.oax + (m.orr[2] - m.oax) * m.os;
+			const float py0 = m.oay + (m.orr[1] - m.oay) * m.os, py1 = m.oay + (m.orr[3] - m.oay) * m.os;
+			if (u >= px0 && u <= px1 && v >= py0 && v <= py1) {
+				if (m.os >= 1.0f) return; // popup not shrunk: the real position is right
+				u = m.oax + (u - m.oax) / m.os;
+				v = m.oay + (v - m.oay) / m.os;
+				p->x = m.cx + (LONG)floorf((m.f[0] + u * m.f[2]) * m.cw + 0.5f);
+				p->y = m.cy + (LONG)floorf((m.f[1] + v * m.f[3]) * m.ch + 0.5f);
+				return;
+			}
+		}
 		// only over the shrunk list window itself
 		const float x0 = m.lax + (m.lr[0] - m.lax) * m.ls, x1 = m.lax + (m.lr[2] - m.lax) * m.ls;
 		const float y0 = m.lay + (m.lr[1] - m.lay) * m.ls, y1 = m.lay + (m.lr[3] - m.lay) * m.ls;
@@ -766,6 +802,121 @@ static const char* PIXEL_SHADER_DUMP_DIR = "dsfix/pixelshader_dump";
 static const char* PIXEL_SHADER_OVERRIDE_DIR = "dsfix/pixelshader_override";
 static const char* VERTEX_SHADER_DUMP_DIR = "dsfix/vertexshader_dump";
 static const char* VERTEX_SHADER_OVERRIDE_DIR = "dsfix/vertexshader_override";
+
+// ============================================================================================
+// sharpenStrength: contrast-adaptive sharpening (the AMD FidelityFX CAS formula, as in ReShade's CAS.fx).
+// FXAA / SMAA soften the image a little; this pass brings fine detail back. Edges that are already sharp and strong
+// contrasts get less sharpening than flat detail, so it does not draw bright halos. It runs on the finished 3D image
+// right after AA and before SSAO, the HUD and the menus, so text and UI are never sharpened. 0 (default) = off: no
+// shader is even created. The shader is built into the DLL, no extra file is needed.
+// ============================================================================================
+namespace {
+	const char* kSharpenFx = R"FX(
+texture frameTex2D;
+sampler frameSampler = sampler_state {
+	Texture = <frameTex2D>;
+	AddressU = CLAMP; AddressV = CLAMP;
+	MinFilter = POINT; MagFilter = POINT; MipFilter = NONE;
+	SRGBTexture = FALSE;
+};
+float2 pixelSize;
+float sharpness;
+
+struct VSOUT { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+VSOUT SharpenVS(float3 pos : POSITION, float2 uv : TEXCOORD0) {
+	VSOUT o;
+	o.pos = float4(pos, 1.0);
+	o.uv = uv;
+	return o;
+}
+float3 px(float2 uv, float dx, float dy) {
+	return tex2Dlod(frameSampler, float4(uv + float2(dx, dy) * pixelSize, 0.0, 0.0)).rgb;
+}
+float4 SharpenPS(float2 uv : TEXCOORD0) : COLOR0 {
+	float3 a = px(uv, -1.0, -1.0), b = px(uv, 0.0, -1.0), c = px(uv, 1.0, -1.0);
+	float3 d = px(uv, -1.0,  0.0), e = px(uv, 0.0,  0.0), f = px(uv, 1.0,  0.0);
+	float3 g = px(uv, -1.0,  1.0), h = px(uv, 0.0,  1.0), i = px(uv, 1.0,  1.0);
+	// soft minimum and maximum of the neighbourhood (cross + full 3x3)
+	float3 mn = min(min(min(d, e), min(f, b)), h);
+	float3 mn2 = min(mn, min(min(a, c), min(g, i)));
+	mn += mn2;
+	float3 mx = max(max(max(d, e), max(f, b)), h);
+	float3 mx2 = max(mx, max(max(a, c), max(g, i)));
+	mx += mx2;
+	// amount: high in flat areas, low where the contrast is already high
+	float3 amp = sqrt(saturate(min(mn, 2.0 - mx) / max(mx, 0.00001)));
+	float peak = -1.0 / lerp(8.0, 5.0, saturate(sharpness));
+	float3 w = amp * peak;
+	float3 o = (b * w + d * w + f * w + h * w + e) / (1.0 + 4.0 * w);
+	return float4(saturate(o), 1.0);
+}
+technique Sharpen {
+	pass P0 {
+		VertexShader = compile vs_3_0 SharpenVS();
+		PixelShader = compile ps_3_0 SharpenPS();
+	}
+}
+)FX";
+
+	class SharpenPass : public Effect {
+	public:
+		SharpenPass(IDirect3DDevice9* dev, int w, int h) : Effect(dev), width(w), height(h), effect(NULL),
+			texHandle(NULL), pixelHandle(NULL), sharpHandle(NULL) {
+			ID3DXBuffer* errors = NULL;
+			const DWORD flags = D3DXFX_NOT_CLONEABLE | D3DXSHADER_OPTIMIZATION_LEVEL3;
+			HRESULT hr = D3DXCreateEffect(dev, kSharpenFx, (UINT)strlen(kSharpenFx), NULL, NULL, flags, NULL, &effect, &errors);
+			if (FAILED(hr) || !effect) {
+				SDLOG(0, "Sharpening: shader could not be created (error %08X) %s\n", (unsigned)hr,
+					errors ? (const char*)errors->GetBufferPointer() : "");
+				effect = NULL;
+			}
+			else {
+				texHandle = effect->GetParameterByName(NULL, "frameTex2D");
+				pixelHandle = effect->GetParameterByName(NULL, "pixelSize");
+				sharpHandle = effect->GetParameterByName(NULL, "sharpness");
+			}
+			SAFERELEASE(errors);
+		}
+		virtual ~SharpenPass() { SAFERELEASE(effect); }
+		bool ok() const { return effect != NULL && texHandle && pixelHandle && sharpHandle; }
+
+		void go(IDirect3DTexture9* src, IDirect3DSurface9* dst, float amount) {
+			device->SetVertexDeclaration(vertexDeclaration);
+			device->SetRenderTarget(0, dst);
+			const float px[2] = { 1.0f / (float)width, 1.0f / (float)height };
+			effect->SetTexture(texHandle, src);
+			effect->SetFloatArray(pixelHandle, px, 2);
+			effect->SetFloat(sharpHandle, amount);
+			UINT passes = 0;
+			effect->Begin(&passes, 0);
+			effect->BeginPass(0);
+			quad(width, height);
+			effect->EndPass();
+			effect->End();
+		}
+
+	private:
+		int width, height;
+		ID3DXEffect* effect;
+		D3DXHANDLE texHandle, pixelHandle, sharpHandle;
+	};
+
+	SharpenPass* g_sharpen = NULL;
+	bool g_doSharpen = true; // toggleSharpen hotkey
+
+	// sharpenStrength clamped to 0..1 (0 = off)
+	float sharpenAmount() {
+		const float s = Settings::get().getSharpenStrength();
+		if (!(s > 0.0f)) return 0.0f;
+		return s > 1.0f ? 1.0f : s;
+	}
+}
+
+// hotkey action (Actions.def: toggleSharpen), to compare with and without sharpening
+void toggleSharpenPass() {
+	g_doSharpen = !g_doSharpen;
+	SDLOG(0, "Sharpening %s\n", g_doSharpen ? "on" : "off");
+}
 
 void RSManager::initResources() {
 	SDLOG(0, "RenderstateManager resource initialization started\n");
@@ -843,12 +994,28 @@ void RSManager::initResources() {
 		if (haveShared1 && haveShared2) {
 			ssao = new SSAO(d3ddev, rw, rh, (unsigned)ssaoIdx, ssaoTypeFromSettings(),
 				sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
+			if (!ssao->ok()) {
+				SDLOG(0, "WARNING: SSAO effect could not be loaded - SSAO off\n");
+				SAFEDELETE(ssao);
+			}
 		}
 		else SDLOG(0, "WARNING: SSAO skipped (buffers missing)\n");
 	}
 	if (wantDof) {
 		if (haveDof) gauss = new GAUSS(d3ddev, dofW, dofH, sharedDofTex, sharedDofSurf);
 		else SDLOG(0, "WARNING: DoF blur skipped (buffers missing)\n");
+	}
+	if (sharpenAmount() > 0.0f) {
+		if (haveCore) {
+			g_sharpen = new SharpenPass(d3ddev, rw, rh);
+			if (g_sharpen->ok()) {
+				SDLOG(0, "Sharpening: strength %.2f\n", sharpenAmount());
+			}
+			else {
+				SAFEDELETE(g_sharpen);
+			}
+		}
+		else SDLOG(0, "WARNING: sharpening skipped (buffers missing)\n");
 	}
 	if (Settings::get().getEnableHudMod()) {
 		if (haveCore) hud = new HUD(d3ddev, rw, rh);
@@ -947,6 +1114,7 @@ void RSManager::releaseResources() {
 	SAFERELEASE(prevStateBlock);
 	SAFEDELETE(smaa);
 	SAFEDELETE(fxaa);
+	SAFEDELETE(g_sharpen);
 	SAFEDELETE(ssao);
 	SAFEDELETE(gauss);
 	SAFEDELETE(hud);
@@ -1125,24 +1293,6 @@ D3DPRESENT_PARAMETERS RSManager::adjustPresentationParameters(const D3DPRESENT_P
 	SDLOG(0, " - requested mode:\n");
 	SDLOG(0, " - - Backbuffer(s): %4u x %4u %16s *%d \n", pPresentationParameters->BackBufferWidth, pPresentationParameters->BackBufferHeight, D3DFormatToString(pPresentationParameters->BackBufferFormat), pPresentationParameters->BackBufferCount);
 	SDLOG(0, " - - PresentationInterval: %2u   Windowed: %5s    Refresh: %3u Hz\n", pPresentationParameters->PresentationInterval, pPresentationParameters->Windowed ? "true" : "false", pPresentationParameters->FullScreen_RefreshRateInHz);
-	if (Settings::get().getForceWindowed()) {
-		SDLOG(0, " - OVERRIDING to user-specified windowed mode:\n");
-		WindowManager::get().resize(Settings::get().getPresentWidth(), Settings::get().getPresentHeight());
-		ret.Windowed = TRUE;
-		ret.FullScreen_RefreshRateInHz = 0;
-	}
-	else if (Settings::get().getForceFullscreen()) {
-		SDLOG(0, " - OVERRIDING to user-specified fullscreen mode:\n");
-		ret.Windowed = FALSE;
-		ret.FullScreen_RefreshRateInHz = Settings::get().getFullscreenHz();
-	}
-	if (Settings::get().getForceFullscreen() || Settings::get().getForceWindowed()) {
-		ret.PresentationInterval = Settings::get().getEnableVsync() ? D3DPRESENT_INTERVAL_DEFAULT : D3DPRESENT_INTERVAL_IMMEDIATE;
-		ret.BackBufferWidth = Settings::get().getPresentWidth();
-		ret.BackBufferHeight = Settings::get().getPresentHeight();
-		SDLOG(0, " - - Backbuffer(s): %4u x %4u %16s *%d \n", ret.BackBufferWidth, ret.BackBufferHeight, D3DFormatToString(ret.BackBufferFormat), ret.BackBufferCount);
-		SDLOG(0, " - - PresentationInterval: %2u   Windowed: %5s    Refresh: %3u Hz\n", ret.PresentationInterval, ret.Windowed ? "true" : "false", ret.FullScreen_RefreshRateInHz);
-	}
 	//if(Settings::get().getEnableTripleBuffering()) {
 	//	ret.SwapEffect = D3DSWAPEFFECT_FLIPEX;
 	//	ret.PresentationInterval = D3DPRESENT_FORCEIMMEDIATE;
@@ -1155,6 +1305,66 @@ D3DPRESENT_PARAMETERS RSManager::adjustPresentationParameters(const D3DPRESENT_P
 	//	ret.SwapEffect = D3DSWAPEFFECT_DISCARD;
 	//}
 	return ret;
+}
+
+// DSfix 3.0: fullscreenHz and enableVsync. Both act only in the game's own fullscreen mode (exclusive fullscreen). In a
+// window or borderless window Windows composes the picture at the desktop refresh rate and never tears, so there they
+// are left alone. Called after adjustPresentationParameters when the device is created and on every Reset (Alt+Tab).
+// With the defaults (fullscreenHz 0, enableVsync -1) nothing is changed.
+void applyDisplayOverrides(IDirect3D9* d3d, UINT adapter, D3DPRESENT_PARAMETERS* pp) {
+	if (!pp) return;
+	const int vsync = Settings::get().getEnableVsync();
+	const unsigned wantHz = Settings::get().getFullscreenHz();
+	if (vsync < 0 && wantHz == 0) return;
+	if (pp->Windowed) {
+		SDLOG(0, " - windowed / borderless mode: enableVsync and fullscreenHz not applied (they only act in the game's fullscreen mode)\n");
+		return;
+	}
+
+	if (wantHz > 0) {
+		const UINT gameHz = pp->FullScreen_RefreshRateInHz;
+		UINT best = 0, lowest = 0;
+		char rates[256] = "";
+		if (d3d) {
+			// Display modes are listed by display format: the back buffer format without its alpha channel
+			D3DFORMAT fmt = pp->BackBufferFormat;
+			if (fmt == D3DFMT_A8R8G8B8 || fmt == D3DFMT_UNKNOWN) fmt = D3DFMT_X8R8G8B8;
+			else if (fmt == D3DFMT_A1R5G5B5) fmt = D3DFMT_X1R5G5B5;
+			UINT seen[64]; UINT nSeen = 0;
+			const UINT n = d3d->GetAdapterModeCount(adapter, fmt);
+			for (UINT i = 0; i < n; ++i) {
+				D3DDISPLAYMODE m;
+				if (FAILED(d3d->EnumAdapterModes(adapter, fmt, i, &m))) continue;
+				if (m.Width != pp->BackBufferWidth || m.Height != pp->BackBufferHeight || m.RefreshRate == 0) continue;
+				bool dup = false;
+				for (UINT k = 0; k < nSeen; ++k) if (seen[k] == m.RefreshRate) dup = true;
+				if (dup) continue;
+				if (nSeen < 64) seen[nSeen++] = m.RefreshRate;
+				char one[16];
+				sprintf_s(one, "%s%u", rates[0] ? " " : "", m.RefreshRate);
+				strcat_s(rates, one);
+				// the highest rate not above the request; if every rate is above it, the lowest one
+				if (m.RefreshRate <= wantHz && m.RefreshRate > best) best = m.RefreshRate;
+				if (lowest == 0 || m.RefreshRate < lowest) lowest = m.RefreshRate;
+			}
+		}
+		if (best == 0) best = lowest;
+		if (best) {
+			pp->FullScreen_RefreshRateInHz = best;
+			SDLOG(0, " - fullscreenHz: wanted %u Hz, the game asked %u Hz, using %u Hz (available at %ux%u: %s)\n",
+				wantHz, gameHz, best, pp->BackBufferWidth, pp->BackBufferHeight, rates);
+		}
+		else {
+			SDLOG(0, " - fullscreenHz: no display mode found for %ux%u, keeping the game's %u Hz\n",
+				pp->BackBufferWidth, pp->BackBufferHeight, gameHz);
+		}
+	}
+
+	if (vsync >= 0) {
+		const UINT gameInterval = pp->PresentationInterval;
+		pp->PresentationInterval = vsync > 0 ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
+		SDLOG(0, " - enableVsync %d: presentation interval %08X (the game asked %08X)\n", vsync, pp->PresentationInterval, gameInterval);
+	}
 }
 
 void RSManager::dumpSurface(const char* name, IDirect3DSurface9* surface) {
@@ -1300,6 +1510,11 @@ HRESULT RSManager::redirectSetRenderTarget(DWORD RenderTargetIndex, IDirect3DSur
 			else fxaa->go(tex, rgbaBuffer1Surf);
 			d3ddev->StretchRect(rgbaBuffer1Surf, NULL, sceneRT, NULL, D3DTEXF_NONE);
 		}
+		// sharpening (sharpenStrength): on the anti-aliased image, before SSAO so the ambient occlusion is not sharpened
+		if (g_sharpen && g_doSharpen) {
+			g_sharpen->go(tex, rgbaBuffer1Surf, sharpenAmount());
+			d3ddev->StretchRect(rgbaBuffer1Surf, NULL, sceneRT, NULL, D3DTEXF_NONE);
+		}
 		// perform SSAO
 		if (wantSsao) {
 			ssao->go(tex, zTex, rgbaBuffer1Surf);
@@ -1312,7 +1527,7 @@ HRESULT RSManager::redirectSetRenderTarget(DWORD RenderTargetIndex, IDirect3DSur
 		};
 
 	// we are switching away from the initial 3D-rendered image, do AA and SSAO
-	const bool wantEffects = (ssao && doSsao && !bonfireDisableSSAO) || (doAA && (smaa || fxaa));
+	const bool wantEffects = (ssao && doSsao && !bonfireDisableSSAO) || (doAA && (smaa || fxaa)) || (g_sharpen && g_doSharpen);
 	if (wantEffects && !g_effectsDone) {
 		const bool normalReady = mainRTuses == 2 && mainRT && zSurf;
 		const bool heldReady = g_heldMainRT && g_heldZ && g_heldZSeen && g_heldMainUses == 2;
@@ -1586,19 +1801,33 @@ void RSManager::reloadVssao() {
 	if (!reloadSsaoAllowed(sharedBuffer1Tex, sharedBuffer2Tex)) return;
 	SAFEDELETE(ssao);
 	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), (unsigned)ssaoStrengthIndex(), SSAO::VSSAO, sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
+	if (!ssao->ok()) { SAFEDELETE(ssao); SDLOG(0, "SSAO reload failed - SSAO off\n"); return; }
 	SDLOG(0, "Reloaded SSAO (VSSAO)\n");
 }
 void RSManager::reloadHbao() {
 	if (!reloadSsaoAllowed(sharedBuffer1Tex, sharedBuffer2Tex)) return;
 	SAFEDELETE(ssao);
 	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), (unsigned)ssaoStrengthIndex(), SSAO::HBAO, sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
+	if (!ssao->ok()) { SAFEDELETE(ssao); SDLOG(0, "SSAO reload failed - SSAO off\n"); return; }
 	SDLOG(0, "Reloaded SSAO (HBAO)\n");
 }
 void RSManager::reloadScao() {
 	if (!reloadSsaoAllowed(sharedBuffer1Tex, sharedBuffer2Tex)) return;
 	SAFEDELETE(ssao);
 	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), (unsigned)ssaoStrengthIndex(), SSAO::SCAO, sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
+	if (!ssao->ok()) { SAFEDELETE(ssao); SDLOG(0, "SSAO reload failed - SSAO off\n"); return; }
 	SDLOG(0, "Reloaded SSAO (SCAO)\n");
+}
+void RSManager::reloadSsao() {
+	if (!reloadSsaoAllowed(sharedBuffer1Tex, sharedBuffer2Tex)) return;
+	SAFEDELETE(ssao);
+	ssao = new SSAO(d3ddev, Settings::get().getRenderWidth(), Settings::get().getRenderHeight(), (unsigned)ssaoStrengthIndex(), ssaoTypeFromSettings(), sharedBuffer1Tex, sharedBuffer1Surf, sharedBuffer2Tex, sharedBuffer2Surf);
+	if (!ssao->ok()) {
+		SDLOG(0, "SSAO reload failed (see the errors above) - SSAO off until the next reload\n");
+		SAFEDELETE(ssao);
+		return;
+	}
+	SDLOG(0, "Reloaded SSAO (%s)\n", Settings::get().getSsaoType().c_str());
 }
 
 void RSManager::reloadGauss() {
@@ -1762,6 +1991,13 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 	if (g_hudScalePhase && hud && doHud && pVertexStreamZeroData) {
 		float qb[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		hudGrp = classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, NULL, qb);
+		// The small right end cap of a long health / stamina bar ([0.615 0.100 0.620 0.128] with a high-HP character) lies
+		// right of the top-left zone's x 0.60 limit and stayed at its unscaled place. A thin health-bar textured piece in the
+		// rows of the bars belongs to its bar. (The quick menu's backdrop, the only other such quad up there, is wide.)
+		if (hudGrp == HG_NONE && !pausedHudRT && idxIsHealthbarTex) {
+			const float qw = qb[2] - qb[0], qh = qb[3] - qb[1];
+			if (qw < 0.015f && qh < 0.05f && qb[1] > 0.05f && qb[3] < 0.20f && qb[0] > 0.30f && qb[2] < 0.85f) hudGrp = HG_TL;
+		}
 		// The dialogue vignette (a wide gradient over the lower half of the screen) must not go through the HUD buffer,
 		// otherwise the corner opacity regions cut visible edges into it. (The full-screen fade-to-black is NOT affected.)
 		wideBottomOverlay = (qb[2] - qb[0]) > 0.7f && (qb[3] - qb[1]) < 0.7f && (qb[1] + qb[3]) * 0.5f > 0.6f;
@@ -2193,6 +2429,12 @@ void RSManager::finishHudRendering() {
 	d3ddev->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
 	d3ddev->SetRenderTarget(0, prevRenderTarget);
 	onHudRT = false;
+	// The HUD is done for this frame: nothing may resume drawing into its buffer any more. It could be finished while
+	// "paused": in the second frame of the quick menu's grow-in, its backdrop (HudHealthbar texture, a vertex colour that
+	// looks like the lock-on marker's) paused the buffer and finished the HUD in the same draw. The next menu piece then
+	// resumed the finished buffer, the menu was drawn into it and the whole HUD was composited a second time (the
+	// bottom-left items flashed once, brighter where their opacity is below 1).
+	pausedHudRT = false;
 	// draw HUD to screen
 	storeRenderState();
 	hud->go(rgbaBuffer1Tex, prevRenderTarget);
@@ -2431,3 +2673,4 @@ void RSManager::measureOcclusionScale() {
 	occlusionScale = scale > 0.01f ? scale : 1.0f;
 	SDLOG(2, "occlusionScale (calculated) = %f\n", occlusionScale);
 }
+

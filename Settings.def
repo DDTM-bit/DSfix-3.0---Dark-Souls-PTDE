@@ -1,3 +1,4 @@
+
 // xmacro file for .ini setting definition
 // format: (type, cname, ininame, default value) 
 	
@@ -12,9 +13,12 @@ SETTING(unsigned, DOFBlurAmount, "dofBlurAmount", 0);
 
 SETTING(unsigned, AAQuality, "aaQuality", 0);
 SETTING(std::string, AAType, "aaType", "FXAA");
+// sharpenStrength: contrast-adaptive sharpening of the 3D image after AA (not the HUD or menus). 0 = off, up to 1.0
+SETTING(float, SharpenStrength, "sharpenStrength", 0.0f);
 
 SETTING(unsigned, SsaoStrength, "ssaoStrength", 0);
 SETTING(unsigned, SsaoScale, "ssaoScale", 0);
+// ssaoType: VSSAO, VSSAO2, HBAO or SCAO (any other name uses SCAO)
 SETTING(std::string, SsaoType, "ssaoType", "VSSAO");
 
 SETTING(bool, UnlockFPS, "unlockFPS", 0);
@@ -85,10 +89,13 @@ SETTING(bool, SwapXYIcons, "swapXYIcons", false)
 
 // Screen Options
 SETTING(bool, BorderlessFullscreen, "borderlessFullscreen", false);
-SETTING(bool, ForceFullscreen, "forceFullscreen", false);
-SETTING(bool, ForceWindowed, "forceWindowed", false);
 SETTING(unsigned, PresentWidth, "presentWidth", 0);
 SETTING(unsigned, PresentHeight, "presentHeight", 0);
-SETTING(bool, EnableVsync, "enableVsync", true);
-SETTING(unsigned, FullscreenHz, "fullscreenHz", 60);
+// enableVsync and fullscreenHz act only in the game's own fullscreen mode (not in a window or borderless window).
+// enableVsync: -1 = leave the game's choice (default), 0 = vsync off, 1 = vsync on
+// fullscreenHz: 0 = leave the game's choice (default), otherwise the refresh rate to use (checked against the monitor)
+SETTING(int, EnableVsync, "enableVsync", -1);
+SETTING(unsigned, FullscreenHz, "fullscreenHz", 0);
 SETTING(int, D3DAdapterOverride, "d3dAdapterOverride", -1);
+
+

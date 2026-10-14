@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <mutex>
 #include "RenderstateManager.h"
+#include "WindowManager.h"
 #include <vector>
 #include <intrin.h>
 
@@ -247,7 +248,7 @@ void InitializeDSfix() {
         hMod = LoadLibrary(syspath);
     }
     else {
-        sdlog(0, "Loading dinput wrapper %s\n", Settings::get().getDinput8dllWrapper().c_str());
+        SDLOG(0, "Loading dinput wrapper %s\n", Settings::get().getDinput8dllWrapper().c_str());
         hMod = LoadLibrary(Settings::get().getDinput8dllWrapper().c_str());
     }
     if (!hMod) {
@@ -255,6 +256,7 @@ void InitializeDSfix() {
         errorExit((LPTSTR)"Loading of specified dinput wrapper");
     }
     oDirectInput8Create = (tDirectInput8Create)GetProcAddress(hMod, "DirectInput8Create");
+    SDLOG(0, " - dinput8 loaded at %p, DirectInput8Create %s\n", (void*)hMod, oDirectInput8Create ? "found" : "MISSING");
 }
 
 // 2. Immediate setup for timing-critical Engine functions
@@ -262,6 +264,7 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
     if (dwReason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hDll);
         g_hModule = hDll;
+        WindowManager::rememberClipCursor(); // before any other mod is loaded (see WindowManager.cpp)
 
         ApplyModernDPIAwareness();
         OptimizeCPUExecution();
@@ -402,3 +405,5 @@ std::string strError(int err) {
 	strerror_s(&result[0], result.length(), err);
 	return result;
 }
+
+

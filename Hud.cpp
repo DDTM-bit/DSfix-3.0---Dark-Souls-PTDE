@@ -1,3 +1,4 @@
+
 #include "Hud.h"
 
 #include <string>
@@ -142,3 +143,5 @@ void HUD::rect(float srcLeft, float srcTop, float srcWidth, float srcHeight,
 	};
 	device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(quad[0]));
 }
+
+

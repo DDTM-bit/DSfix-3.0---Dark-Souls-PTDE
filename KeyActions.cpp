@@ -1,3 +1,4 @@
+
 #include "KeyActions.h"
 
 #include <fstream>
@@ -12,6 +13,7 @@ using namespace std;
 #include "RenderstateManager.h"
 
 void requestHudDump(); // defined in RenderstateManager.cpp
+void toggleSharpenPass(); // defined in RenderstateManager.cpp
 
 // DSfix 3.0: Global flag for smart physics toggle
 bool g_Force30FPS = false;
@@ -108,3 +110,5 @@ void KeyActions::processIO() {
 void KeyActions::##_name() { _action; };
 #include "Actions.def"
 #undef ACTION
+
+

@@ -1,3 +1,4 @@
+
 #include "SSAO.h"
 
 #include <string>
@@ -41,7 +42,7 @@ SSAO::SSAO(IDirect3DDevice9* device, int width, int height, unsigned strength, T
 	DWORD flags = D3DXFX_NOT_CLONEABLE | D3DXSHADER_OPTIMIZATION_LEVEL3;
 
 	// Load effect from file
-	const char* shader;
+	const char* shader = "dsfix\\VSSAO.fx";
 	switch(type) {
 		case VSSAO: shader = "dsfix\\VSSAO.fx"; break;
 		case HBAO: shader = "dsfix\\HBAO.fx"; break;
@@ -49,9 +50,16 @@ SSAO::SSAO(IDirect3DDevice9* device, int width, int height, unsigned strength, T
 		case VSSAO2: shader = "dsfix\\VSSAO2.fx"; break;
 	}
 	SDLOG(0, "%s load, scale %s, strength %s\n", shader, scaleText.c_str(), strengthMacros[strength].Name);	
-	ID3DXBuffer* errors;
+	ID3DXBuffer* errors = NULL;
+	effect = NULL;
+	depthTexHandle = frameTexHandle = prevPassTexHandle = NULL;
 	HRESULT hr = D3DXCreateEffectFromFile(device, shader, &defines.front(), NULL, flags, NULL, &effect, &errors);
-	if(hr != D3D_OK) SDLOG(0, "ERRORS:\n %s\n", errors->GetBufferPointer());
+	if (hr != D3D_OK || !effect) {
+		// DSfix 3.0: a missing or broken .fx file no longer crashes the game; SSAO is just left off (see RSManager)
+		SDLOG(0, "ERRORS loading %s (error %08X):\n %s\n", shader, (unsigned)hr, errors ? (const char*)errors->GetBufferPointer() : "(file not found?)");
+		effect = NULL;
+	}
+	SAFERELEASE(errors);
 	
 	buffer1Tex = sharedTex1;
 	buffer1Surf = sharedSurf1;
@@ -59,9 +67,11 @@ SSAO::SSAO(IDirect3DDevice9* device, int width, int height, unsigned strength, T
 	buffer2Surf = sharedSurf2;
 
 	// get handles
-	depthTexHandle = effect->GetParameterByName(NULL, "depthTex2D");
-	frameTexHandle = effect->GetParameterByName(NULL, "frameTex2D");
-    prevPassTexHandle = effect->GetParameterByName(NULL, "prevPassTex2D");
+	if (effect) {
+		depthTexHandle = effect->GetParameterByName(NULL, "depthTex2D");
+		frameTexHandle = effect->GetParameterByName(NULL, "frameTex2D");
+		prevPassTexHandle = effect->GetParameterByName(NULL, "prevPassTex2D");
+	}
 }
 
 SSAO::~SSAO() {
@@ -69,6 +79,7 @@ SSAO::~SSAO() {
 }
 
 void SSAO::go(IDirect3DTexture9 *frame, IDirect3DTexture9 *depth, IDirect3DSurface9 *dst) {
+	if (!effect) return;
 	device->SetVertexDeclaration(vertexDeclaration);
 	
     mainSsaoPass(depth, buffer1Surf);
@@ -145,3 +156,5 @@ void SSAO::combinePass(IDirect3DTexture9* frame, IDirect3DTexture9* ao, IDirect3
 	effect->EndPass();
 	effect->End();
 }
+
+

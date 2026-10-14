@@ -34,6 +34,7 @@ To ensure maximum stability on modern machines, configure your environment using
 * **Backup Saves Fix:** Now, the default path can be set in `DSFix.ini` file and it supports Windows environment variables. Example: `%USERPROFILE%\Documents\NBGI\DarkSouls`
 * **Smarter Save Backups:** The backup system now verifies if your game save has actually changed before creating a new backup. This prevents your limited backup slots from being overwritten by identical copies if you frequently launch and exit the game without making any new progress.
 * **HUD Scaling and Opacity Customization:** Resize Individualy the size of the health and stamina bars, the item inventory HUD, the souls counter, and the boss health bar. Set Individual Opacity Levels for the each of the three hud elements. Fixed the issue with boss health bars,switching indicator (for weapons/spells/items), subtitles, damage numbers.
+* **Menu and subtitles scaling Individualy:** Shrinks the game’s menus and windows so they cover less of the screen.
 * **Sun/Moon & Water Issue Fixed:** Now they render perfectly at their intended screen-space locations. For resolution 1440p or 4K, DoF Override Resolution must not be 0 otherwise the water stays at vanilla quality.
 * **60 FPS Bonfire Fix and Smart Protection:** Automatically detects and neutralizes the infamous bonfire animation softlock while dynamically disabling SSAO while resting to prevent dark halo artifacts around your character.
 * **High-DPI & Display Scaling Fix:** Stripped out the 150% DPI stretching. On Windows 10/11 with 1440p or 4K monitors set to desktop scaling, the game misinterprets dimensions causing blurry bilinear upscaling and mouse-capture offset bugs. With DSfix 3.0, it will never artificially scale the game window.
@@ -42,6 +43,8 @@ To ensure maximum stability on modern machines, configure your environment using
 * **Modern CPU Power Management:** Dynamically disables Windows 11 EcoQoS (Power Throttling) to ensure the game engine runs at maximum turbo clocks. By removing artificial priority masks, it allows the native OS Thread Director to smoothly balance the game's rendering, audio, and networking threads across modern hybrid CPUs without causing driver starvation or micro-stutters.
 * **VRAM Optimization:** Post-processing effects (AA, SSAO, DoF) now utilize a shared buffer pool, reducing VRAM usage and improving frame pacing.
 * **Text:** Includes high visual quality of the in-game fonts
+* **Controller button prompt swap: **Swaps the controller button icons the game displays, for players who have swapped the buttons themselves in a controller mapper (for example Japanese-style controls, where circle confirms)
+* **Sharpening: **brings back the fine texture detail that anti-aliasing softens. It uses contrast-adaptive sharpening (AMD FidelityFX CAS), which sharpens flat detail more than edges that are already sharp, so it doesn’t create bright halos.It only affects the 3D image: the HUD, menus and text are never sharpened.
 * **High-FPS Fixes:**
   - **Core Physics & Movement**
     - **Slope Gravity & Friction:** Sliding down slopes and embankments no longer happens at light-speed.
@@ -60,10 +63,10 @@ To ensure maximum stability on modern machines, configure your environment using
     - **Timers & Fades:** Corrects the duration of weapon buff glows, dropped item pulses, and ragdoll blend-in animations.
     - **Menu Input Repeat:** Locks the D-Pad and menu navigation delay to the engine's default timing so players do not accidentally skip past items in their inventory.
     - **HUD Animations:** Health, stamina, and boss bars smoothly fill and deplete rather than instantly snapping to new values. The loading screen bonfire swirl rotates at the correct cinematic speed.
-    - **Native 16:10 & Steam Deck Aspect Ratio Support:** Dark Souls PTDE natively forces 16:9 letterboxing (black bars) on taller displays, such as 16:10 monitors or the Steam Deck's 1280x800 screen. This fix automatically detects displays taller than 16:9 and removes the black bars by seamlessly expanding the vertical camera field-of-view (Vert+). The game now perfectly fills the entire screen without any image stretching or horizontal squashing. Standard 16:9 displays are left completely untouched.
   - **Engine Stability**
     - **VRR / G-Sync Stutter Fix:** Bypasses the engine's hardcoded "Present" catch-up loop, eliminating erratic refresh-rate bouncing and micro-stutters on variable-refresh-rate monitors.
-	
+
+* **Native 16:10 & Steam Deck Aspect Ratio Support:** Dark Souls PTDE natively forces 16:9 letterboxing (black bars) on taller displays, such as 16:10 monitors or the Steam Deck's 1280x800 screen. This fix automatically detects displays taller than 16:9 and removes the black bars by seamlessly expanding the vertical camera field-of-view (Vert+). The game now perfectly fills the entire screen without any image stretching or horizontal squashing. Standard 16:9 displays are left completely untouched.
 ---
 
 ## Bugs and Issues Fixed

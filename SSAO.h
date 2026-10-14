@@ -1,3 +1,4 @@
+
 #pragma once
 
 #include <dxgi.h>
@@ -15,6 +16,7 @@ public:
     virtual ~SSAO();
 
 	void go(IDirect3DTexture9 *frame, IDirect3DTexture9 *depth, IDirect3DSurface9 *dst);
+	bool ok() const { return effect != NULL; } // false if the .fx file could not be loaded / compiled
 
 private:
 	int width, height;
@@ -33,3 +35,5 @@ private:
 	void hBlurPass(IDirect3DTexture9 *depth, IDirect3DTexture9* src, IDirect3DSurface9* dst);
 	void combinePass(IDirect3DTexture9* frame, IDirect3DTexture9* ao, IDirect3DSurface9* dst);
 };
+
+

@@ -1,3 +1,4 @@
+
 #pragma once
 
 #include <map>
@@ -181,6 +182,7 @@ public:
 	void reloadVssao();
 	void reloadHbao();
 	void reloadScao();
+	void reloadSsao(); // the ssaoType from the ini (reloadSSAOEffect)
 	void reloadGauss();
 	void reloadAA();
 
@@ -219,3 +221,5 @@ public:
 	HRESULT redirectCreateVertexShader(CONST DWORD *pfunction, IDirect3DVertexShader9 **ppShader);
 	float getOcclusionScale() const { return occlusionScale; }
 };
+
+

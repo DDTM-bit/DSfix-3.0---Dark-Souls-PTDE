@@ -15,6 +15,8 @@ ACTION(takeHudlessScreenshot, RSManager::get().enableTakeScreenshot())
 // Graphics Actions
 
 ACTION(toggleAA, RSManager::get().toggleAA())
+ACTION(toggleSMAA, RSManager::get().toggleAA()) // same as toggleAA (older key files use this name)
+ACTION(toggleSharpen, toggleSharpenPass())
 ACTION(toggleVSSAO, RSManager::get().toggleVssao())
 ACTION(toggleDofGauss, RSManager::get().toggleDofGauss())
 
@@ -28,6 +30,7 @@ ACTION(toggle30FPSLimit, Settings::get().toggle30FPSLimit())
 ACTION(reloadVSSAOEffect, RSManager::get().reloadVssao())
 ACTION(reloadHBAOEffect, RSManager::get().reloadHbao())
 ACTION(reloadSCAOEffect, RSManager::get().reloadScao())
+ACTION(reloadSSAOEffect, RSManager::get().reloadSsao()) // reloads the ssaoType from the ini (e.g. after editing its .fx file)
 ACTION(reloadGAUSSEffect, RSManager::get().reloadGauss())
 ACTION(reloadAAEffect, RSManager::get().reloadAA())
 
@@ -37,3 +40,5 @@ ACTION(userTrigger, SDLOG(0, "==================================================
 ACTION(reloadHUDVertices, RSManager::get().reloadHudVertices());
 
 ACTION(togglePaused, RSManager::get().togglePaused());
+
+

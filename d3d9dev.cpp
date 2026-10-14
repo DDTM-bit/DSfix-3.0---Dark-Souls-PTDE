@@ -1,3 +1,4 @@
+
 #include <windows.h>
 #include <fstream>
 #include <ostream>
@@ -13,6 +14,8 @@
 #include "SaveManager.h"
 #include "AspectFix.h"
 #include "d3d9query.h"
+
+void applyDisplayOverrides(IDirect3D9* d3d, UINT adapter, D3DPRESENT_PARAMETERS* pp); // RenderstateManager.cpp
 
 using namespace std;
 
@@ -504,6 +507,15 @@ HRESULT APIENTRY hkIDirect3DDevice9::Reset(D3DPRESENT_PARAMETERS *pPresentationP
 	displayMode.RefreshRate = 60;
 
 	D3DPRESENT_PARAMETERS adjusted = RSManager::get().adjustPresentationParameters(pPresentationParameters);
+	{
+		// fullscreenHz / enableVsync (game's fullscreen mode only), on the adapter the device was created on
+		IDirect3D9* d3d = NULL;
+		D3DDEVICE_CREATION_PARAMETERS cp = {};
+		m_pD3Ddev->GetDirect3D(&d3d);
+		m_pD3Ddev->GetCreationParameters(&cp);
+		applyDisplayOverrides(d3d, cp.AdapterOrdinal, &adjusted);
+		if (d3d) d3d->Release();
+	}
 	
 	HRESULT hRet = m_pD3Ddev->Reset(&adjusted);
 
@@ -747,3 +759,5 @@ HRESULT APIENTRY hkIDirect3DDevice9::UpdateTexture(IDirect3DBaseTexture9 *pSourc
 HRESULT APIENTRY hkIDirect3DDevice9::ValidateDevice(DWORD *pNumPasses) {
 	return m_pD3Ddev->ValidateDevice(pNumPasses);
 }
+
+

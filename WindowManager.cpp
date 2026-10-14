@@ -1,6 +1,41 @@
+
 #include "WindowManager.h"
+#include "main.h"
+#include "Settings.h"
+#include <cstring>
 
 WindowManager WindowManager::instance;
+
+// DSfix 2.x called ClipCursor on every frame (ClipCursor(NULL) when the cursor is not captured). Input mods such as
+// Dark Souls Input Customizer hook ClipCursor and use that call as their per-frame update: switching between camera
+// and menu cursor, hiding and capturing the cursor. DSfix 3.0 only calls ClipCursor when it clips the cursor itself
+// (so other programs' clipping is left alone), which starved those mods: mouse camera dead, left click always the
+// attack button. So when another mod has hooked ClipCursor (its first bytes differ from the ones remembered at
+// startup), DSfix calls it on every frame again, exactly like 2.x. Without such a mod nothing changes.
+namespace {
+	BYTE  g_clipOrig[8] = {};
+	BYTE* g_clipAddr = NULL;
+	bool  g_clipHookLogged = false;
+
+	bool clipCursorHookedByMod() {
+		if (!g_clipAddr) return false;
+		const bool hooked = memcmp(g_clipAddr, g_clipOrig, sizeof(g_clipOrig)) != 0;
+		if (hooked && !g_clipHookLogged) {
+			g_clipHookLogged = true;
+			SDLOG(0, "WindowManager: ClipCursor is hooked by another mod (e.g. Dark Souls Input Customizer) - calling it every frame as DSfix 2.x did\n");
+		}
+		return hooked;
+	}
+}
+
+void WindowManager::rememberClipCursor() {
+	HMODULE u32 = ::GetModuleHandleA("user32.dll");
+	if (!u32) u32 = ::LoadLibraryA("user32.dll");
+	BYTE* p = u32 ? (BYTE*)::GetProcAddress(u32, "ClipCursor") : NULL;
+	if (!p) return;
+	memcpy(g_clipOrig, p, sizeof(g_clipOrig));
+	g_clipAddr = p;
+}
 
 void WindowManager::applyCursorCapture() {
 	// DSfix 3.0: only hold the cursor while the game window is actually in front. After Alt+Tab the cursor is released
@@ -30,6 +65,9 @@ void WindowManager::applyCursorCapture() {
 	if (cursorClipped) {
 		::ClipCursor(NULL);
 		cursorClipped = false;
+	}
+	else if (clipCursorHookedByMod()) {
+		::ClipCursor(NULL); // feeds the input mod's per-frame update (see above)
 	}
 }
 
@@ -101,3 +139,5 @@ void WindowManager::resize(unsigned clientW, unsigned clientH) {
  	::AdjustWindowRect(&desiredRect, lStyle, false);
 	::SetWindowPos(hwnd, NULL, desiredRect.left, desiredRect.top, 0, 0, SWP_NOZORDER | SWP_NOSIZE);
 }
+
+
