@@ -41,6 +41,7 @@ To ensure maximum stability on modern machines, configure your environment using
 * **High-Precision Frame Pacing:** Replaced the broken framerate pacing with a modern solution.
 * **Alt+Tab Memory Leak Plugged:** In vanilla DSfix 2.4, the mod forgot to delete custom FXAA, SSAO, and DoF buffers during a Device Lost event, silently eating VRAM until the game crashed. This is now fixed, the engine is vastly more resilient to buffer collisions.
 * **Modern CPU Power Management:** Dynamically disables Windows 11 EcoQoS (Power Throttling) to ensure the game engine runs at maximum turbo clocks. By removing artificial priority masks, it allows the native OS Thread Director to smoothly balance the game's rendering, audio, and networking threads across modern hybrid CPUs without causing driver starvation or micro-stutters.
+* **Controller button icons.** button prompts and quick menu, built into DSfix. It detects the controller connected at game start (PlayStation, Switch Pro or Xbox). Can be set to OFF to use the game's default icons, or files in tex_override. 
 * **VRAM Optimization:** Post-processing effects (AA, SSAO, DoF) now utilize a shared buffer pool, reducing VRAM usage and improving frame pacing.
 * **Text:** Includes high visual quality of the in-game fonts
 * **Controller button prompt swap: **Swaps the controller button icons the game displays, for players who have swapped the buttons themselves in a controller mapper (for example Japanese-style controls, where circle confirms)
