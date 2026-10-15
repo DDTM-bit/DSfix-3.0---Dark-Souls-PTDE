@@ -325,6 +325,34 @@ namespace {
 	bool g_effectsDone = false;
 	unsigned g_heldFramesUsed = 0;
 
+	// ---- boss bar rows: the background quad of each boss bar ([0.308 0.815 0.827 0.831]: the full width of the bar) is
+	// remembered, so the bar's semi-transparent fills drawn while the HUD buffer is paused (the golden "damage taken" part)
+	// can be recognised by sitting exactly in that row, at any width. They used to be taken for an enemy health bar once
+	// the boss was below about half health (narrower than 0.3 of the screen) and stayed at their unscaled place.
+	struct BossRow { float x0, y0, x1, y1; unsigned frame; };
+	BossRow g_bossRows[4] = {};
+	unsigned g_frameNo = 0;
+	void rememberBossRow(const float* b) {
+		int slot = -1, oldest = 0;
+		for (int i = 0; i < 4; ++i) {
+			const BossRow& r = g_bossRows[i];
+			if (r.frame && fabsf(r.y0 - b[1]) < 0.004f && fabsf(r.y1 - b[3]) < 0.004f && fabsf(r.x0 - b[0]) < 0.004f) { slot = i; break; }
+			if (g_bossRows[i].frame < g_bossRows[oldest].frame) oldest = i;
+		}
+		if (slot < 0) slot = oldest;
+		BossRow& r = g_bossRows[slot];
+		r.x0 = b[0]; r.y0 = b[1]; r.x1 = b[2]; r.y1 = b[3]; r.frame = g_frameNo;
+	}
+	bool onBossRow(const float* b) {
+		for (int i = 0; i < 4; ++i) {
+			const BossRow& r = g_bossRows[i];
+			if (!r.frame || g_frameNo - r.frame > 10) continue; // seen in the last few frames only
+			if (fabsf(r.y0 - b[1]) < 0.004f && fabsf(r.y1 - b[3]) < 0.004f && fabsf(r.x0 - b[0]) < 0.004f && b[2] <= r.x1 + 0.004f)
+				return true;
+		}
+		return false;
+	}
+
 	// ---- render target order dump (same hotkey as the HUD dump; the next frames go to rt_dump.txt) ----
 	int g_rtDumpFrames = 0;
 	std::vector<std::string> g_rtDumpLines;
@@ -537,6 +565,15 @@ namespace {
 		// main menu, left background piece: [0.028 0.022 0.827 0.992] (Inventory, Status, Level Up...) or [0.028 0.021 0.827 0.293] (System)
 		if (b[0] > 0.015f && b[0] < 0.045f && b[1] > 0.005f && b[1] < 0.04f && b[2] > 0.80f && b[2] < 0.85f && h > 0.2f) {
 			activateWindow(WK_PANEL, 0.0f, 0.0f, 1.0f, 1.0f, kMenuAnchorX, kMenuAnchorY);
+			return;
+		}
+		// gesture menu (Back / Select button), a wide window along the top: drawn after the HUD as two background halves,
+		// left [0.048 0.036 0.479 0.319] and right [0.525 0.036 0.956 0.319]. Like the main menu it owns every later UI
+		// draw of the frame (portrait, gesture figures, texts, button hints) and shrinks with menuScale, toward its own
+		// top-left corner. Without this its pieces were taken for HUD pieces (top-left corner, hudScaleTopLeft) until a
+		// piece on the right started the main menu (top-right corner): the window came apart in two halves.
+		if (b[0] > 0.035f && b[0] < 0.065f && b[1] > 0.02f && b[1] < 0.055f && b[3] > 0.29f && b[3] < 0.35f && w > 0.40f && w < 0.46f) {
+			activateWindow(WK_PANEL, 0.0f, 0.0f, 1.0f, 1.0f, b[0], b[1]);
 			return;
 		}
 		// list window on the left: bonfire menu [0.058 0.155 0.433 0.878]
@@ -1268,6 +1305,7 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 		}
 	}
 	nrts = 0;
+	++g_frameNo;
 	doft[0] = 0; doft[1] = 0; doft[2] = 0;
 	mainRT = NULL;
 	mainRTuses = 0;
@@ -2004,13 +2042,14 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		// A full-screen quad after the HUD (fade from/to black after loading, death fade, ...). hddp >= 7 means the
 		// health bars and humanity counter have already been drawn, i.e. the HUD itself is done.
 		fullScreenFade = (onHudRT || pausedHudRT) && hddp >= 7 && (qb[2] - qb[0]) > 0.95f && (qb[3] - qb[1]) > 0.95f;
+		if (hudGrp == HG_BOSS && idxIsHealthbarTex && (qb[2] - qb[0]) > 0.3f && (qb[3] - qb[1]) < 0.03f) rememberBossRow(qb);
 		if (pausedHudRT) {
 			// The game also "pauses" for any semi-transparent health-bar textured quad. That covers world-anchored things
 			// (lock-on marker, enemy health bars: must NOT be scaled) but also HUD pieces of our own: the boss bar fill and the
 			// golden flash of the item squares. Tell them apart by size/position.
 			const float qw = qb[2] - qb[0], qh = qb[3] - qb[1];
 			bool own = false;
-			if (hudGrp == HG_BOSS) own = qw > 0.3f;                    // wide boss bar
+			if (hudGrp == HG_BOSS) own = qw > 0.3f || onBossRow(qb);   // wide boss bar, or a fill in a boss bar's row
 			else if (hudGrp == HG_BL) own = qw >= 0.03f && qb[0] > 0.05f && qb[2] < 0.31f && qb[1] > 0.49f && qb[3] < 0.97f; // item cluster: flash squares, fading frames, underlines (lock-on marker is ~0.026 wide)
 			else if (hudGrp == HG_BR) own = qw > 0.09f && qb[0] > 0.75f; // souls box
 			else if (hudGrp == HG_TL) own = qb[0] > 0.05f && qb[0] < 0.16f; // the player's own bars start at x ~ 0.137
