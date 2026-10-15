@@ -2379,9 +2379,119 @@ unsigned RSManager::isDof(unsigned width, unsigned height) {
 
 extern HMODULE g_hModule; // Bring in the module handle from main.cpp
 
+// ---- controllerIcons: button prompt textures for the connected controller ----
+// The two controller icon textures (40fbc4ad, the game's ButtonsEffects, and 43a2b23a) are built into the DLL in one
+// set per controller type. The font textures (db8a58fa / f9d8db89) are not touched by this.
+// With controllerIcons auto, the type is found once, the first time the game loads one of them (on the game's own
+// thread, never in DllMain): the HID game controllers Windows knows (Raw Input device list, by vendor: Sony,
+// Nintendo, Microsoft), then XInput as a last resort. DirectInput is not used at all, so it works the
+// same with or without a dinput8 wrapper chained by DSfix. With a type set (auto or forced), files with those two
+// names in tex_override are ignored; with off, or with auto and no controller found, everything works as before.
+// The icon sets must keep the layout of the original textures (the game picks each icon by its position).
+namespace {
+	enum PadType { PAD_NONE = 0, PAD_XBOX, PAD_PLAYSTATION, PAD_SWITCH };
+	const char* padName(int t) {
+		return t == PAD_XBOX ? "Xbox" : t == PAD_PLAYSTATION ? "PlayStation" : t == PAD_SWITCH ? "Switch Pro" : "none";
+	}
+
+	bool xinputConnected() {
+		typedef DWORD(WINAPI* XInputGetState_t)(DWORD, void*);
+		static const char* dlls[] = { "xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll" };
+		for (int d = 0; d < 3; ++d) {
+			HMODULE h = LoadLibraryA(dlls[d]);
+			if (!h) continue;
+			XInputGetState_t get = (XInputGetState_t)GetProcAddress(h, "XInputGetState");
+			bool any = false;
+			if (get) {
+				BYTE state[16]; // XINPUT_STATE is 16 bytes
+				for (DWORD i = 0; i < 4 && !any; ++i) any = get(i, state) == ERROR_SUCCESS;
+			}
+			FreeLibrary(h);
+			if (get) return any;
+		}
+		return false;
+	}
+
+	int detectPadType() {
+		bool sony = false, nintendo = false, microsoft = false;
+		UINT n = 0;
+		if (GetRawInputDeviceList(NULL, &n, sizeof(RAWINPUTDEVICELIST)) == 0 && n > 0 && n < 512) {
+			std::vector<RAWINPUTDEVICELIST> list(n);
+			const UINT got = GetRawInputDeviceList(list.data(), &n, sizeof(RAWINPUTDEVICELIST));
+			for (UINT i = 0; i < got && got != (UINT)-1; ++i) {
+				if (list[i].dwType != RIM_TYPEHID) continue;
+				RID_DEVICE_INFO info = {};
+				info.cbSize = sizeof(info);
+				UINT sz = sizeof(info);
+				if (GetRawInputDeviceInfoA(list[i].hDevice, RIDI_DEVICEINFO, &info, &sz) == (UINT)-1) continue;
+				const RID_DEVICE_INFO_HID& hid = info.hid;
+				if (hid.usUsagePage != 0x01 || (hid.usUsage != 0x04 && hid.usUsage != 0x05)) continue; // joystick / gamepad
+				if (hid.dwVendorId == 0x054C) sony = true;
+				else if (hid.dwVendorId == 0x057E) nintendo = true;
+				else if (hid.dwVendorId == 0x045E) microsoft = true;
+				SDLOG(0, "controllerIcons: game controller %04X:%04X\n", hid.dwVendorId, hid.dwProductId);
+			}
+		}
+		// a Sony or Nintendo pad wins over an Xbox one: tools like Steam Input add a virtual Xbox pad next to it
+		if (sony) return PAD_PLAYSTATION;
+		if (nintendo) return PAD_SWITCH;
+		if (microsoft || xinputConnected()) return PAD_XBOX;
+		return PAD_NONE;
+	}
+
+	// -1 = setting off, otherwise the PadType (PAD_NONE: auto found no controller, nothing is replaced)
+	int controllerIconType() {
+		static int type = -2;
+		if (type != -2) return type;
+		const std::string& v = Settings::get().getControllerIcons();
+		if (v.find("auto") == 0) type = detectPadType();
+		else if (v.find("xbox") == 0) type = PAD_XBOX;
+		else if (v.find("playstation") == 0) type = PAD_PLAYSTATION;
+		else if (v.find("switch") == 0) type = PAD_SWITCH;
+		else type = -1;
+		if (type >= 0) SDLOG(0, "controllerIcons %s: using the %s icons\n", v.c_str(), padName(type));
+		return type;
+	}
+
+	const UINT32 kIconTexA = 0x40fbc4ad, kIconTexB = 0x43a2b23a;
+	int iconResource(UINT32 hash, int type) {
+		const bool a = hash == kIconTexA;
+		switch (type) {
+		case PAD_XBOX:        return a ? IDR_TEX_XBOX_40FBC4AD : IDR_TEX_XBOX_43A2B23A;
+		case PAD_PLAYSTATION: return a ? IDR_TEX_PS_40FBC4AD : IDR_TEX_PS_43A2B23A;
+		case PAD_SWITCH:      return a ? IDR_TEX_SWITCH_40FBC4AD : IDR_TEX_SWITCH_43A2B23A;
+		default:              return 0;
+		}
+	}
+
+	HRESULT loadEmbeddedTexture(int resourceId, LPDIRECT3DDEVICE9 pDevice, UINT MipLevels, DWORD Usage, D3DPOOL Pool, DWORD Filter, DWORD MipFilter, D3DCOLOR ColorKey, D3DXIMAGE_INFO* pSrcInfo, PALETTEENTRY* pPalette, LPDIRECT3DTEXTURE9* ppTexture) {
+		HRSRC hRes = FindResource(g_hModule, MAKEINTRESOURCE(resourceId), RT_RCDATA);
+		if (!hRes) return E_FAIL;
+		HGLOBAL hData = LoadResource(g_hModule, hRes);
+		const DWORD resSize = SizeofResource(g_hModule, hRes);
+		void* pResData = hData ? LockResource(hData) : NULL;
+		if (!pResData || resSize == 0) return E_FAIL;
+		return TrueD3DXCreateTextureFromFileInMemoryEx(pDevice, pResData, resSize, D3DX_DEFAULT, D3DX_DEFAULT, MipLevels, Usage, D3DFMT_FROM_FILE, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette, ppTexture);
+	}
+}
+
 HRESULT RSManager::redirectD3DXCreateTextureFromFileInMemoryEx(LPDIRECT3DDEVICE9 pDevice, LPCVOID pSrcData, UINT SrcDataSize, UINT Width, UINT Height, UINT MipLevels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, DWORD Filter, DWORD MipFilter, D3DCOLOR ColorKey, D3DXIMAGE_INFO* pSrcInfo, PALETTEENTRY* pPalette, LPDIRECT3DTEXTURE9* ppTexture) {
-	if (Settings::get().getEnableTextureOverride()) {
-		UINT32 hash = SuperFastHash((char*)const_cast<void*>(pSrcData), SrcDataSize);
+	const bool iconsOn = Settings::get().getControllerIcons().find("off") != 0;
+	const bool overrideOn = Settings::get().getEnableTextureOverride();
+	const UINT32 texHash = (iconsOn || overrideOn) ? SuperFastHash((char*)const_cast<void*>(pSrcData), SrcDataSize) : 0;
+
+	// controllerIcons: the two icon textures come from the set of the detected controller, before tex_override
+	if (iconsOn && (texHash == kIconTexA || texHash == kIconTexB)) {
+		const int res = iconResource(texHash, controllerIconType());
+		if (res != 0) {
+			const HRESULT hr = loadEmbeddedTexture(res, pDevice, MipLevels, Usage, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette, ppTexture);
+			if (SUCCEEDED(hr)) return hr;
+		}
+		// no controller found (or the set is missing from the DLL): as before
+	}
+
+	if (overrideOn) {
+		UINT32 hash = texHash;
 		SDLOG(4, "Trying texture override size: %8u, hash: %8x\n", SrcDataSize, hash);
 
 		// 1. Check Prefetch Cache (loads from tex_override on boot)

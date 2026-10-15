@@ -86,6 +86,14 @@ SETTING(float, SubtitleScale, "subtitleScale", 1.0f)
 SETTING(bool, SwapConfirmIcons, "swapConfirmIcons", false)
 // swapXYIcons: shows the Y / triangle icon wherever the game shows X / square and the other way round.
 SETTING(bool, SwapXYIcons, "swapXYIcons", false)
+// controllerIcons: button prompt and quick menu icons for your controller, built into DSfix.
+//   off         - as before: the game's icons, or your own files in tex_override (40fbc4ad / 43a2b23a)
+//   auto        - the controller connected when the game starts: PlayStation, Switch Pro or Xbox (if both a
+//                 PlayStation / Switch pad and an Xbox pad are found, the PlayStation / Switch one is used);
+//                 no controller found: as with off
+//   xbox, playstation, switch - always that set
+// When a set is used, files with those two names in tex_override are ignored.
+SETTING(std::string, ControllerIcons, "controllerIcons", "off")
 
 // Screen Options
 SETTING(bool, BorderlessFullscreen, "borderlessFullscreen", false);
