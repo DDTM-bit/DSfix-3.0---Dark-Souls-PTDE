@@ -1317,6 +1317,7 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 	resetWindows();
 	g_screenCovered = false;
 
+
 	// Pace the frame BEFORE submitting to the D3D presentation queue
 	frameTimeManagement();
 

@@ -1,3 +1,4 @@
+
 #include "UIFix.h"
 #include "PhysicsFixes.h" // For g_PhysicsDeltaTime
 #include "main.h"
@@ -62,6 +63,21 @@ namespace {
             g_gauge_saved[i] = *steps[i];
             *steps[i] = g_gauge_saved[i] * s;
         }
+
+        // Golden trail on small changes (stamina while running at 60+ FPS).
+        // Gauge layout (found with a diagnostic log): +0x20 = value the bar must show (0..1), +0x3C = value it shows,
+        // +0x44 = step down, +0x4C = step up, +0x50 = trail state, +0x54 = trail delay timer (advanced in real time).
+        // The follower snaps when the gap is not bigger than the step; otherwise it starts the golden trail
+        // (1 s delay, then draining). Sprinting takes 1 stamina point = 1/160 = 0.00625 every 0.1 s: at 30 FPS the
+        // step 0.012 is bigger, so the bar snaps. At 60 FPS the scaled step is 0.006, smaller than one point, so
+        // every point started a trail. When the gap fits in the unscaled (30 FPS) step, the follower gets that
+        // step: it snaps exactly as it does at 30 FPS. Bigger gaps (real damage) keep the scaled step, so the
+        // golden trail of a hit still drains at the same speed at any frame rate.
+        const float target = *(float*)(gauge + 0x20);
+        const float shown = *(float*)(gauge + 0x3C);
+        const float down = shown - target, up = target - shown;
+        if (down > 0.0f && down <= g_gauge_saved[0]) *steps[0] = g_gauge_saved[0];
+        if (up > 0.0f && up <= g_gauge_saved[2]) *steps[2] = g_gauge_saved[2];
     }
 
     void __stdcall gauge_scale_leave(uint8_t* gauge) {
@@ -71,16 +87,52 @@ namespace {
         *(float*)(gauge + 0x4C) = g_gauge_saved[2];
     }
 
+    // The follower gets its gauge in eax. ecx, edx and xmm0-xmm7 are saved around our own C++ code, so it cannot
+    // change any register the original function reads or returns.
     __declspec(naked) void gauge_follow_hook() {
         __asm {
-            push eax
+            push eax                        // [esp] = gauge (kept for the leave call)
+            push ecx
+            push edx
+            sub esp, 128
+            movdqu [esp + 0], xmm0
+            movdqu [esp + 16], xmm1
+            movdqu [esp + 32], xmm2
+            movdqu [esp + 48], xmm3
+            movdqu [esp + 64], xmm4
+            movdqu [esp + 80], xmm5
+            movdqu [esp + 96], xmm6
+            movdqu [esp + 112], xmm7
             push eax
             call gauge_scale_enter
+            movdqu xmm0, [esp + 0]
+            movdqu xmm1, [esp + 16]
+            movdqu xmm2, [esp + 32]
+            movdqu xmm3, [esp + 48]
+            movdqu xmm4, [esp + 64]
+            movdqu xmm5, [esp + 80]
+            movdqu xmm6, [esp + 96]
+            movdqu xmm7, [esp + 112]
+            add esp, 128
+            pop edx
+            pop ecx
             mov eax, dword ptr[esp]
             call dword ptr[g_gauge_follow_tramp]
-            push eax
+            push eax                        // results of the original function
+            push ecx
+            push edx
+            sub esp, 32
+            movdqu [esp + 0], xmm0
+            movdqu [esp + 16], xmm1
+            push dword ptr[esp + 44]        // the gauge saved at entry
             call gauge_scale_leave
+            movdqu xmm0, [esp + 0]
+            movdqu xmm1, [esp + 16]
+            add esp, 32
+            pop edx
+            pop ecx
             pop eax
+            add esp, 4                      // drop the saved gauge
             ret
         }
     }
@@ -131,3 +183,5 @@ bool installUIFix() {
     SDLOG(0, "UIFix: loading swirl %s, HUD gauge follower %s.\n", swirlOk ? "patched" : "SKIPPED", gaugeOk ? "patched" : "SKIPPED");
     return swirlOk && gaugeOk;
 }
+
+

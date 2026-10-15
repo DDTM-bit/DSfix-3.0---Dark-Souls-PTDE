@@ -52,7 +52,7 @@ To ensure maximum stability on modern machines, configure your environment using
     - **Ladder & Ledge Snap:** Prevents the player from falling through the floor at the bottom of ladders, and stops the engine from aggressively gluing the character to curved lips or stairs.
     - **Sprint Graze Check:** Fixes the engine bug where running near walls or complex geometry artificially slows the player down at high framerates.
   - **Combat & Camera**
-    - **Accurate Stamina Drain:** Preserves fractional engine ticks to guarantee a strict 10-point-per-second sprint drain, preventing stamina from lasting artificially long at non-divisible framerates.
+    - **Accurate Stamina Drain:** Keeps the leftover time of each sprint tick instead of discarding it, guaranteeing a strict 10-point-per-second drain at any frame rate, so stamina no longer lasts artificially long at frame rates that don’t divide evenly into the tick.
     - **Lock-On Body Tracking:** Normalizes the bone rotation speeds for the torso, head, and hips. Enemies will no longer instantly snap their upper bodies to track you, and your own aiming remains smooth.
     - **Camera Smoothing & Panning:** Makes all 16 camera blend weights framerate-independent. Switching lock-on targets smoothly pans the camera instead of instantly snapping, and the mouse/stick "look-at boost" fades out correctly in real-time.
   - **Multiplayer & Phantoms**

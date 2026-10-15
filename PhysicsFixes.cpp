@@ -1,3 +1,4 @@
+
 #include "PhysicsFixes.h"
 #include "main.h"
 #include <cmath>
@@ -216,3 +217,5 @@ void updatePhysicsDeltas(float deltaSeconds) {
     g_GhostTurnScale = (float)s;
     g_GhostStepScale[0] = g_GhostStepScale[1] = g_GhostStepScale[2] = g_GhostStepScale[3] = (float)s;
 }
+
+
