@@ -12,7 +12,7 @@ namespace {
     // --- Loading Screen Swirl ---
     // FrpgMenuDlgNowLoading::update (0xC383C0) advances two counters by `mov eax, 1` every time it is drawn; at
     // 30 FPS that is 30 steps a second. The mov becomes a call returning how many 1/30 s steps have REALLY elapsed
-    // since the last call (zofrea's approach: measured with its own clock, because the swirl is not drawn every
+    // since the last call (measured with its own clock, because the swirl is not drawn every
     // frame and the engine step is clamped, so the frame step would make it run slow during loading hitches).
     double g_swirl_carry = 0.0;
     LARGE_INTEGER g_swirl_freq = {};
@@ -142,7 +142,7 @@ bool installUIFix() {
     DWORD oldProtect;
     bool swirlOk = false, gaugeOk = false;
 
-    // 1. Patch Loading Swirl (0x00C383FD): exact `mov eax, 1` (as in zofrea)
+    // 1. Patch Loading Swirl (0x00C383FD): exact `mov eax, 1`
     const DWORD kSwirlSite = 0x00C383FD;
     static const BYTE kSwirlExpect[5] = { 0xB8, 0x01, 0x00, 0x00, 0x00 };
     if (memcmp((const void*)kSwirlSite, kSwirlExpect, sizeof(kSwirlExpect)) == 0) {
@@ -156,7 +156,7 @@ bool installUIFix() {
     }
     else SDLOG(0, "UIFix: loading swirl site 0x%08X does not match this build, swirl not patched.\n", kSwirlSite);
 
-    // 2. Patch HUD Gauge Follower (0x00C88BA0): exact `movss xmm3, [eax+44h]` (as in zofrea).
+    // 2. Patch HUD Gauge Follower (0x00C88BA0): exact `movss xmm3, [eax+44h]`.
     //    Independent of the swirl: one failing no longer disables the other.
     const DWORD kGaugeFollow = 0x00C88BA0;
     static const BYTE kGaugeExpect[5] = { 0xF3, 0x0F, 0x10, 0x58, 0x44 };

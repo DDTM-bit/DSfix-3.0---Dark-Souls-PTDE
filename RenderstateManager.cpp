@@ -237,32 +237,6 @@ namespace {
 	};
 
 
-	// Part of the frame the UI is drawn in (x, y, width, height as fractions); not the whole frame only with the 16:10 correction.
-	float g_uiFrac[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
-
-	// With the 16:10 / 4:3 letterbox correction active, 2D UI draws (INT16 quads, stride 12, and text, stride 24) are
-	// drawn inside the game's own 16:9 viewport so the HUD and menus are not stretched. Full-screen quads (fades,
-	// menu backgrounds) keep the expanded viewport so they still cover the whole screen.
-	bool enterUiViewport(IDirect3DDevice9* dev, UINT stride, const void* data, UINT first, UINT count, D3DVIEWPORT9& saved) {
-		if (!dev || !isAspectActive() || (stride != 12 && stride != 24)) return false;
-		if (stride == 12 && data && count) {
-			float box[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-			classifyHudQuad((const INT16*)data, stride, first, count, NULL, box);
-			if ((box[2] - box[0]) > 0.95f && (box[3] - box[1]) > 0.95f) return false;
-		}
-		D3DVIEWPORT9 cur, game;
-		if (FAILED(dev->GetViewport(&cur)) || !getGameViewport(cur, &game)) return false;
-		saved = cur;
-		if (cur.Width && cur.Height) { // where the UI sits inside the frame, for the menu mouse mapping
-			g_uiFrac[0] = (float)((int)game.X - (int)cur.X) / cur.Width;
-			g_uiFrac[1] = (float)((int)game.Y - (int)cur.Y) / cur.Height;
-			g_uiFrac[2] = (float)game.Width / cur.Width;
-			g_uiFrac[3] = (float)game.Height / cur.Height;
-		}
-		return SUCCEEDED(dev->SetViewport(&game));
-	}
-
-
 	// Validated effect settings, shared by initResources() and the reload hotkeys.
 	// -1 means "effect off". Values above the highest preset are clamped instead of indexing past the shader macro tables.
 	int ssaoStrengthIndex() {
@@ -723,7 +697,6 @@ namespace {
 		float lax, lay, ls, lr[4];    // list window anchor, scale and (unscaled) rectangle
 		float oax, oay, os, orr[4];   // popup / prompt open over the list window: anchor, scale and (unscaled) rectangle
 		LONG cx, cy, cw, ch;          // client area of the game window, screen coordinates
-		float f[4];                   // UI part of the frame
 	};
 	volatile LONG g_mouseSeq = 0;     // odd while being written
 	MouseMapData g_mouseMap = {};
@@ -743,7 +716,6 @@ namespace {
 			}
 			else {
 				m.cx = o.x; m.cy = o.y; m.cw = rc.right; m.ch = rc.bottom;
-				for (int i = 0; i < 4; ++i) m.f[i] = g_uiFrac[i];
 				m.pax = g_win[WK_PANEL].ax; m.pay = g_win[WK_PANEL].ay; m.ps = windowScale(WK_PANEL);
 				m.lax = g_win[WK_LIST].ax; m.lay = g_win[WK_LIST].ay; m.ls = windowScale(WK_LIST);
 				for (int i = 0; i < 4; ++i) m.lr[i] = g_win[WK_LIST].r[i];
@@ -781,10 +753,10 @@ void remapMenuCursor(POINT* p) {
 		MemoryBarrier();
 		b = g_mouseSeq;
 	}
-	if (a != b || (a & 1) || (!m.panel && !m.list) || m.cw <= 0 || m.ch <= 0 || m.f[2] <= 0.0f || m.f[3] <= 0.0f) return;
+	if (a != b || (a & 1) || (!m.panel && !m.list) || m.cw <= 0 || m.ch <= 0) return;
 	// screen -> normalized UI coordinates
-	float u = (((float)(p->x - m.cx) / m.cw) - m.f[0]) / m.f[2];
-	float v = (((float)(p->y - m.cy) / m.ch) - m.f[1]) / m.f[3];
+	float u = (float)(p->x - m.cx) / m.cw;
+	float v = (float)(p->y - m.cy) / m.ch;
 	if (m.panel) {
 		u = m.pax + (u - m.pax) / m.ps;
 		v = m.pay + (v - m.pay) / m.ps;
@@ -798,8 +770,8 @@ void remapMenuCursor(POINT* p) {
 				if (m.os >= 1.0f) return; // popup not shrunk: the real position is right
 				u = m.oax + (u - m.oax) / m.os;
 				v = m.oay + (v - m.oay) / m.os;
-				p->x = m.cx + (LONG)floorf((m.f[0] + u * m.f[2]) * m.cw + 0.5f);
-				p->y = m.cy + (LONG)floorf((m.f[1] + v * m.f[3]) * m.ch + 0.5f);
+				p->x = m.cx + (LONG)floorf(u * m.cw + 0.5f);
+				p->y = m.cy + (LONG)floorf(v * m.ch + 0.5f);
 				return;
 			}
 		}
@@ -811,8 +783,8 @@ void remapMenuCursor(POINT* p) {
 		v = m.lay + (v - m.lay) / m.ls;
 	}
 	// normalized UI -> screen
-	p->x = m.cx + (LONG)floorf((m.f[0] + u * m.f[2]) * m.cw + 0.5f);
-	p->y = m.cy + (LONG)floorf((m.f[1] + v * m.f[3]) * m.ch + 0.5f);
+	p->x = m.cx + (LONG)floorf(u * m.cw + 0.5f);
+	p->y = m.cy + (LONG)floorf(v * m.ch + 0.5f);
 }
 
 namespace {
@@ -1231,19 +1203,6 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 		captureNextFrame = false;
 		SDLOG(0, "== CAPTURING FRAME ==\n")
 	}
-	if (timingIntroMode) {
-		skippedPresents++;
-		if (skippedPresents >= 1200u && !Settings::get().getUnlockFPS()) {
-			SDLOG(1, "Intro mode ended (timeout)!\n");
-			timingIntroMode = false;
-		}
-		if (skippedPresents >= 3000u) {
-			SDLOG(1, "Intro mode ended (full timeout)!\n");
-			timingIntroMode = false;
-		}
-		return S_OK;
-	}
-	skippedPresents = 0;
 	if (g_dumpActive) {
 		if (g_dumpIsRequested) {
 			std::ofstream df(GetDirectoryFile("hud_dump.txt"), std::ios::app);
@@ -1753,14 +1712,6 @@ HRESULT RSManager::redirectSetTexture(DWORD Stage, IDirect3DBaseTexture9* pTextu
 	//	sprintf(buffer, "tex%4d__", index);
 	//	dumpSurface(buffer, surf);
 	//}
-	if (Settings::get().getSkipIntro() && !timingIntroMode && isTextureBandainamcoLogo(pTexture)) {
-		SDLOG(1, "Intro mode started!\n");
-		timingIntroMode = true;
-	}
-	if (timingIntroMode && (isTextureGuiElements1(pTexture) || isTextureMenuscreenLogo(pTexture) || isTextureText(pTexture))) {
-		SDLOG(1, "Intro mode ended due to texture!\n");
-		timingIntroMode = false;
-	}
 	if (!hudStarted && isTextureHudHealthbar(pTexture)) {
 		SDLOG(1, "HUD started!\n");
 		hudStarted = true;
@@ -2155,8 +2106,6 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		pauseHudRendering();
 		routedDirect = true;
 	}
-	D3DVIEWPORT9 uiSavedVp;
-	const bool uiVp = enterUiViewport(d3ddev, VertexStreamZeroStride, pVertexStreamZeroData, MinIndex, NumVertices, uiSavedVp);
 	D3DVIEWPORT9 savedVp;
 	const bool vpChanged = applyHudViewport(d3ddev, hudGrp, savedVp); // no-op for window draws (hudGrp is HG_NONE)
 	// window draws: vertices moved toward the window's anchor (and the scissor rectangle with them)
@@ -2180,7 +2129,6 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 	}
 	if (scChanged) d3ddev->SetScissorRect(&savedSc);
 	if (vpChanged) d3ddev->SetViewport(&savedVp);
-	if (uiVp) d3ddev->SetViewport(&uiSavedVp);
 	if (routedDirect) resumeHudRendering();
 	//if(onHudRT) {
 	//	if(takeScreenshot) dumpSurface("HUD_IndexPrimUP", rgbaBuffer1Surf);
@@ -2304,8 +2252,6 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 		dumpHudDraw("PRIM", onHudRT ? "WINDOW" : (pausedHudRT ? "PAUSED" : "DIRECT"), dumpTexInfo(dt, dt ? getTextureName(dt) : "none").c_str(), winK >= 0 ? 10 + winK : (int)hudGrp, PrimitiveCount, VertexStreamZeroStride, 0, primNv, pVertexStreamZeroData, PrimitiveType == D3DPT_TRIANGLELIST ? 6 : 4);
 		if (dt) dt->Release();
 	}
-	D3DVIEWPORT9 uiSavedVp;
-	const bool uiVp = enterUiViewport(d3ddev, VertexStreamZeroStride, pVertexStreamZeroData, 0, primNv, uiSavedVp);
 	D3DVIEWPORT9 savedVp;
 	// float HUD text was already moved above; other formats (unknown/INT16) still use the viewport transform
 	const bool vpChanged = (VertexStreamZeroStride == 24 || winK >= 0) ? false : applyHudViewport(d3ddev, hudGrp, savedVp);
@@ -2362,7 +2308,6 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 	if (textDirect) resumeHudRendering();
 	if (scChanged) d3ddev->SetScissorRect(&savedSc);
 	if (vpChanged) d3ddev->SetViewport(&savedVp);
-	if (uiVp) d3ddev->SetViewport(&uiSavedVp);
 	if (subbed) resumeHudRendering();
 	//if(onHudRT) {
 	//	if(takeScreenshot) dumpSurface("HUD_PrimUP", rgbaBuffer1Surf);

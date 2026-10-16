@@ -109,6 +109,21 @@ To ensure maximum stability on modern machines, configure your environment using
 
 ### Override Language not keeping the change, sometimes the user needed to play with compatibility mode.
 * **Applied Solution:** Language override no longer modifies the Windows registry or requires compatibility mode. It is applied inside the game process only
+
+### Script Memory Fix
+* **Applied Solution:** Keeps the enemy AI scripts cleaning up their memory as often as they do at 30 FPS. At high frame rates, unused script data used to build up much faster, and in crowded areas the game could run out of memory and close itself without warning.
+
+### Online Player Movement
+* **Applied Solution:** Other players' characters (summons and invaders) now walk, run and sprint according to their real speed. Above 30 FPS, a running player used to be shown walking.
+
+### 16:10 and Taller Screens
+* **Applied Solution:** On 16:10 (and 4:3) resolutions, the game's camera now uses the real shape of your screen, so you see more of the world above and below, with the same width as on 16:9. The world, effects, lock-on marker and enemy health bars all line up, with nothing cut off at the edges. 16:9 screens are not affected.
+
+### Skip Intro
+* **Applied Solution:** `skipIntro` now takes you straight to the title screen, skipping the start-up autosave notice and the Bandai Namco, FromSoftware and Havok logos. It no longer speeds up the game's clock to do this, so it has no effect on timing or performance during play. The flaming autosave icon still appears in game as usual.
+
+### Bonfire Softlock Fix (improved)
+* **Applied Solution:** The bonfire softlock check now verifies the game's memory before reading it. It works exactly as before, but no longer triggers hidden errors during loading screens or when joining another player's world.
 ---
 
 
@@ -120,3 +135,9 @@ Thanks to the native engine-level integrations in DSfix 3.0, you no longer need 
 * **Custom Resolution Utilities (CRU):** Handled seamlessly by setting the native Borderless Fullscreen toggle in `DSfix.ini`.
 * **High DPI Override Executables:** Windows 11 scaling is bypassed automatically on startup.
 * **Task Manager CPU Affinity Scripts:** Thread priority is now locked at the engine level.
+
+## Credits
+* **Durante/PeterTh:** Huge thanks for the foundational work on original DSFix 2.4
+* **zofrea:** Special thanks for reverse-engineering discoveries.
+* **Hal47:** Credit for the Sun and Moon rendering fixes.
+* **Bonfire softlock fix:** The Idea is from Sean Pesce.

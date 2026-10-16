@@ -95,7 +95,7 @@ namespace {
 bool installSfxFix() {
     BYTE* site = (BYTE*)kRegisterEffect;
 
-    // Safety check (as in zofrea): mov eax,[0x013787C8] ; push esi ; push edi
+    // Safety check: mov eax,[0x013787C8] ; push esi ; push edi
     static const BYTE kExpect[7] = { 0xA1, 0xC8, 0x87, 0x37, 0x01, 0x56, 0x57 };
     if (std::memcmp(site, kExpect, sizeof(kExpect)) != 0) {
         SDLOG(0, "SfxFix: Memory mismatch, skipping particle effect fix.\n");

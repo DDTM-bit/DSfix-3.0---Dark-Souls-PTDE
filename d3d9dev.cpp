@@ -33,7 +33,7 @@ HRESULT APIENTRY hkIDirect3DDevice9::Present(CONST RECT *pSourceRect, CONST RECT
 	KeyActions::get().processIO();
 	WindowManager::get().applyCursorCapture();
 	SaveManager::get().tick();
-	// 16:10 / Steam Deck: a letterboxed Present destination is opened up to the whole window (as in zofrea)
+	// 16:10 / Steam Deck: a letterboxed Present destination is opened up to the whole window
 	const RECT* dst = isAspectActive() ? correctPresentRect(m_pD3Ddev, hDestWindowOverride, pDestRect) : pDestRect;
 	return RSManager::get().redirectPresent(pSourceRect, dst, hDestWindowOverride, pDirtyRegion);
 }
@@ -71,12 +71,6 @@ HRESULT APIENTRY hkIDirect3DDevice9::SetVertexShaderConstantF(UINT StartRegister
 	//	SDLOG(0, "!!4ball\n");
 	//	return m_pD3Ddev->SetVertexShaderConstantF(StartRegister, replacement, Vector4fCount);
 	//}*/ 
-	if (isAspectActive() && pConstantData && Vector4fCount >= 4 && Vector4fCount <= 24) {
-		float corrected[24 * 4];
-		if (correctMatrixUpload(pConstantData, Vector4fCount, corrected)) {
-			return m_pD3Ddev->SetVertexShaderConstantF(StartRegister, corrected, Vector4fCount);
-		}
-	}
 	return m_pD3Ddev->SetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount);
 }
 
@@ -706,10 +700,6 @@ HRESULT APIENTRY hkIDirect3DDevice9::SetTextureStageState(DWORD Stage, D3DTEXTUR
 HRESULT APIENTRY hkIDirect3DDevice9::SetTransform(D3DTRANSFORMSTATETYPE State, CONST D3DMATRIX *pMatrix) {
 	// was logged at level 0 (every call, with the whole matrix) - far too noisy for logLevel 1
 	SDLOG(10, "SetTransform state: %u matrix: \n%s\n", State, D3DMatrixToString(pMatrix));
-	if (State == D3DTS_PROJECTION && isAspectActive()) {
-		D3DMATRIX corrected;
-		if (correctProjection(pMatrix, &corrected)) return m_pD3Ddev->SetTransform(State, &corrected);
-	}
 	return m_pD3Ddev->SetTransform(State, pMatrix);	
 }
 

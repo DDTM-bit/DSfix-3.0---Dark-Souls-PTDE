@@ -3,7 +3,7 @@
 #include <windows.h>
 #include <cstring>
 
-// Sprint stamina tick (original research: zofrea, ui.cpp).
+// Sprint stamina tick.
 // The character update (fn 0xE80A00) keeps a timer at [chr+0x168]: while the character spends stamina it adds the
 // frame time, and when the sum reaches the interval (0.1 s, the float at 0x12DF014) it takes one point off the
 // stamina and then STORES ZERO in the timer (movss [ebx+168h], xmm2 at 0xE80B00, xmm2 being 0). The leftover of the
@@ -32,7 +32,7 @@ __declspec(naked) void stamina_tick_stub() {
 bool installStaminaFix() {
     BYTE* site = (BYTE*)kTickStoreSite;
 
-    // Safety checks (as in zofrea): the exact original instruction, and a sane interval constant
+    // Safety checks: the exact original instruction, and a sane interval constant
     if (memcmp(site, kExpect, sizeof(kExpect)) != 0) {
         SDLOG(0, "StaminaFix: Memory mismatch at 0x%08X, skipping sprint stamina fix.\n", kTickStoreSite);
         return false;

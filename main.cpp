@@ -19,6 +19,7 @@
 #include "Detouring.h"
 #include "SaveManager.h"
 #include "FPS.h"
+#include "IntroSkip.h"
 #include <cstdint>
 #include <mutex>
 #include "RenderstateManager.h"
@@ -35,6 +36,76 @@ char dlldir[320];
 std::mutex logMutex; // DSfix 3.0: Global mutex to prevent thread-racing crashes
 
 // DSfix 3.0: Integrated Bonfire Input Softlock Fix (Original logic by SeanPesce & Nullby7e)
+// Every pointer of the chain is checked with VirtualQuery before it is read. The chain
+// holds stale values while characters are rebuilt (map loads, joining another world): before, each read through such a
+// value raised a hidden access violation (caught by __try, so no crash, but every 200 ms during loads, and seen by any
+// crash reporter or debugger in the process). Now an unreadable pointer simply counts as "not sitting", exactly what the
+// __except path did. Everything else is unchanged.
+namespace {
+    bool bonfireReadable(uintptr_t address, size_t size) {
+        MEMORY_BASIC_INFORMATION info = {};
+        if (address < 0x10000 || !VirtualQuery((LPCVOID)address, &info, sizeof(info))) return false;
+        if (info.State != MEM_COMMIT || (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) return false;
+        const uintptr_t end = (uintptr_t)info.BaseAddress + info.RegionSize;
+        return address + size <= end;
+    }
+
+    bool bonfireRead32(uintptr_t address, uint32_t* out) {
+        if (!bonfireReadable(address, 4)) return false;
+        __try {
+            *out = *(const uint32_t*)address;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    bool bonfireRead8(uintptr_t address, uint8_t* out) {
+        if (!bonfireReadable(address, 1)) return false;
+        __try {
+            *out = *(const uint8_t*)address;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    // Reads the state the watchdog needs. Returns 0 when some pointer of the chain is not readable right now, 1 when the
+    // character is neither Human nor Hollow (nothing is checked, as before), 2 when everything was read.
+    // sitting: one of the three bonfire sit animations is playing
+    // menuOpen: any of the bonfire menus or a dialog is open; animAddress: where the animation id lives
+    int bonfireState(uintptr_t baseAddr, bool* sitting, bool* menuOpen, uintptr_t* animAddress) {
+        *sitting = false;
+        *menuOpen = false;
+        *animAddress = 0;
+
+        // 1. Player character status (Human = 0, Hollow = 8)
+        uint32_t statusPtr = 0, status = 0;
+        if (!bonfireRead32(baseAddr + 0xF7E204, &statusPtr) || !bonfireRead32(statusPtr + 0xA28, &status)) return 0;
+        if (status != 0 && status != 8) return 1;
+
+        // 2. The nested pointer to the character's current animation ID
+        uint32_t animPtr = 0, animObj = 0, currentAnim = 0;
+        if (!bonfireRead32(baseAddr + 0xEE29E8, &animPtr) || !bonfireRead32(animPtr + 0x0, &animObj) ||
+            !bonfireRead32(animObj + 0xFC, &currentAnim)) return 0;
+        *sitting = (currentAnim == 7701 || currentAnim == 7711 || currentAnim == 7721);
+        *animAddress = (uintptr_t)animObj + 0xFC;
+
+        // 3. The bonfire UI menu flags: bonfire, repair, level up, bottomless box, attune, reinforce, warp, dialog
+        uint32_t menuPtr = 0;
+        if (!bonfireRead32(baseAddr + 0xF786D0, &menuPtr)) return 0;
+        static const uint32_t kMenuFlags[] = { 0x40, 0x4C, 0x78, 0x84, 0x80, 0x50, 0xAC, 0x60 };
+        for (uint32_t offset : kMenuFlags) {
+            uint8_t open = 0;
+            if (!bonfireRead8(menuPtr + offset, &open)) return 0;
+            if (open) *menuOpen = true;
+        }
+        return 2;
+    }
+}
+
 DWORD WINAPI BonfireGlitchDetectionThread(LPVOID lpParam) {
     Sleep(1000); // Wait for the game to initialize
     uintptr_t baseAddr = (uintptr_t)GetModuleHandle(NULL);
@@ -42,56 +113,36 @@ DWORD WINAPI BonfireGlitchDetectionThread(LPVOID lpParam) {
 
     while (true) {
         Sleep(200);
-        bool isSitting = false;
+        bool isSitting = false, menuOpen = false;
+        uintptr_t animAddress = 0;
 
-        __try {
-            // 1. Read player character status (Human = 0, Hollow = 8)
-            uintptr_t statusPtr = *(uintptr_t*)(baseAddr + 0xF7E204);
-            int status = *(int*)(statusPtr + 0xA28);
-
-            if (status == 0 || status == 8) {
-                // 2. Resolve the nested pointer to the character's current animation ID
-                uintptr_t animPtr = *(uintptr_t*)(baseAddr + 0xEE29E8);
-                animPtr = *(uintptr_t*)(animPtr + 0x0);
-                uint32_t current_anim = *(uint32_t*)(animPtr + 0xFC);
-
-                // Check if sitting animation is playing
-                isSitting = (current_anim == 7701 || current_anim == 7711 || current_anim == 7721);
-
-                // 3. Read the Bonfire UI menu flags
-                uintptr_t menuPtr = *(uintptr_t*)(baseAddr + 0xF786D0);
-
-                uint8_t bonfire_menu = *(uint8_t*)(menuPtr + 0x40);
-                uint8_t repair_menu = *(uint8_t*)(menuPtr + 0x4C);
-                uint8_t level_menu = *(uint8_t*)(menuPtr + 0x78);
-                uint8_t bottomless_menu = *(uint8_t*)(menuPtr + 0x84);
-                uint8_t attune_menu = *(uint8_t*)(menuPtr + 0x80);
-                uint8_t reinforce_menu = *(uint8_t*)(menuPtr + 0x50);
-                uint8_t warp_menu = *(uint8_t*)(menuPtr + 0xAC);
-                uint8_t dialog_menu = *(uint8_t*)(menuPtr + 0x60);
-
-                // 4. Check if we are softlocked (Sitting animation + NO UI Menus open)
-                if (isSitting && !bonfire_menu && !repair_menu && !bottomless_menu && !reinforce_menu &&
-                    !level_menu && !attune_menu && !dialog_menu && !warp_menu)
-                {
-                    if (first_detected == 0) {
-                        first_detected = GetTickCount();
-                    }
-                    else if ((GetTickCount() - first_detected) >= 1000) {
-                        // 5. Break the softlock!
-                        *(uint32_t*)(animPtr + 0xFC) = 0;
-                        SDLOG(0, "DSfix 3.0: Bonfire input softlock detected and neutralized.\n");
-                    }
+        const int state = bonfireState(baseAddr, &isSitting, &menuOpen, &animAddress);
+        if (state == 0) {
+            // A pointer in the chain is not readable right now (same as the old __except path)
+            first_detected = 0;
+            isSitting = false;
+        }
+        else if (state == 1) {
+            // neither Human nor Hollow: nothing is checked (as before)
+        }
+        // 4. Check if we are softlocked (Sitting animation + NO UI Menus open)
+        else if (isSitting && !menuOpen) {
+            if (first_detected == 0) {
+                first_detected = GetTickCount();
+            }
+            else if ((GetTickCount() - first_detected) >= 1000) {
+                // 5. Break the softlock!
+                __try {
+                    *(uint32_t*)animAddress = 0;
+                    SDLOG(0, "DSfix 3.0: Bonfire input softlock detected and neutralized.\n");
                 }
-                else {
+                __except (EXCEPTION_EXECUTE_HANDLER) {
                     first_detected = 0;
                 }
             }
         }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            // If any pointer in the chain is invalid, catch the access violation silently.
+        else {
             first_detected = 0;
-            isSitting = false;
         }
 
         // Pass the sitting state to RSManager to disable SSAO
@@ -294,6 +345,9 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
         // MUST execute immediately before game threads start to avoid logic deadlocks
         initFPSTimer();
         if (Settings::get().getUnlockFPS()) applyFPSPatch();
+
+        // skipIntro (with or without unlockFPS): the title screen's own steps skip the autosave notice and the logos
+        if (Settings::get().getSkipIntro()) installIntroSkip();
 
         return true;
     }

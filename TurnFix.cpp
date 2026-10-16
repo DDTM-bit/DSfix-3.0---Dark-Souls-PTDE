@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <cstring>
 
-// Lock-on body turn (original research: zofrea, turn.cpp).
+// Lock-on body turn.
 // With a target locked, TurnAnim and WalkAnim_Twist turn the Upper_Root, Lower_Root, Spine, Spine1 and Head bones
 // toward it through bone rotation controllers. Each controller's update (fn 0xD901D0, stdcall(controller, out, pose))
 // moves its current angle toward the target by a per-frame blend weight [+0x2C] (0.6 roots, 0.2 head, 0.1 spine...)
@@ -64,7 +64,7 @@ namespace {
 bool installTurnFix() {
     BYTE* site = (BYTE*)kBoneUpdate;
 
-    // Safety check (as in zofrea): the exact original prologue
+    // Safety check: the exact original prologue
     if (memcmp(site, kExpect, sizeof(kExpect)) != 0) {
         SDLOG(0, "TurnFix: Memory mismatch at 0x%08X, skipping lock-on turn fix.\n", kBoneUpdate);
         return false;

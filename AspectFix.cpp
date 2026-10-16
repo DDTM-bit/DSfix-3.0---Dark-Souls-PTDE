@@ -7,15 +7,95 @@
 #include <cstring>
 
 namespace {
-    // Engine camera baseline constants in .rdata
-    constexpr DWORD kAspectAddress = 0x011E8484; // Vanilla: 1.77777779f (16:9)
-    constexpr DWORD kFovYAddress = 0x011E4134; // Vanilla: 0.75049156f (~43 degrees)
     constexpr float kVanillaAspect = 16.0f / 9.0f;
     constexpr float kVanillaFovY = 0.75049156f;
     constexpr float kWiderThan = 1.70f;
 
     bool g_active = false;
     float g_aspect = kVanillaAspect;
+
+    // Screens taller than 16:9 (16:10, 4:3), Vert+: every perspective the game draws with is
+    // built by one function, 0x453720 (vertical field of view in xmm0, then aspect, near and far on the stack). The screen
+    // cameras ask for 16:9; on a taller screen they get the screen's aspect and a vertical view opened so the horizontal
+    // one stays the same. The world, the effects and the game's own screen positions (lock-on marker, enemy health bars)
+    // then all agree. The game's 16:9 letterbox viewports, blits and Present are opened to the whole target (below), so
+    // the 2D UI covers the whole frame as well.
+    // (The earlier method, which wrote the camera constants and corrected 16:9 projection matrices as they were sent to
+    // the GPU, zoomed the world a little and cut off its borders; it was removed.)
+    constexpr DWORD kPerspective = 0x00453720;
+    const BYTE kPerspectivePrologue[9] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x83, 0xEC, 0x70 }; // push ebp; mov ebp,esp; and esp,-16; sub esp,70h
+    void* g_perspOrig = nullptr;
+
+    void __cdecl adjust_perspective(float* fov, float* aspect) {
+        if (!g_active || std::abs(*aspect - kVanillaAspect) >= 0.01f) return; // shadow and light cameras use other aspects
+        const float f = *fov;
+        if (!(f > 0.05f && f < 3.0f)) return;
+        *fov = 2.0f * std::atan(std::tan(f * 0.5f) * kVanillaAspect / g_aspect);
+        *aspect = g_aspect;
+    }
+
+    // All general registers, the flags and xmm0-xmm7 are kept; only the field of view (xmm0) and the aspect on the
+    // stack change.
+    __declspec(naked) void hk_perspective() {
+        __asm {
+            pushfd
+            pushad
+            sub esp, 0x80
+            movdqu [esp], xmm0
+            movdqu [esp + 0x10], xmm1
+            movdqu [esp + 0x20], xmm2
+            movdqu [esp + 0x30], xmm3
+            movdqu [esp + 0x40], xmm4
+            movdqu [esp + 0x50], xmm5
+            movdqu [esp + 0x60], xmm6
+            movdqu [esp + 0x70], xmm7
+            lea eax, [esp + 0xA8]   // the aspect: past the saved xmm (0x80), pushad (0x20), pushfd and the return address
+            push eax
+            lea eax, [esp + 4]      // the saved xmm0: the vertical field of view
+            push eax
+            call adjust_perspective
+            add esp, 8
+            movdqu xmm0, [esp]
+            movdqu xmm1, [esp + 0x10]
+            movdqu xmm2, [esp + 0x20]
+            movdqu xmm3, [esp + 0x30]
+            movdqu xmm4, [esp + 0x40]
+            movdqu xmm5, [esp + 0x50]
+            movdqu xmm6, [esp + 0x60]
+            movdqu xmm7, [esp + 0x70]
+            add esp, 0x80
+            popad
+            popfd
+            jmp dword ptr[g_perspOrig]
+        }
+    }
+
+    bool install_projection_hook() {
+        BYTE* site = (BYTE*)kPerspective;
+        if (memcmp(site, kPerspectivePrologue, sizeof(kPerspectivePrologue)) != 0) {
+            SDLOG(0, "AspectFix: projection function 0x%08X does not match this build\n", kPerspective);
+            return false;
+        }
+        const size_t kStolen = sizeof(kPerspectivePrologue); // no relative operands: can be moved as they are
+        BYTE* tramp = (BYTE*)VirtualAlloc(nullptr, 32, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (!tramp) return false;
+        memcpy(tramp, site, kStolen);
+        tramp[kStolen] = 0xE9;
+        const int32_t back = (int32_t)((kPerspective + kStolen) - ((DWORD)tramp + kStolen + 5));
+        memcpy(tramp + kStolen + 1, &back, 4);
+        FlushInstructionCache(GetCurrentProcess(), tramp, 32);
+        g_perspOrig = tramp;
+
+        DWORD oldProtect;
+        if (!VirtualProtect(site, kStolen, PAGE_EXECUTE_READWRITE, &oldProtect)) return false;
+        site[0] = 0xE9;
+        const int32_t rel = (int32_t)((DWORD)&hk_perspective - (kPerspective + 5));
+        memcpy(site + 1, &rel, 4);
+        memset(site + 5, 0x90, kStolen - 5);
+        FlushInstructionCache(GetCurrentProcess(), site, kStolen);
+        VirtualProtect(site, kStolen, oldProtect, &oldProtect);
+        return true;
+    }
 
     // last viewport the game requested and the one actually set after correction
     bool g_vpCorrected = false;
@@ -35,17 +115,6 @@ namespace {
         // tan(newFov/2) = tan(oldFov/2) * (16/9) / aspect
         const float t = std::tan(kVanillaFovY * 0.5f) * kVanillaAspect / aspect;
         return 2.0f * std::atan(t);
-    }
-
-    bool write_float(DWORD address, float value) {
-        DWORD oldProtect;
-        if (VirtualProtect((LPVOID)address, sizeof(float), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-            *reinterpret_cast<float*>(address) = value;
-            VirtualProtect((LPVOID)address, sizeof(float), oldProtect, &oldProtect);
-            FlushInstructionCache(GetCurrentProcess(), (LPCVOID)address, sizeof(float));
-            return true;
-        }
-        return false;
     }
 
     bool is_letterbox(LONG x, LONG y, LONG w, LONG h, LONG bw, LONG bh) {
@@ -73,28 +142,6 @@ namespace {
         *h = desc.Height;
         return true;
     }
-
-    bool correct_matrix(float* m) {
-        if (!g_active || m[0] < 0.05f || m[5] < 0.05f) return false;
-
-        auto zero = [](float v) { return std::abs(v) < 0.02f; };
-        if (!zero(m[1]) || !zero(m[2]) || !zero(m[4]) || !zero(m[6]) || !zero(m[8]) || !zero(m[9])) {
-            return false;
-        }
-
-        const float ratio = m[5] / m[0];
-        if (!near_f(ratio, kVanillaAspect, 0.035f)) return false;
-
-        const bool row_major = near_f(m[11], 1.0f, 0.02f) && zero(m[15]);
-        const bool column_major = near_f(m[14], 1.0f, 0.02f) && zero(m[15]);
-        if (!row_major && !column_major) return false;
-
-        const float y = m[0] * g_aspect;
-        if (near_f(m[5], y, 0.0001f)) return false;
-
-        m[5] = y;
-        return true;
-    }
 }
 
 bool installAspectFix() {
@@ -112,15 +159,17 @@ bool installAspectFix() {
 
     // Check if the target is taller than 16:9 (e.g., 16:10 is 1.6, 4:3 is 1.33)
     if (aspect < kWiderThan && aspect > 1.20f) {
-        g_active = true;
         g_aspect = aspect;
-
-        const float newFov = vert_plus_fovy(aspect);
-
-        write_float(kAspectAddress, aspect);
-        write_float(kFovYAddress, newFov);
-
-        SDLOG(0, "AspectFix: 16:10 / Vert+ aspect support activated (Aspect: %.3f, FovY: %.4f rad)\n", aspect, newFov);
+        // g_active must be set before the hook can run; if the hook cannot be installed, nothing is changed at all and
+        // the game shows its own 16:9 picture with bars, as without DSfix
+        g_active = true;
+        if (!install_projection_hook()) {
+            g_active = false;
+            SDLOG(0, "AspectFix: not possible on this build, the game keeps its 16:9 picture\n");
+            return false;
+        }
+        SDLOG(0, "AspectFix: 16:10 / Vert+ through the game's projection (Aspect: %.3f, vertical view %.1f -> %.1f deg)\n",
+            aspect, kVanillaFovY * 57.29578f, vert_plus_fovy(aspect) * 57.29578f);
         return true;
     }
 
@@ -172,22 +221,6 @@ const RECT* correctStretchRect(IDirect3DSurface9* dst, const RECT* dstRect, RECT
     return dstRect;
 }
 
-bool correctMatrixUpload(const float* data, UINT count, float* out) {
-    if (!g_active || !data || !out || count < 4 || count > 24) return false;
-
-    std::memcpy(out, data, count * 4 * sizeof(float));
-    bool changed = false;
-    const UINT matrices = count / 4;
-    const UINT limit = matrices > 4 ? 4 : matrices;
-
-    for (UINT i = 0; i < limit; ++i) {
-        if (correct_matrix(out + i * 16)) {
-            changed = true;
-        }
-    }
-    return changed;
-}
-
 void noteViewport(const D3DVIEWPORT9& game, const D3DVIEWPORT9& used) {
     g_vpGame = game;
     g_vpUsed = used;
@@ -204,16 +237,6 @@ bool getGameViewport(const D3DVIEWPORT9& current, D3DVIEWPORT9* out) {
     // D3D resets the viewport on every SetRenderTarget, so only trust the record while it still matches the device
     if (!same_vp(current, g_vpUsed)) return false;
     *out = g_vpGame;
-    return true;
-}
-
-bool correctProjection(const D3DMATRIX* in, D3DMATRIX* out) {
-    if (!g_active || !in || !out) return false;
-    D3DMATRIX copy = *in;
-    if (!correct_matrix(reinterpret_cast<float*>(&copy))) return false;
-    *out = copy;
-    static bool logged = false;
-    if (!logged) { logged = true; SDLOG(0, "AspectFix: a fixed-function 16:9 projection was opened vertically\n"); }
     return true;
 }
 

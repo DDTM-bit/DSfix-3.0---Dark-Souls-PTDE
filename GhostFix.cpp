@@ -2,11 +2,13 @@
 #include "main.h" // For SDLOG
 #include <windows.h>
 #include <cstring>
+#include <cstdint>
 
 extern float g_GhostUnitsPerSecond;
 extern int32_t g_GhostRecStep;
 extern float g_GhostTurnScale;
 extern float g_GhostStepScale[4];
+extern double g_GhostStepsPerSecond;
 
 namespace {
     // 1. Playback Counter Stub (Scaled by 65536)
@@ -98,7 +100,7 @@ bool installGhostFix() {
     const DWORD kReplayTurn = 0x00E16B2A;  // movq xmm0,[esi+260h] .. movq [esi+28h]   (26 bytes)
     const DWORD kReplayMove = 0x00E15EEC;  // movq xmm0,[eax] .. movq [ecx+78h],xmm0   (19 bytes)
 
-    // Safety checks (as in zofrea): every site is compared byte for byte BEFORE anything is written,
+    // Safety checks: every site is compared byte for byte BEFORE anything is written,
     // so a different build is never left half patched.
     static const BYTE kPlayDecExpect[6] = { 0xFF, 0x8E, 0x74, 0x02, 0x00, 0x00 };
     static const BYTE kPlayReloadExpect[10] = { 0xC7, 0x86, 0x74, 0x02, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00 };
@@ -193,5 +195,23 @@ bool installGhostFix() {
     convert_mov_to_add(kNetReload, 5);
 
     SDLOG(0, "GhostFix: Phantoms and bloodstains perfectly patched (v1.5.0 logic).\n");
+
+    // Other players' walk / run / sprint. The NetworkManipulator's move (0xE1E6A0) gets this frame's
+    // step toward the last received position and picks the gait from its length times 30 (m/s at 30 FPS): under 0.01
+    // stand, under 2 walk, under 6 run, else sprint. At a high frame rate the step is a fraction of a 30 FPS frame's,
+    // so a running player was shown walking. The factor 30 (the shared double at 0x11E7CD8) becomes 1 / step for this
+    // one instruction. Checked on its own: if it does not match, only this part is skipped and the ghost fix above stays.
+    const DWORD kRemoteGait = 0x00E1E8FE;  // mulsd xmm0, qword ptr [011E7CD8h]   (8 bytes)
+    static const BYTE kRemoteGaitExpect[8] = { 0xF2, 0x0F, 0x59, 0x05, 0xD8, 0x7C, 0x1E, 0x01 };
+    if (memcmp((const void*)kRemoteGait, kRemoteGaitExpect, sizeof(kRemoteGaitExpect)) == 0) {
+        if (VirtualProtect((LPVOID)(kRemoteGait + 4), 4, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            const DWORD operand = (DWORD)&g_GhostStepsPerSecond;
+            memcpy((void*)(kRemoteGait + 4), &operand, 4);
+            VirtualProtect((LPVOID)(kRemoteGait + 4), 4, oldProtect, &oldProtect);
+            FlushInstructionCache(GetCurrentProcess(), (LPCVOID)kRemoteGait, 8);
+            SDLOG(0, "GhostFix: other players walk, run and sprint by their real speed.\n");
+        }
+    }
+    else SDLOG(0, "GhostFix: gait site 0x%08X does not match this build, other players' gait not patched.\n", kRemoteGait);
     return true;
 }

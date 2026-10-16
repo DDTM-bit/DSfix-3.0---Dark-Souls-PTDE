@@ -266,6 +266,7 @@
     <ClCompile Include="GAUSS.cpp" />
     <ClCompile Include="GhostFix.cpp" />
     <ClCompile Include="Hud.cpp" />
+    <ClCompile Include="IntroSkip.cpp" />
     <ClCompile Include="KeyActions.cpp" />
     <ClCompile Include="LadderSnapFix.cpp" />
     <ClCompile Include="main.cpp">
@@ -314,6 +315,7 @@
     <ClCompile Include="PhysicsFixes.cpp" />
     <ClCompile Include="RenderstateManager.cpp" />
     <ClCompile Include="SaveManager.cpp" />
+    <ClCompile Include="ScriptFix.cpp" />
     <ClCompile Include="Settings.cpp" />
     <ClCompile Include="SfxFix.cpp" />
     <ClCompile Include="SMAA.cpp" />
@@ -340,11 +342,13 @@
     <ClInclude Include="Hash.h" />
     <ClInclude Include="FPS.h" />
     <ClInclude Include="Hud.h" />
+    <ClInclude Include="IntroSkip.h" />
     <ClInclude Include="KeyActions.h" />
     <ClInclude Include="LadderSnapFix.h" />
     <ClInclude Include="memory.h" />
     <ClInclude Include="PhysicsFixes.h" />
     <ClInclude Include="resource1.h" />
+    <ClInclude Include="ScriptFix.h" />
     <ClInclude Include="SearchTex.h" />
     <ClInclude Include="SfxFix.h" />
     <ClInclude Include="SMAA.h" />

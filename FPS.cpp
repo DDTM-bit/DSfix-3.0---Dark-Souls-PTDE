@@ -19,6 +19,7 @@
 #include "GhostFix.h"
 #include "UIFix.h"
 #include "AspectFix.h"
+#include "ScriptFix.h"
 
 extern bool g_Force30FPS;
 
@@ -115,7 +116,7 @@ void _stdcall updateFramerate(unsigned int cmd) {
 		// Update step-time using the actual elapsed render time without artificial snapping
 		const float writtenStep = updateAnimationStepTime((float)deltaTime, (float)minFPS, (float)maxFPS);
 
-		// DSfix 3.0: physics, ghosts and the ladder fix use exactly the step the engine just received (as in zofrea),
+		// DSfix 3.0: physics, ghosts and the ladder fix use exactly the step the engine just received,
 		// so they cannot drift from game time on hitches, frame-limit jitter or pause. During pause the step is ~0,
 		// which updatePhysicsDeltas clamps to its 1 ms minimum (all per-frame factors are then ~neutral).
 		updatePhysicsDeltas(writtenStep);
@@ -216,6 +217,7 @@ void applyFPSPatch() {
 	installGhostFix();
 	installUIFix();
 	installAspectFix();
+	installScriptFix();
 	
 	DWORD address;
 	DWORD data;

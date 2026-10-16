@@ -5,8 +5,6 @@
 #include "Settings.h"
 #include "RenderstateManager.h"
 
-bool timingIntroMode = false;
-
 DWORD WINAPI DetouredSleepEx(DWORD dwMilliseconds, BOOL bAlertable) {
 	//SDLOG(12, "T %6lu: Detouring: Sleep for %lu ms\n", GetCurrentThreadId(), dwMilliseconds);
 	//return TrueSleepEx(dwMilliseconds, bAlertable);
@@ -23,20 +21,8 @@ DWORD WINAPI DetouredTimeGetTime() {
 	return TrueTimeGetTime() + timeIncrease;
 }
 
-static LARGE_INTEGER perfCountIncrease, countsPerSec;
-BOOL (WINAPI * TrueQueryPerformanceCounter)(_Out_ LARGE_INTEGER *lpPerformanceCount) = QueryPerformanceCounter;
-BOOL WINAPI DetouredQueryPerformanceCounter(_Out_ LARGE_INTEGER *lpPerformanceCount) {
-	void *traces[128];
-	DWORD hash;
-	int captured = CaptureStackBackTrace(0, 128, traces, &hash);
-	SDLOG(14, "T %6lu: Detouring: QueryPerformanceCounter, stack depth %3d, hash %20ul\n", GetCurrentThreadId(), captured, hash);
-	BOOL ret = TrueQueryPerformanceCounter(lpPerformanceCount);
-	if(timingIntroMode && captured < 3) {
-		perfCountIncrease.QuadPart += countsPerSec.QuadPart/50;
-	}
-	lpPerformanceCount->QuadPart += perfCountIncrease.QuadPart;
-	return ret;
-}
+// skipIntro: the old QueryPerformanceCounter speed-up hook is gone; the intro is now skipped in the title screen's own
+// steps (IntroSkip.cpp), with no timer hook.
 
 typedef HRESULT (WINAPI * D3DXCreateTexture_FNType)(_In_ LPDIRECT3DDEVICE9 pDevice, _In_ UINT Width, _In_ UINT Height, _In_ UINT MipLevels, _In_ DWORD Usage, _In_ D3DFORMAT Format, _In_ D3DPOOL Pool, _Out_ LPDIRECT3DTEXTURE9 *ppTexture);
 D3DXCreateTexture_FNType TrueD3DXCreateTexture = D3DXCreateTexture;
@@ -145,7 +131,6 @@ void detachLanguageHooks() {
 // =================== end of language override hooks ===================
 
 void earlyDetour() {
-	QueryPerformanceFrequency(&countsPerSec);
 	DetourTransactionBegin();
 	DetourUpdateThread(GetCurrentThread());
 	DetourAttach(&(PVOID&)oDirect3DCreate9, hkDirect3DCreate9);
@@ -158,7 +143,6 @@ void startDetour() {
 	DetourUpdateThread(GetCurrentThread());
 	//DetourAttach(&(PVOID&)TrueSleepEx, DetouredSleepEx);
 	//DetourAttach(&(PVOID&)TrueTimeGetTime, DetouredTimeGetTime);
-	if(Settings::get().getSkipIntro()) DetourAttach(&(PVOID&)TrueQueryPerformanceCounter, DetouredQueryPerformanceCounter);
 	//TrueD3DXCreateTexture = (D3DXCreateTexture_FNType)DetourFindFunction("d3dx9_43.dll", "D3DXCreateTexture");
 	TrueD3DXCreateTextureFromFileInMemory = (D3DXCreateTextureFromFileInMemory_FNType)DetourFindFunction("d3dx9_43.dll", "D3DXCreateTextureFromFileInMemory");
 	TrueD3DXCreateTextureFromFileInMemoryEx = (D3DXCreateTextureFromFileInMemoryEx_FNType)DetourFindFunction("d3dx9_43.dll", "D3DXCreateTextureFromFileInMemoryEx");
@@ -182,7 +166,6 @@ void endDetour() {
 		DetourUpdateThread(GetCurrentThread());
 		//DetourDetach(&(PVOID&)TrueSleepEx, DetouredSleepEx);
 		//DetourDetach(&(PVOID&)TrueTimeGetTime, DetouredTimeGetTime);
-		if(Settings::get().getSkipIntro()) DetourDetach(&(PVOID&)TrueQueryPerformanceCounter, DetouredQueryPerformanceCounter);
 		//DetourDetach(&(PVOID&)TrueD3DXCreateTexture, DetouredD3DXCreateTexture);
 		DetourDetach(&(PVOID&)TrueD3DXCreateTextureFromFileInMemory, DetouredD3DXCreateTextureFromFileInMemory);
 		DetourDetach(&(PVOID&)TrueD3DXCreateTextureFromFileInMemoryEx, DetouredD3DXCreateTextureFromFileInMemoryEx);

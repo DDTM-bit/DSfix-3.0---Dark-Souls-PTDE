@@ -5,8 +5,8 @@
 #include <cstring>
 #include <cstdint>
 
-// Per-frame constants in the game's code that were tuned for a fixed 30 FPS, made frame-rate independent
-// (original research: zofrea). Each site retargets the 32-bit address operand of one load so it reads a value
+// Per-frame constants in the game's code that were tuned for a fixed 30 FPS, made frame-rate independent.
+// Each site retargets the 32-bit address operand of one load so it reads a value
 // recomputed every frame from the game's own time step:
 //
 //   slide gravity   1.0  per frame         -> 1.0 * s            (s = step * 30)
@@ -32,6 +32,8 @@ float g_GhostUnitsPerSecond = 30.0f * 65536.0f;
 int32_t g_GhostRecStep = -65536;
 float g_GhostTurnScale = 1.0f;
 __declspec(align(16)) float g_GhostStepScale[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+// Other players' walk / run / sprint (GhostFix.cpp): frames per second of this frame, 30 at 30 FPS
+__declspec(align(8)) double g_GhostStepsPerSecond = 30.0;
 
 
 namespace {
@@ -115,7 +117,7 @@ namespace {
         { 0x00F7C8DE, 4, 0x011E7E90, &g_fixedStep, G_FIXED_STEP }, // Input Repeat 7
         { 0x00F7C916, 4, 0x011E7E90, &g_fixedStep, G_FIXED_STEP }, // Input Repeat 8
 
-        // --- HUD gauges (from zofrea, was missing in DSfix): boss / enemy bars and the HP/stamina gauge objects ---
+        // --- HUD gauges: boss / enemy bars and the HP/stamina gauge objects ---
         { 0x00C89A90, 4, 0x0115F59C, &g_gaugeMin, G_GAUGE },   // movss xmm2,[1.0]  -> 1.0 * s
         { 0x00C89AC3, 4, 0x011E7C60, &g_gaugeK,   G_GAUGE }    // mulsd xmm2,[0.5]  -> 1 - 0.5 ^ s
     };
@@ -213,9 +215,10 @@ void updatePhysicsDeltas(float deltaSeconds) {
     g_gaugeMin = (float)s;
 
     // Ghost Fixed-Point Timers & Translation Scaling (v1.5.0 logic)
-    g_GhostRecStep = -(int32_t)std::lround(s * 65536.0); // rounded, as in zofrea (no systematic loss)
+    g_GhostRecStep = -(int32_t)std::lround(s * 65536.0); // rounded (no systematic loss)
     g_GhostTurnScale = (float)s;
     g_GhostStepScale[0] = g_GhostStepScale[1] = g_GhostStepScale[2] = g_GhostStepScale[3] = (float)s;
+    g_GhostStepsPerSecond = inv; // the step is clamped to 1 ms above, so at most 1000
 }
 
 

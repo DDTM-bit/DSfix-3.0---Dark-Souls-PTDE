@@ -6,7 +6,7 @@
 #include <cstring>
 #include <cstdint>
 
-// Follow camera smoothing (original research: zofrea, camera.cpp).
+// Follow camera smoothing.
 // ChrFollowCam::Update (0xF02720, stdcall(this, dt, chr, extra)) blends many values toward a target by a fixed
 // per-frame weight. Two weights live in the camera object (+0x238, +0x1BC) and are rescaled before each update;
 // 16 more are read at the point of use and are redirected through a stub that returns 1 - (1 - w)^n (n = dt * 30):
@@ -129,7 +129,7 @@ namespace {
     }
 
     void __stdcall follow_stub(void* camera, float dt, void* chr, void* extra) {
-        // DSfix 3.0: use the dt the game hands to this update (as zofrea does), not a global frame time
+        // DSfix 3.0: use the dt the game hands to this update, not a global frame time
         double n = (double)dt * 30.0;
         if (!(n > 0.02)) n = 0.02;
         if (n > 10.0) n = 10.0;
@@ -175,7 +175,7 @@ namespace {
     }
 
     bool install_gain_sites() {
-        // Verify everything first (as in zofrea); nothing is written if one site differs
+        // Verify everything first; nothing is written if one site differs
         for (const GainSite& g : kGainSites) {
             uint8_t want[8];
             size_t size = 0;
@@ -260,7 +260,7 @@ namespace {
 }
 
 bool installCameraFix() {
-    // 1. The two ChrFollowCam::Update calls must really call it (as in zofrea)
+    // 1. The two ChrFollowCam::Update calls must really call it
     for (uint32_t site : kCallSites) {
         const uint8_t* p = (const uint8_t*)site;
         int32_t rel = 0;

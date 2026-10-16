@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <cstring>
 
-// Ladder & ledge snap (original research: zofrea, snap.cpp).
+// Ladder & ledge snap.
 // The movement controller's frame (fn 0xEC08B0) lifts the physics proxy by the step height (setPosition call at
 // 0xEC09BA), moves it, then puts it back down by adding [body+0xB4] (-0.3) to its height (load at 0xEC0AF8).
 // When the lift is skipped, as at the bottom of a ladder slide, the -0.3 is still applied every frame: one frame
@@ -204,7 +204,7 @@ __declspec(naked) void snap_stub() {
 }
 
 bool installLadderSnapFix() {
-    // Safety checks (as in zofrea): fixed-base image, the exact original snap instruction, and a lift call that
+    // Safety checks: fixed-base image, the exact original snap instruction, and a lift call that
     // really goes to the proxy's setPosition. Anything else means a different build: nothing is patched.
     if ((DWORD)GetModuleHandle(NULL) != 0x00400000) {
         SDLOG(0, "LadderSnapFix: game image is not at its expected base, skipping ladder fix.\n");
