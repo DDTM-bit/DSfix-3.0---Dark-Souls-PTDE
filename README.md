@@ -137,7 +137,7 @@ Thanks to the native engine-level integrations in DSfix 3.0, you no longer need 
 * **Task Manager CPU Affinity Scripts:** Thread priority is now locked at the engine level.
 
 ## Credits
-* **Durante/PeterTh:** Huge thanks for the foundational work on original DSFix 2.4
-* **zofrea:** Special thanks for reverse-engineering discoveries.
-* **Hal47:** Credit for the Sun and Moon rendering fixes.
-* **Bonfire softlock fix:** The Idea is from Sean Pesce.
+* **Durante/PeterTh(https://github.com/PeterTh/dsfix):** Huge thanks for the foundational work on original DSFix 2.4
+* **zofrea(https://github.com/zofrea1/DS1-FPS-Unlock-PTDE-Remastered):** Special thanks for reverse-engineering discoveries and high-fps fixes.
+* **Hal47(https://github.com/Hal47/dsfix):** Credit for the Sun and Moon rendering fixes.
+* **Bonfire softlock fix(https://github.com/SeanPesce/FPSFix-Plus):** The Idea is from Sean Pesce.
