@@ -323,6 +323,7 @@
     <ClCompile Include="SMAA.cpp" />
     <ClCompile Include="SSAO.cpp" />
     <ClCompile Include="StaminaFix.cpp" />
+    <ClCompile Include="TitleMark.cpp" />
     <ClCompile Include="TurnFix.cpp" />
     <ClCompile Include="UIFix.cpp" />
     <ClCompile Include="WindowManager.cpp" />
@@ -365,6 +366,7 @@
     <ClInclude Include="SaveManager.h" />
     <ClInclude Include="Settings.h" />
     <ClInclude Include="SSAO.h" />
+    <ClInclude Include="TitleMark.h" />
     <ClInclude Include="TurnFix.h" />
     <ClInclude Include="UIFix.h" />
     <ClInclude Include="WindowManager.h" />

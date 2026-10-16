@@ -23,6 +23,7 @@
 #include <atlbase.h>
 #include "AspectFix.h"
 #include "DurabilityBars.h"
+#include "TitleMark.h"
 #include "Effect.h"
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
@@ -1133,6 +1134,7 @@ RSManager::~RSManager()
 
 void RSManager::releaseResources() {
 	SDLOG(0, "RenderstateManager releasing resources\n");
+	titleMarkRelease();
 	if (g_hudBufOwn) {
 		SAFERELEASE(g_hudBufSurf);
 		SAFERELEASE(g_hudBufTex);
@@ -1306,6 +1308,9 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 	resetWindows();
 	g_screenCovered = false;
 
+
+	// "DSfix 3.0" in the corner of the title screen (only while the title screen shows)
+	titleMarkDraw(d3ddev);
 
 	// Pace the frame BEFORE submitting to the D3D presentation queue
 	frameTimeManagement();
@@ -1718,6 +1723,7 @@ HRESULT RSManager::redirectSetTexture(DWORD Stage, IDirect3DBaseTexture9* pTextu
 		SDLOG(1, "HUD started!\n");
 		hudStarted = true;
 	}
+	if (isTextureMenuscreenLogo(pTexture)) titleMarkLogoSeen(); // the title screen is showing
 	//if(mainRT && mainRTuses > 3) {
 	//	IDirect3DTexture9* tex;
 	//	pTexture->QueryInterface(IID_IDirect3DTexture9, (void**)&tex);
@@ -1914,6 +1920,12 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 	//}
 	if (hudStarted && hideHud) {
 		return D3D_OK;
+	}
+	// title screen mark: the title screen is recognised by the pieces of its copyright line
+	if (VertexStreamZeroStride == 12 && PrimitiveCount == 2 && NumVertices == 4 && pVertexStreamZeroData) {
+		float tb[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, NULL, tb);
+		titleMarkOnQuad(tb);
 	}
 	// durabilityBars: the arrow / bolt boxes under a bow or crossbow slot move down below the bar (a moved copy is drawn)
 	std::vector<BYTE> ammoCopy;
