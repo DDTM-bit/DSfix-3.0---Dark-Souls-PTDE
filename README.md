@@ -35,6 +35,8 @@ To ensure maximum stability on modern machines, configure your environment using
 * **Smarter Save Backups:** The backup system now verifies if your game save has actually changed before creating a new backup. This prevents your limited backup slots from being overwritten by identical copies if you frequently launch and exit the game without making any new progress.
 * **HUD Scaling and Opacity Customization:** Resize Individualy the size of the health and stamina bars, the item inventory HUD, the souls counter, and the boss health bar. Set Individual Opacity Levels for the each of the three hud elements. Fixed the issue with boss health bars,switching indicator (for weapons/spells/items), subtitles, damage numbers.
 * **Menu and subtitles scaling Individualy:** Shrinks the game’s menus and windows so they cover less of the screen.
+* **Disable Item Auto-Equip**: Consumables you pick up are no longer put into your quick item slots automatically. The Estus Flask works as before. This is an optional setting.
+* **Durability Bars for weapons: **Shows a thin Dark Souls 3 style bar under each weapon slot. The dark red part shrinks as the weapon loses durability, and the dark background stays. An empty hand has no bar. While two-handing, the bar fades together with the other hand's weapon icon. If a bow or crossbow is equipped, the arrow/bolt box and its count move down so they stay below the bar. The bars are part of the bottom-left HUD, so every scaling option apply to them.
 * **Sun/Moon & Water Issue Fixed:** Now they render perfectly at their intended screen-space locations. For resolution 1440p or 4K, DoF Override Resolution must not be 0 otherwise the water stays at vanilla quality.
 * **60 FPS Bonfire Fix and Smart Protection:** Automatically detects and neutralizes the infamous bonfire animation softlock while dynamically disabling SSAO while resting to prevent dark halo artifacts around your character.
 * **High-DPI & Display Scaling Fix:** Stripped out the 150% DPI stretching. On Windows 10/11 with 1440p or 4K monitors set to desktop scaling, the game misinterprets dimensions causing blurry bilinear upscaling and mouse-capture offset bugs. With DSfix 3.0, it will never artificially scale the game window.
@@ -126,7 +128,6 @@ To ensure maximum stability on modern machines, configure your environment using
 * **Applied Solution:** The bonfire softlock check now verifies the game's memory before reading it. It works exactly as before, but no longer triggers hidden errors during loading screens or when joining another player's world.
 ---
 
-
 ## Obsolete Mods (No Longer Required)
 
 Thanks to the native engine-level integrations in DSfix 3.0, you no longer need to bloat your game folder with the following external fixes:
@@ -141,3 +142,33 @@ Thanks to the native engine-level integrations in DSfix 3.0, you no longer need 
 * **[zofrea](https://github.com/zofrea1/DS1-FPS-Unlock-PTDE-Remastered):** Special thanks for reverse-engineering discoveries and high-fps fixes.
 * **[Hal47](https://github.com/Hal47/dsfix):** Credit for the Sun and Moon rendering fixes.
 * **Bonfire softlock fix:** The Idea is from [Sean Pesce](https://github.com/SeanPesce/FPSFix-Plus).
+* **Dark Souls Overhaul team (metal-crow & Sean Pesce)** – memory research (equipment and parameter table layouts, durability addresses) used for the item auto-equip and weapon durability bar features. https://github.com/metal-crow/Dark-Souls-1-Overhaul
+
+## Third-Party Licenses
+
+DSfix 3.0 contains code adapted from the following project, used under its license:
+
+### DS1 FPS Unlock (PTDE & Remastered) by zofrea
+Source: https://github.com/zofrea1/DS1-FPS-Unlock-PTDE-Remastered
+
+MIT License
+
+Copyright (c) 2026 zofrea1
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

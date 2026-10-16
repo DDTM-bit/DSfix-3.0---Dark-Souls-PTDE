@@ -22,6 +22,7 @@
 #include "resource1.h"
 #include <atlbase.h>
 #include "AspectFix.h"
+#include "DurabilityBars.h"
 #include "Effect.h"
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
@@ -1197,6 +1198,7 @@ void RSManager::releaseResources() {
 }
 
 HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion) {
+	durabilityBarsNewFrame();
 	capturing = false;
 	if (captureNextFrame) {
 		capturing = true;
@@ -1913,6 +1915,25 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 	if (hudStarted && hideHud) {
 		return D3D_OK;
 	}
+	// durabilityBars: the arrow / bolt boxes under a bow or crossbow slot move down below the bar (a moved copy is drawn)
+	std::vector<BYTE> ammoCopy;
+	if (durabilityBarsActive() && VertexStreamZeroStride == 12 && pVertexStreamZeroData && NumVertices && NumVertices <= 4096) {
+		float ab[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, NULL, ab);
+		IDirect3DBaseTexture9* at = NULL;
+		d3ddev->GetTexture(0, &at);
+		const bool atFrame = at && isTextureHudHealthbar(at);
+		if (at) at->Release();
+		const int shift = durabilityBarsAmmoShift(ab, atFrame);
+		if (shift) {
+			ammoCopy.assign((const BYTE*)pVertexStreamZeroData, (const BYTE*)pVertexStreamZeroData + (size_t)(MinIndex + NumVertices) * 12);
+			for (UINT i = MinIndex; i < MinIndex + NumVertices; ++i) {
+				INT16* y = (INT16*)(&ammoCopy[0] + (size_t)i * 12 + 2);
+				*y = (INT16)(*y + shift);
+			}
+			pVertexStreamZeroData = &ammoCopy[0];
+		}
+	}
 	// Fallback: the render-pass counter (rddp) that normally detects the start of the HUD gets confused by some
 	// scenes (e.g. looking at the far horizon), and then the whole HUD would stay at scale 1. In that case start the
 	// HUD window here, at the first HUD draw of the frame (the item-cluster backdrop quad, always drawn first).
@@ -2127,6 +2148,19 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		AlphaRefGuard arg(d3ddev, op);
 		hr = d3ddev->DrawIndexedPrimitiveUP(PrimitiveType, MinIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, vdata, VertexStreamZeroStride);
 	}
+	// durabilityBars: watches the weapon slots' pictures and frames; right after a frame it draws the bar under it, into the
+	// same target with the same (possibly bottom-left scaled) viewport, and with the same opacity this draw got
+	if (durabilityBarsActive() && winK < 0 && VertexStreamZeroStride == 12 && PrimitiveCount == 2 && NumVertices == 4 && pVertexStreamZeroData) {
+		float db[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, NULL, db);
+		const BYTE vertexAlpha = ((const BYTE*)pVertexStreamZeroData + (size_t)MinIndex * 12 + 4)[3];
+		IDirect3DBaseTexture9* dbt = NULL;
+		d3ddev->GetTexture(0, &dbt);
+		const bool frameTex = dbt && isTextureHudHealthbar(dbt);
+		if (dbt) dbt->Release();
+		const float dbOp = (!onHudRT && hudGrp != HG_NONE) ? hudGroupOpacity(hudGrp) : 1.0f;
+		durabilityBarsOnHudQuad(d3ddev, db, frameTex, vertexAlpha, dbOp, onHudRT);
+	}
 	if (scChanged) d3ddev->SetScissorRect(&savedSc);
 	if (vpChanged) d3ddev->SetViewport(&savedVp);
 	if (routedDirect) resumeHudRendering();
@@ -2145,6 +2179,23 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 		hide = hide || isTextureHudEffectIcons(t);
 		t->Release();
 		if (hide) return D3D_OK;
+	}
+	// durabilityBars: the count number of an arrow / bolt box moves down with its box (see redirectDrawIndexedPrimitiveUP)
+	std::vector<BYTE> ammoCopy;
+	if (durabilityBarsActive() && VertexStreamZeroStride == 24 && pVertexStreamZeroData) {
+		UINT n = 0;
+		if (PrimitiveType == D3DPT_TRIANGLELIST) n = PrimitiveCount * 3;
+		else if (PrimitiveType == D3DPT_TRIANGLESTRIP || PrimitiveType == D3DPT_TRIANGLEFAN) n = PrimitiveCount + 2;
+		float x0, y0, x1, y1;
+		if (n && n <= 4096 && textBox(pVertexStreamZeroData, 24, n, x0, y0, x1, y1)) {
+			const float ab[4] = { x0 / 1280.0f, y0 / 720.0f, x1 / 1280.0f, y1 / 720.0f };
+			const int shift = durabilityBarsAmmoShift(ab, false);
+			if (shift) {
+				ammoCopy.assign((const BYTE*)pVertexStreamZeroData, (const BYTE*)pVertexStreamZeroData + (size_t)n * 24);
+				for (UINT i = 0; i < n; ++i) ((float*)(&ammoCopy[0] + (size_t)i * 24))[1] += (float)shift / 8.0f;
+				pVertexStreamZeroData = &ammoCopy[0];
+			}
+		}
 	}
 	if (pausedHudRT) {
 		IDirect3DBaseTexture9* t;

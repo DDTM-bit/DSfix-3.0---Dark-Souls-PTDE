@@ -260,9 +260,11 @@
     <ClCompile Include="d3dutil.cpp" />
     <ClCompile Include="Detouring.cpp" />
     <ClCompile Include="dinputWrapper.cpp" />
+    <ClCompile Include="DurabilityBars.cpp" />
     <ClCompile Include="Effect.cpp" />
     <ClCompile Include="FPS.cpp" />
     <ClCompile Include="FXAA.cpp" />
+    <ClCompile Include="GameParams.cpp" />
     <ClCompile Include="GAUSS.cpp" />
     <ClCompile Include="GhostFix.cpp" />
     <ClCompile Include="Hud.cpp" />
@@ -335,8 +337,10 @@
     <ClInclude Include="Detouring.h" />
     <ClInclude Include="dinput.h" />
     <ClInclude Include="dinputWrapper.h" />
+    <ClInclude Include="DurabilityBars.h" />
     <ClInclude Include="Effect.h" />
     <ClInclude Include="FXAA.h" />
+    <ClInclude Include="GameParams.h" />
     <ClInclude Include="GAUSS.h" />
     <ClInclude Include="GhostFix.h" />
     <ClInclude Include="Hash.h" />

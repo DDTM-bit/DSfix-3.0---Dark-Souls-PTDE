@@ -40,6 +40,11 @@ SETTING(std::string, OverrideLanguage, "overrideLanguage", "");
 // Skipping Options
 SETTING(bool, SkipIntro, "skipIntro", false);
 
+// Gameplay options
+// disableItemAutoEquip: consumables you pick up are no longer put into your quick item slots automatically (the Estus
+// Flask is unchanged). 0 = as before
+SETTING(bool, DisableItemAutoEquip, "disableItemAutoEquip", false);
+
 // Backup Options
 SETTING(bool, EnableBackups, "enableBackups", false);
 SETTING(unsigned, BackupInterval, "backupInterval", 1500);
@@ -94,6 +99,10 @@ SETTING(bool, SwapXYIcons, "swapXYIcons", false)
 //   xbox, playstation, switch - always that set
 // When a set is used, files with those two names in tex_override are ignored.
 SETTING(std::string, ControllerIcons, "controllerIcons", "off")
+// durabilityBars: a thin bar under each weapon slot of the HUD shows how much durability the weapon in that hand has left
+// (Dark Souls 3 style). Part of the bottom-left HUD: hudScaleBottomLeft and hudBottomLeftOpacity apply, also with
+// enableHudMod 0. 0 = off (as before)
+SETTING(bool, DurabilityBars, "durabilityBars", false)
 
 // Screen Options
 SETTING(bool, BorderlessFullscreen, "borderlessFullscreen", false);
