@@ -955,6 +955,21 @@ void toggleSharpenPass() {
 	SDLOG(0, "Sharpening %s\n", g_doSharpen ? "on" : "off");
 }
 
+// ---- HUD buffer ----
+// The game draws the HUD and the menus into its "1280x720" image, which DSfix creates at the present resolution
+// (presentWidth / presentHeight). The HUD buffer must have that size too. When the present resolution is the render
+// resolution (the usual case) it is rgbaBuffer1 itself, exactly as before. When they differ (render 3840x2160,
+// present 1920x1080: downsampling), the HUD image was never recognised (it was compared with the render size), so the
+// HUD and menu scaling did nothing; now it gets its own buffer at the present size.
+namespace {
+	IDirect3DTexture9* g_hudBufTex = NULL;
+	IDirect3DSurface9* g_hudBufSurf = NULL;
+	bool g_hudBufOwn = false; // true: a separate buffer (present size != render size), released with the resources
+	bool isHudTargetSize(const D3DSURFACE_DESC& d) {
+		return d.Width == Settings::get().getPresentWidth() && d.Height == Settings::get().getPresentHeight();
+	}
+}
+
 void RSManager::initResources() {
 	SDLOG(0, "RenderstateManager resource initialization started\n");
 	unsigned rw = Settings::get().getRenderWidth(), rh = Settings::get().getRenderHeight();
@@ -981,6 +996,12 @@ void RSManager::initResources() {
 
 	// Core resources used by every effect and by the HUD mod: intermediate buffer, depth buffer, state block
 	const bool haveRgba = createRT(rw, rh, &rgbaBuffer1Tex, &rgbaBuffer1Surf, "rgbaBuffer1");
+	const unsigned pw = Settings::get().getPresentWidth(), ph = Settings::get().getPresentHeight();
+	g_hudBufOwn = false;
+	g_hudBufTex = NULL;
+	g_hudBufSurf = NULL;
+	if (pw == rw && ph == rh) { g_hudBufTex = rgbaBuffer1Tex; g_hudBufSurf = rgbaBuffer1Surf; }
+	else if (Settings::get().getEnableHudMod() && createRT(pw, ph, &g_hudBufTex, &g_hudBufSurf, "hudBuffer")) g_hudBufOwn = true;
 	depthStencilSurf = NULL;
 	HRESULT dsHr = d3ddev->CreateDepthStencilSurface(rw, rh, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, false, &depthStencilSurf, NULL);
 	if (FAILED(dsHr) || !depthStencilSurf) {
@@ -1055,7 +1076,7 @@ void RSManager::initResources() {
 		else SDLOG(0, "WARNING: sharpening skipped (buffers missing)\n");
 	}
 	if (Settings::get().getEnableHudMod()) {
-		if (haveCore) hud = new HUD(d3ddev, rw, rh);
+		if (haveCore && g_hudBufSurf) hud = new HUD(d3ddev, pw, ph);
 		else SDLOG(0, "WARNING: HUD mod skipped (buffers missing)\n");
 	}
 	if (Settings::get().getEnableTextureOverride() && Settings::get().getEnableTexturePrefetch()) {
@@ -1139,6 +1160,13 @@ RSManager::~RSManager()
 
 void RSManager::releaseResources() {
 	SDLOG(0, "RenderstateManager releasing resources\n");
+	if (g_hudBufOwn) {
+		SAFERELEASE(g_hudBufSurf);
+		SAFERELEASE(g_hudBufTex);
+	}
+	g_hudBufSurf = NULL;
+	g_hudBufTex = NULL;
+	g_hudBufOwn = false;
 	SAFERELEASE(rgbaBuffer1Surf);
 	SAFERELEASE(rgbaBuffer1Tex);
 	SAFERELEASE(sharedBuffer1Surf);
@@ -1660,7 +1688,7 @@ HRESULT RSManager::redirectSetRenderTarget(DWORD RenderTargetIndex, IDirect3DSur
 			// check size just to make even more sure
 			D3DSURFACE_DESC desc;
 			oldRenderTarget->GetDesc(&desc);
-			if (desc.Width == Settings::get().getRenderWidth() && desc.Height == Settings::get().getRenderHeight()) {
+			if (isHudTargetSize(desc)) {
 				// HUD stuff
 				if (hud && doHud && rddp == 9 && !g_hudWindowSeen) {
 					SDLOG(0, "Starting HUD rendering\n");
@@ -1670,7 +1698,7 @@ HRESULT RSManager::redirectSetRenderTarget(DWORD RenderTargetIndex, IDirect3DSur
 					g_hudWindowSeen = true;
 					g_lastHudGroup = HG_NONE;
 					if (g_dumpActive) g_dumpLines.push_back("--- WINDOW START ---");
-					d3ddev->SetRenderTarget(0, rgbaBuffer1Surf);
+					d3ddev->SetRenderTarget(0, g_hudBufSurf);
 					d3ddev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_RGBA(0, 0, 0, 0), 0.0f, 0);
 					prevRenderTex = tex;
 					prevRenderTarget = pRenderTarget;
@@ -1949,7 +1977,7 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 				IDirect3DTexture9* ctex = getSurfTexture(cur);
 				D3DSURFACE_DESC desc;
 				cur->GetDesc(&desc);
-				if (ctex && desc.Width == Settings::get().getRenderWidth() && desc.Height == Settings::get().getRenderHeight()) {
+				if (ctex && isHudTargetSize(desc)) {
 					SDLOG(1, "Starting HUD rendering (fallback)\n");
 					hddp = 0;
 					onHudRT = true;
@@ -1959,7 +1987,7 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 					if (g_dumpActive) g_dumpLines.push_back("--- WINDOW START (fallback) ---");
 					prevRenderTex = ctex;
 					prevRenderTarget = cur;
-					d3ddev->SetRenderTarget(0, rgbaBuffer1Surf);
+					d3ddev->SetRenderTarget(0, g_hudBufSurf);
 					d3ddev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_RGBA(0, 0, 0, 0), 0.0f, 0);
 					d3ddev->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
 					d3ddev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_ADD);
@@ -2575,7 +2603,7 @@ void RSManager::finishHudRendering() {
 	SDLOG(2, "FinishHudRendering\n");
 	g_lastHudGroup = HG_NONE; // note: the scaling phase itself continues until Present or the first menu draw
 	if (g_dumpActive) g_dumpLines.push_back("--- FINISH (HUD buffer composited) ---");
-	if (takeScreenshot) dumpSurface("HUD_end", rgbaBuffer1Surf);
+	if (takeScreenshot) dumpSurface("HUD_end", g_hudBufSurf);
 	d3ddev->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
 	d3ddev->SetRenderTarget(0, prevRenderTarget);
 	onHudRT = false;
@@ -2587,7 +2615,7 @@ void RSManager::finishHudRendering() {
 	pausedHudRT = false;
 	// draw HUD to screen
 	storeRenderState();
-	hud->go(rgbaBuffer1Tex, prevRenderTarget);
+	hud->go(g_hudBufTex, prevRenderTarget);
 	restoreRenderState();
 }
 
@@ -2604,7 +2632,7 @@ void RSManager::pauseHudRendering() {
 void RSManager::resumeHudRendering() {
 	SDLOG(3, "ResumeHudRendering\n");
 	if (g_dumpActive) g_dumpLines.push_back("--- RESUME ---");
-	d3ddev->SetRenderTarget(0, rgbaBuffer1Surf);
+	d3ddev->SetRenderTarget(0, g_hudBufSurf);
 	d3ddev->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
 	d3ddev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
 	onHudRT = true;
