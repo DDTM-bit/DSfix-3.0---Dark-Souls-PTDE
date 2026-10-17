@@ -241,6 +241,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="AspectFix.cpp" />
+    <ClCompile Include="BulkItemUse.cpp" />
     <ClCompile Include="CameraFix.cpp" />
     <ClCompile Include="d3d9.cpp">
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Disabled</Optimization>
@@ -260,7 +261,6 @@
     <ClCompile Include="d3dutil.cpp" />
     <ClCompile Include="Detouring.cpp" />
     <ClCompile Include="dinputWrapper.cpp" />
-    <ClCompile Include="DurabilityBars.cpp" />
     <ClCompile Include="Effect.cpp" />
     <ClCompile Include="FPS.cpp" />
     <ClCompile Include="FXAA.cpp" />
@@ -326,11 +326,13 @@
     <ClCompile Include="TitleMark.cpp" />
     <ClCompile Include="TurnFix.cpp" />
     <ClCompile Include="UIFix.cpp" />
+    <ClCompile Include="WeaponWearBars.cpp" />
     <ClCompile Include="WindowManager.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AreaTex.h" />
     <ClInclude Include="AspectFix.h" />
+    <ClInclude Include="BulkItemUse.h" />
     <ClInclude Include="CameraFix.h" />
     <ClInclude Include="d3d9.h" />
     <ClInclude Include="d3d9query.h" />
@@ -338,7 +340,6 @@
     <ClInclude Include="Detouring.h" />
     <ClInclude Include="dinput.h" />
     <ClInclude Include="dinputWrapper.h" />
-    <ClInclude Include="DurabilityBars.h" />
     <ClInclude Include="Effect.h" />
     <ClInclude Include="FXAA.h" />
     <ClInclude Include="GameParams.h" />
@@ -369,6 +370,7 @@
     <ClInclude Include="TitleMark.h" />
     <ClInclude Include="TurnFix.h" />
     <ClInclude Include="UIFix.h" />
+    <ClInclude Include="WeaponWearBars.h" />
     <ClInclude Include="WindowManager.h" />
   </ItemGroup>
   <ItemGroup>

@@ -1,4 +1,4 @@
-#include "DurabilityBars.h"
+#include "WeaponWearBars.h"
 #include "GameParams.h"
 #include "Settings.h" // SDLOG reads the log level when RELEASE_VER is not defined
 #include "main.h"
@@ -12,7 +12,7 @@
 // width, y 0..1 the height), measured from the weapon slot's frame, so the bars follow the slot wherever it is drawn.
 // Colours are D3DCOLOR_ARGB(alpha, red, green, blue), 0..255.
 // =====================================================================================================================
-namespace DurabilityBarLook {
+namespace WeaponWearBarLook {
     const float kGapBelowFrame = 0.0170f; // from the bottom of the slot's frame to the top of the bar (just under the slot box)
     const float kHeight        = 0.0050f; // thickness of the bar (about 5 pixels at 1080p)
     const float kInsetX        = 0.0030f; // margin on the left and right, inside the frame's width
@@ -80,7 +80,7 @@ namespace {
 
     // How far the arrow / bolt boxes move down, in the game's UI units (1280x720 x 8).
     int ammoShiftUnits() {
-        using namespace DurabilityBarLook;
+        using namespace WeaponWearBarLook;
         const float shift = kFrameBottom + kGapBelowFrame + kHeight + kAmmoGapBelowBar - kAmmoBackdrop[0][1];
         return shift > 0.0f ? (int)(shift * 5760.0f + 0.5f) : 0;
     }
@@ -270,7 +270,7 @@ namespace {
     // Draws one bar under the frame 'box' (HUD fractions). ratio: 0..1 of durability left; alpha: 0..1 multiplier.
     // hudBuffer: drawn into DSfix's HUD buffer, which is later put on screen with its alpha as the opacity.
     void drawBar(IDirect3DDevice9* dev, const float box[4], float ratio, float alpha, bool hudBuffer) {
-        using namespace DurabilityBarLook;
+        using namespace WeaponWearBarLook;
         D3DVIEWPORT9 vp;
         if (FAILED(dev->GetViewport(&vp)) || vp.Width == 0 || vp.Height == 0) return;
         const float W = (float)vp.Width, H = (float)vp.Height;
@@ -349,10 +349,10 @@ namespace {
     }
 }
 
-bool installDurabilityBars() {
+bool installWeaponWearBars() {
     if (g_installed) return true;
     if (memcmp((const void*)kHookSite, kHookExpect, sizeof(kHookExpect)) != 0) {
-        SDLOG(0, "durabilityBars: durability read at 0x%08X does not match this build, no durability bars\n", kHookSite);
+        SDLOG(0, "weaponWearBars: durability read at 0x%08X does not match this build, no durability bars\n", kHookSite);
         return false;
     }
     DWORD oldProtect;
@@ -365,20 +365,20 @@ bool installDurabilityBars() {
     VirtualProtect((LPVOID)kHookSite, sizeof(kHookExpect), oldProtect, &oldProtect);
     FlushInstructionCache(GetCurrentProcess(), (LPCVOID)kHookSite, sizeof(kHookExpect));
     g_installed = true;
-    SDLOG(0, "durabilityBars: durability hook installed\n");
+    SDLOG(0, "weaponWearBars: durability hook installed\n");
     return true;
 }
 
-bool durabilityBarsActive() {
+bool weaponWearBarsActive() {
     return g_installed;
 }
 
-void durabilityBarsNewFrame() {
+void weaponWearBarsNewFrame() {
     g_pictureAlpha[0] = g_pictureAlpha[1] = -1;
     g_ammoSequence = -1;
 }
 
-int durabilityBarsAmmoShift(const float box[4], bool frameTexture) {
+int weaponWearBarsAmmoShift(const float box[4], bool frameTexture) {
     if (!g_installed || !box) return 0;
     for (int hand = 0; hand < 2; ++hand) {
         const float* b = kAmmoBackdrop[hand];
@@ -396,7 +396,7 @@ int durabilityBarsAmmoShift(const float box[4], bool frameTexture) {
     return 0;
 }
 
-void durabilityBarsOnHudQuad(IDirect3DDevice9* dev, const float box[4], bool frameTexture, BYTE vertexAlpha, float opacity,
+void weaponWearBarsOnHudQuad(IDirect3DDevice9* dev, const float box[4], bool frameTexture, BYTE vertexAlpha, float opacity,
     bool hudBuffer) {
     if (!g_installed || !dev || !box) return;
     for (int hand = 0; hand < 2; ++hand) {
@@ -407,7 +407,7 @@ void durabilityBarsOnHudQuad(IDirect3DDevice9* dev, const float box[4], bool fra
             float ratio = 0.0f;
             if (pictureAlpha > 0 && handRatio(hand, &ratio)) {
                 float fade = (float)pictureAlpha / 255.0f;
-                if (fade < 1.0f) fade = powf(fade, DurabilityBarLook::kFadeCurve);
+                if (fade < 1.0f) fade = powf(fade, WeaponWearBarLook::kFadeCurve);
                 drawBar(dev, box, ratio, fade * opacity, hudBuffer);
             }
             return;

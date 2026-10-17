@@ -21,7 +21,8 @@
 #include "FPS.h"
 #include "IntroSkip.h"
 #include "GameParams.h"
-#include "DurabilityBars.h"
+#include "WeaponWearBars.h"
+#include "BulkItemUse.h"
 #include <cstdint>
 #include <mutex>
 #include "RenderstateManager.h"
@@ -292,7 +293,7 @@ void InitializeDSfix() {
 
     if (Settings::get().getEnableHudMod()) installMenuMouseMapping();
 
-    // disableItemAutoEquip / durabilityBars: finds the game's item and weapon tables once they are loaded (own thread)
+    // disableItemAutoEquip / weaponWearBars: finds the game's item and weapon tables once they are loaded (own thread)
     startGameParamsThread();
 
     // load original dinput8.dll safely outside loader lock
@@ -354,8 +355,11 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
         // skipIntro (with or without unlockFPS): the title screen's own steps skip the autosave notice and the logos
         if (Settings::get().getSkipIntro()) installIntroSkip();
 
-        // durabilityBars: notes the durability of the equipped weapons when the game reads it
-        if (Settings::get().getDurabilityBars()) installDurabilityBars();
+        // weaponWearBars: notes the durability of the equipped weapons when the game reads it
+        if (Settings::get().getWeaponWearBars()) installWeaponWearBars();
+
+        // bulkItemUse: use several soul items at once from the pause Inventory menu
+        if (Settings::get().getBulkItemUse()) installBulkItemUse();
 
         return true;
     }
