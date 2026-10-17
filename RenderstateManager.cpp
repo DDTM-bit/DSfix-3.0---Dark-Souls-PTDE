@@ -463,13 +463,17 @@ namespace {
 	// toward the window's anchor: the pieces and the game's own font are rasterized smaller (no buffer, no resampling of an
 	// image, no viewport clipping). Window pieces are never scaled as HUD pieces.
 	enum WinKind { WK_PANEL = 0, WK_QUICK, WK_LIST, WK_POPUP, WK_PROMPT, WK_COUNT };
-	struct WinState { bool active; float r[4]; float ax, ay; };
+	struct WinState { bool active; float r[4]; float ax, ay; unsigned order; };
 	WinState g_win[WK_COUNT] = {};
+	unsigned g_winOrder = 0; // windows detected so far in this frame: a later window is drawn on top of an earlier one
 	const char* const kWinNames[WK_COUNT] = { "menu", "quick menu (unused)", "list window", "popup", "prompt" };
 	const float kMenuAnchorX = 0.977f, kMenuAnchorY = 0.019f;   // top-right corner of the main menu
 	const float kPromptAnchorX = 0.5f, kPromptAnchorY = 0.90f;  // bottom centre of the prompt / popup area
 
-	void resetWindows() { for (int k = 0; k < WK_COUNT; ++k) g_win[k].active = false; }
+	void resetWindows() {
+		for (int k = 0; k < WK_COUNT; ++k) g_win[k].active = false;
+		g_winOrder = 0;
+	}
 
 	// An opaque quad covering the whole screen (the black background of the loading screen after "Quit Game") ends all
 	// windows for the rest of the frame: what is drawn after it belongs to the next screen. Without this the loading
@@ -498,6 +502,7 @@ namespace {
 		w.active = true;
 		w.r[0] = x0; w.r[1] = y0; w.r[2] = x1; w.r[3] = y1;
 		w.ax = ax; w.ay = ay;
+		w.order = ++g_winOrder;
 		if (g_dumpActive) {
 			char b[160];
 			sprintf_s(b, sizeof(b), "--- WINDOW DETECTED: %s [%.3f %.3f %.3f %.3f] anchor %.3f %.3f scale %.2f ---", kWinNames[k], x0, y0, x1, y1, ax, ay, windowScale(k));
@@ -512,6 +517,15 @@ namespace {
 		if (FAILED(((IDirect3DTexture9*)tex)->GetLevelDesc(0, &d))) return false;
 		w = d.Width; h = d.Height;
 		return true;
+	}
+
+	// A popup or prompt can start only once per frame, except when a list window was drawn after it: then a new one drawn
+	// on top of the list is a second window of that kind (an item pickup popup left open under the bonfire menu, then the
+	// "Warp to selected bonfire" question over the warp list). Popups and prompts share scale and anchor, so taking over
+	// the slot is fine: the earlier one is completely drawn by then.
+	bool canStartAgain(int k) {
+		if (!g_win[k].active) return true;
+		return g_win[WK_LIST].active && g_win[WK_LIST].order > g_win[k].order;
 	}
 
 	// Called for single INT16 quads drawn after the HUD. 'b' = normalized bounding box. 'healthbarTex' / 'guiTex': the quad
@@ -558,13 +572,13 @@ namespace {
 			return;
 		}
 		// interaction prompt [0.258 0.782 0.743 0.846] (+ a second piece below, to 0.887) and the yes/no question [0.259 0.782 0.741 0.922]
-		if (!g_win[WK_PROMPT].active && cx > 0.45f && cx < 0.55f && w > 0.40f && w < 0.60f && h > 0.035f && h < 0.20f && b[1] > 0.70f && b[1] < 0.85f) {
+		if (canStartAgain(WK_PROMPT) && cx > 0.45f && cx < 0.55f && w > 0.40f && w < 0.60f && h > 0.035f && h < 0.20f && b[1] > 0.70f && b[1] < 0.85f) {
 			const float y1 = (b[3] > b[1] + 0.105f) ? b[3] : b[1] + 0.105f;
 			activateWindow(WK_PROMPT, b[0] - 0.01f, b[1] - 0.01f, b[2] + 0.01f, y1 + 0.01f, kPromptAnchorX, kPromptAnchorY);
 			return;
 		}
 		// item popup above the prompt, left piece [0.277 0.643 0.641 0.785] (taller with several items)
-		if (!g_win[WK_POPUP].active && b[0] > 0.20f && b[0] < 0.35f && w > 0.25f && w < 0.50f && h > 0.08f && h < 0.45f && b[1] > 0.30f && b[1] < 0.75f && b[3] < 0.83f) {
+		if (canStartAgain(WK_POPUP) && b[0] > 0.20f && b[0] < 0.35f && w > 0.25f && w < 0.50f && h > 0.08f && h < 0.45f && b[1] > 0.30f && b[1] < 0.75f && b[3] < 0.83f) {
 			activateWindow(WK_POPUP, 0.20f, b[1] - 0.02f, 0.80f, b[3] + 0.015f, kPromptAnchorX, kPromptAnchorY);
 			return;
 		}
@@ -595,14 +609,19 @@ namespace {
 		if (g_win[WK_PANEL].active) return WK_PANEL;
 		if ((b[2] - b[0]) > 0.97f && (b[3] - b[1]) > 0.97f) return -1;
 		const float cx = (b[0] + b[2]) * 0.5f, cy = (b[1] + b[3]) * 0.5f;
-		// Prompts and popups are drawn on top of a list window (the bonfire's "Warp to selected bonfire" confirmation over
-		// the warp list), so where they overlap the popup wins: its left half and the OK button used to be shrunk with the
-		// list. (Popup and prompt share scale and anchor, so their order between themselves does not matter.)
-		for (int k = WK_COUNT - 1; k >= WK_QUICK; --k) {
+		// Where windows overlap, the one drawn on top wins, i.e. the one detected later in the frame. A popup or prompt
+		// drawn over a list window (the bonfire's "Warp to selected bonfire" confirmation over the warp list) wins over the
+		// list: its left half and the OK button used to be shrunk with the list. But an item pickup popup that is still open
+		// when the bonfire menu opens is drawn first, under the list: there the list wins, otherwise the list's lower pieces
+		// (its highlight bar on the last entries, its bottom edge) were moved with the popup. (Popup and prompt share scale
+		// and anchor, so their order between themselves does not matter.)
+		int best = -1;
+		for (int k = WK_QUICK; k < WK_COUNT; ++k) {
 			const WinState& win = g_win[k];
-			if (win.active && cx >= win.r[0] && cx <= win.r[2] && cy >= win.r[1] && cy <= win.r[3]) return k;
+			if (win.active && cx >= win.r[0] && cx <= win.r[2] && cy >= win.r[1] && cy <= win.r[3] &&
+				(best < 0 || win.order > g_win[best].order)) best = k;
 		}
-		return -1;
+		return best;
 	}
 
 	INT16 toInt16(float v) {
@@ -694,7 +713,7 @@ namespace {
 	// is open, the cursor position is moved back to where that spot was before the shrink, so hovering and clicking hit
 	// what is drawn under the cursor. Written on the render thread at every Present, read on the game's thread.
 	struct MouseMapData {
-		bool panel, list, pop;
+		bool panel, list, pop, popOnTop;
 		float pax, pay, ps;           // main menu anchor and scale
 		float lax, lay, ls, lr[4];    // list window anchor, scale and (unscaled) rectangle
 		float oax, oay, os, orr[4];   // popup / prompt open over the list window: anchor, scale and (unscaled) rectangle
@@ -724,9 +743,11 @@ namespace {
 				// a confirmation popup over the list window: the cursor over it must not be moved as if it were over the list
 				if (m.list && (g_win[WK_POPUP].active || g_win[WK_PROMPT].active)) {
 					m.pop = true;
+					m.popOnTop = false;
 					m.orr[0] = m.orr[1] = 1e9f; m.orr[2] = m.orr[3] = -1e9f;
 					for (int k = WK_POPUP; k <= WK_PROMPT; ++k) {
 						if (!g_win[k].active) continue;
+						if (g_win[k].order > g_win[WK_LIST].order) m.popOnTop = true; // drawn over the list
 						m.oax = g_win[k].ax; m.oay = g_win[k].ay; m.os = windowScale(k);
 						if (g_win[k].r[0] < m.orr[0]) m.orr[0] = g_win[k].r[0];
 						if (g_win[k].r[1] < m.orr[1]) m.orr[1] = g_win[k].r[1];
@@ -764,8 +785,13 @@ void remapMenuCursor(POINT* p) {
 		v = m.pay + (v - m.pay) / m.ps;
 	}
 	else {
-		// a popup over the list window: over the (shrunk) popup the cursor follows the popup, not the list
-		if (m.pop) {
+		// the shrunk list window
+		const float x0 = m.lax + (m.lr[0] - m.lax) * m.ls, x1 = m.lax + (m.lr[2] - m.lax) * m.ls;
+		const float y0 = m.lay + (m.lr[1] - m.lay) * m.ls, y1 = m.lay + (m.lr[3] - m.lay) * m.ls;
+		const bool overList = !(u < x0 || u > x1 || v < y0 || v > y1);
+		// a popup over the list window: over the (shrunk) popup the cursor follows the popup, not the list. A popup under
+		// the list (an item pickup popup left open when the bonfire menu opened) only where the list does not cover it.
+		if (m.pop && (m.popOnTop || !overList)) {
 			const float px0 = m.oax + (m.orr[0] - m.oax) * m.os, px1 = m.oax + (m.orr[2] - m.oax) * m.os;
 			const float py0 = m.oay + (m.orr[1] - m.oay) * m.os, py1 = m.oay + (m.orr[3] - m.oay) * m.os;
 			if (u >= px0 && u <= px1 && v >= py0 && v <= py1) {
@@ -778,9 +804,7 @@ void remapMenuCursor(POINT* p) {
 			}
 		}
 		// only over the shrunk list window itself
-		const float x0 = m.lax + (m.lr[0] - m.lax) * m.ls, x1 = m.lax + (m.lr[2] - m.lax) * m.ls;
-		const float y0 = m.lay + (m.lr[1] - m.lay) * m.ls, y1 = m.lay + (m.lr[3] - m.lay) * m.ls;
-		if (u < x0 || u > x1 || v < y0 || v > y1) return;
+		if (!overList) return;
 		u = m.lax + (u - m.lax) / m.ls;
 		v = m.lay + (v - m.lay) / m.ls;
 	}
