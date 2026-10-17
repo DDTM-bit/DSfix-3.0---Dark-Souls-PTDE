@@ -99,10 +99,18 @@ SETTING(bool, SwapXYIcons, "swapXYIcons", false)
 //   xbox, playstation, switch - always that set
 // When a set is used, files with those two names in tex_override are ignored.
 SETTING(std::string, ControllerIcons, "controllerIcons", "off")
-// durabilityBars: a thin bar under each weapon slot of the HUD shows how much durability the weapon in that hand has left
+// weaponWearBars: a thin bar under each weapon slot of the HUD shows how much durability the weapon in that hand has left
 // (Dark Souls 3 style). Part of the bottom-left HUD: hudScaleBottomLeft and hudBottomLeftOpacity apply, also with
 // enableHudMod 0. 0 = off (as before)
-SETTING(bool, DurabilityBars, "durabilityBars", false)
+SETTING(bool, WeaponWearBars, "weaponWearBars", false)
+// bulkItemUse: using a stackable item in the pause Inventory menu asks how many to use, then uses them all at once.
+// The list of items this applies to is at the top of BulkItemUse.cpp. Right now it holds the ten ordinary soul items
+// (Soul of a Lost Undead up to Soul of a Great Hero); more item kinds can be added there later. Anything not on that
+// list is never touched, so Boss Souls, Fire Keeper Souls, Humanity, Estus, keys and spells keep their normal
+// behaviour, and the quick-item button during play behaves as before. The number offered never goes above what you
+// own, and never so high that the reward would be lost at the game's limit. With only one of the item owned there is
+// no question and it is used straight away. 0 = off (as before)
+SETTING(bool, BulkItemUse, "bulkItemUse", false)
 
 // Screen Options
 SETTING(bool, BorderlessFullscreen, "borderlessFullscreen", false);

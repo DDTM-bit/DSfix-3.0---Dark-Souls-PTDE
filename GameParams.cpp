@@ -165,7 +165,7 @@ namespace {
 
     DWORD WINAPI gameParamsThread(LPVOID) {
         bool needGoods = Settings::get().getDisableItemAutoEquip();
-        bool needWeapon = Settings::get().getDurabilityBars();
+        bool needWeapon = Settings::get().getWeaponWearBars();
         Sleep(2000);
         // The tables are loaded during start-up; try every 2 s for 5 minutes, then give up.
         for (int attempt = 0; attempt < 150 && (needGoods || needWeapon); ++attempt) {
@@ -191,14 +191,14 @@ namespace {
                     g_weaponCount = t[i].count;
                     g_weaponBase = t[i].base; // published last
                     needWeapon = false;
-                    SDLOG(0, "durabilityBars: weapon table found (%u weapons)\n", t[i].count);
+                    SDLOG(0, "weaponWearBars: weapon table found (%u weapons)\n", t[i].count);
                     break;
                 }
             }
             if (needGoods || needWeapon) Sleep(2000);
         }
         if (needGoods) SDLOG(0, "disableItemAutoEquip: item table not found, auto-equip unchanged\n");
-        if (needWeapon) SDLOG(0, "durabilityBars: weapon table not found, no durability bars\n");
+        if (needWeapon) SDLOG(0, "weaponWearBars: weapon table not found, no durability bars\n");
         return 0;
     }
 }
@@ -206,7 +206,7 @@ namespace {
 void startGameParamsThread() {
     static bool started = false;
     if (started) return;
-    if (!Settings::get().getDisableItemAutoEquip() && !Settings::get().getDurabilityBars()) return;
+    if (!Settings::get().getDisableItemAutoEquip() && !Settings::get().getWeaponWearBars()) return;
     started = true;
     HANDLE h = CreateThread(NULL, 0, gameParamsThread, NULL, 0, NULL);
     if (h) CloseHandle(h);

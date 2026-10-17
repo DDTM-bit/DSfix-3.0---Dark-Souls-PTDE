@@ -22,7 +22,7 @@
 #include "resource1.h"
 #include <atlbase.h>
 #include "AspectFix.h"
-#include "DurabilityBars.h"
+#include "WeaponWearBars.h"
 #include "TitleMark.h"
 #include "Effect.h"
 #include <mmsystem.h>
@@ -462,13 +462,14 @@ namespace {
 	// the later UI draws whose centre lies inside their rectangle. Owned draws are drawn directly with their vertices moved
 	// toward the window's anchor: the pieces and the game's own font are rasterized smaller (no buffer, no resampling of an
 	// image, no viewport clipping). Window pieces are never scaled as HUD pieces.
-	enum WinKind { WK_PANEL = 0, WK_QUICK, WK_LIST, WK_POPUP, WK_PROMPT, WK_COUNT };
+	enum WinKind { WK_PANEL = 0, WK_QUICK, WK_LIST, WK_POPUP, WK_PROMPT, WK_DIALOG, WK_COUNT };
 	struct WinState { bool active; float r[4]; float ax, ay; unsigned order; };
 	WinState g_win[WK_COUNT] = {};
 	unsigned g_winOrder = 0; // windows detected so far in this frame: a later window is drawn on top of an earlier one
-	const char* const kWinNames[WK_COUNT] = { "menu", "quick menu (unused)", "list window", "popup", "prompt" };
+	const char* const kWinNames[WK_COUNT] = { "menu", "quick menu (unused)", "list window", "popup", "prompt", "quantity dialog" };
 	const float kMenuAnchorX = 0.977f, kMenuAnchorY = 0.019f;   // top-right corner of the main menu
 	const float kPromptAnchorX = 0.5f, kPromptAnchorY = 0.90f;  // bottom centre of the prompt / popup area
+	const float kDialogAnchorX = 0.5f, kDialogAnchorY = 0.5f;   // middle of the screen: the quantity dialog stays centred
 
 	void resetWindows() {
 		for (int k = 0; k < WK_COUNT; ++k) g_win[k].active = false;
@@ -494,6 +495,7 @@ namespace {
 		if (k == WK_PANEL || k == WK_QUICK) return clampScale(Settings::get().getMenuScale());
 		if (k == WK_LIST) return clampScale(Settings::get().getListWindowScale());
 		if (k == WK_POPUP || k == WK_PROMPT) return clampScale(Settings::get().getPromptScale());
+		if (k == WK_DIALOG) return clampScale(Settings::get().getMenuScale());
 		return 1.0f;
 	}
 
@@ -550,6 +552,18 @@ namespace {
 			activateWindow(WK_PANEL, 0.0f, 0.0f, 1.0f, 1.0f, kMenuAnchorX, kMenuAnchorY);
 			return;
 		}
+		// The quantity dialog in the middle of the screen: the number picker the game shows when it asks "how many?"
+		// (discarding a stack, and with bulkItemUse also using several items at once). One GuiElements1 box
+		// [0.282 0.319 0.709 0.694] on a 1024x512 texture, with the up/down arrows, the number and the OK / CANCEL
+		// texts drawn inside it. It is not one of the 1024x1024 windows below, so it is matched here, before that test.
+		// It shrinks toward the middle of the screen so it stays centred.
+		if (hudDone && guiTex && canStartAgain(WK_DIALOG) &&
+			cx > 0.44f && cx < 0.56f && cy > 0.40f && cy < 0.60f &&
+			w > 0.28f && w < 0.62f && h > 0.22f && h < 0.52f) {
+			activateWindow(WK_DIALOG, b[0] - 0.02f, b[1] - 0.02f, b[2] + 0.02f, b[3] + 0.02f, kDialogAnchorX, kDialogAnchorY);
+			return;
+		}
+
 		// the other windows are only ever drawn after the HUD
 		if (!hudDone || tw != 1024 || th != 1024) return;
 		// main menu, left background piece: [0.028 0.022 0.827 0.992] (Inventory, Status, Level Up...) or [0.028 0.021 0.827 0.293] (System)
@@ -1224,7 +1238,7 @@ void RSManager::releaseResources() {
 }
 
 HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion) {
-	durabilityBarsNewFrame();
+	weaponWearBarsNewFrame();
 	capturing = false;
 	if (captureNextFrame) {
 		capturing = true;
@@ -1951,16 +1965,16 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, NULL, tb);
 		titleMarkOnQuad(tb);
 	}
-	// durabilityBars: the arrow / bolt boxes under a bow or crossbow slot move down below the bar (a moved copy is drawn)
+	// weaponWearBars: the arrow / bolt boxes under a bow or crossbow slot move down below the bar (a moved copy is drawn)
 	std::vector<BYTE> ammoCopy;
-	if (durabilityBarsActive() && VertexStreamZeroStride == 12 && pVertexStreamZeroData && NumVertices && NumVertices <= 4096) {
+	if (weaponWearBarsActive() && VertexStreamZeroStride == 12 && pVertexStreamZeroData && NumVertices && NumVertices <= 4096) {
 		float ab[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, NULL, ab);
 		IDirect3DBaseTexture9* at = NULL;
 		d3ddev->GetTexture(0, &at);
 		const bool atFrame = at && isTextureHudHealthbar(at);
 		if (at) at->Release();
-		const int shift = durabilityBarsAmmoShift(ab, atFrame);
+		const int shift = weaponWearBarsAmmoShift(ab, atFrame);
 		if (shift) {
 			ammoCopy.assign((const BYTE*)pVertexStreamZeroData, (const BYTE*)pVertexStreamZeroData + (size_t)(MinIndex + NumVertices) * 12);
 			for (UINT i = MinIndex; i < MinIndex + NumVertices; ++i) {
@@ -2184,9 +2198,9 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		AlphaRefGuard arg(d3ddev, op);
 		hr = d3ddev->DrawIndexedPrimitiveUP(PrimitiveType, MinIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, vdata, VertexStreamZeroStride);
 	}
-	// durabilityBars: watches the weapon slots' pictures and frames; right after a frame it draws the bar under it, into the
+	// weaponWearBars: watches the weapon slots' pictures and frames; right after a frame it draws the bar under it, into the
 	// same target with the same (possibly bottom-left scaled) viewport, and with the same opacity this draw got
-	if (durabilityBarsActive() && winK < 0 && VertexStreamZeroStride == 12 && PrimitiveCount == 2 && NumVertices == 4 && pVertexStreamZeroData) {
+	if (weaponWearBarsActive() && winK < 0 && VertexStreamZeroStride == 12 && PrimitiveCount == 2 && NumVertices == 4 && pVertexStreamZeroData) {
 		float db[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, NULL, db);
 		const BYTE vertexAlpha = ((const BYTE*)pVertexStreamZeroData + (size_t)MinIndex * 12 + 4)[3];
@@ -2195,7 +2209,7 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		const bool frameTex = dbt && isTextureHudHealthbar(dbt);
 		if (dbt) dbt->Release();
 		const float dbOp = (!onHudRT && hudGrp != HG_NONE) ? hudGroupOpacity(hudGrp) : 1.0f;
-		durabilityBarsOnHudQuad(d3ddev, db, frameTex, vertexAlpha, dbOp, onHudRT);
+		weaponWearBarsOnHudQuad(d3ddev, db, frameTex, vertexAlpha, dbOp, onHudRT);
 	}
 	if (scChanged) d3ddev->SetScissorRect(&savedSc);
 	if (vpChanged) d3ddev->SetViewport(&savedVp);
@@ -2216,16 +2230,16 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 		t->Release();
 		if (hide) return D3D_OK;
 	}
-	// durabilityBars: the count number of an arrow / bolt box moves down with its box (see redirectDrawIndexedPrimitiveUP)
+	// weaponWearBars: the count number of an arrow / bolt box moves down with its box (see redirectDrawIndexedPrimitiveUP)
 	std::vector<BYTE> ammoCopy;
-	if (durabilityBarsActive() && VertexStreamZeroStride == 24 && pVertexStreamZeroData) {
+	if (weaponWearBarsActive() && VertexStreamZeroStride == 24 && pVertexStreamZeroData) {
 		UINT n = 0;
 		if (PrimitiveType == D3DPT_TRIANGLELIST) n = PrimitiveCount * 3;
 		else if (PrimitiveType == D3DPT_TRIANGLESTRIP || PrimitiveType == D3DPT_TRIANGLEFAN) n = PrimitiveCount + 2;
 		float x0, y0, x1, y1;
 		if (n && n <= 4096 && textBox(pVertexStreamZeroData, 24, n, x0, y0, x1, y1)) {
 			const float ab[4] = { x0 / 1280.0f, y0 / 720.0f, x1 / 1280.0f, y1 / 720.0f };
-			const int shift = durabilityBarsAmmoShift(ab, false);
+			const int shift = weaponWearBarsAmmoShift(ab, false);
 			if (shift) {
 				ammoCopy.assign((const BYTE*)pVertexStreamZeroData, (const BYTE*)pVertexStreamZeroData + (size_t)n * 24);
 				for (UINT i = 0; i < n; ++i) ((float*)(&ammoCopy[0] + (size_t)i * 24))[1] += (float)shift / 8.0f;

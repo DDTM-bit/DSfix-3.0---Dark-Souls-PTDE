@@ -14,7 +14,7 @@ namespace TitleMarkLook {
     const float kHeight         = 0.024f;            // text height (about 26 pixels at 1080p)
     const float kMarginRight    = 0.022f;            // distance from the right edge of the screen
     const float kMarginBottom   = 0.020f;            // distance from the bottom edge of the screen
-    const D3DCOLOR kColor       = D3DCOLOR_ARGB(230, 150, 205, 255); // light blue
+    const D3DCOLOR kColor       = D3DCOLOR_ARGB(230, 78, 111, 120); // light blue
     const D3DCOLOR kShadow      = D3DCOLOR_ARGB(150, 0, 0, 0);       // soft dark shadow, keeps it readable on bright spots
     const float kShadowOffset   = 0.0015f;           // shadow distance (at least 1 pixel)
     const float kFadeInSeconds  = 0.8f;              // fade in when the title screen appears

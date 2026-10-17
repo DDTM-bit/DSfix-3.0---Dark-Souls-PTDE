@@ -128,15 +128,6 @@ To ensure maximum stability on modern machines, configure your environment using
 * **Applied Solution:** The bonfire softlock check now verifies the game's memory before reading it. It works exactly as before, but no longer triggers hidden errors during loading screens or when joining another player's world.
 ---
 
-## Obsolete Mods (No Longer Required)
-
-Thanks to the native engine-level integrations in DSfix 3.0, you no longer need to bloat your game folder with the following external fixes:
-
-* **Standalone FPSFix / Bonfire Softlock Fix:** New solution completely integrated natively.
-* **Custom Resolution Utilities (CRU):** Handled seamlessly by setting the native Borderless Fullscreen toggle in `DSfix.ini`.
-* **High DPI Override Executables:** Windows 11 scaling is bypassed automatically on startup.
-* **Task Manager CPU Affinity Scripts:** Thread priority is now locked at the engine level.
-
 ## Credits
 * **[Durante/PeterTh](https://github.com/PeterTh/dsfix):** Huge thanks for the foundational work on original DSFix 2.4
 * **[zofrea](https://github.com/zofrea1/DS1-FPS-Unlock-PTDE-Remastered):** Special thanks for reverse-engineering discoveries and high-fps fixes.

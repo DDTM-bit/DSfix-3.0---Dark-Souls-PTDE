@@ -39,20 +39,20 @@ static LARGE_INTEGER counterAtStart;
 // Hook Parameters
 //-----------------------------------
 // Dark Souls executable timestamp
-DWORD EXE_TIMESTAMP = 0x546FA3C5; // Steam Beta build 2.0
+DWORD EXE_TIMESTAMP = 0x557F2FD0; // current Steam build (the addresses below; any other build uses pattern matching)
 
 // Time-step value address
-DWORD ADDR_TS = 0x011E4D70;  // 1.0.0 was 0x012497F0, 1.0.1 was 0x012498E0
+DWORD ADDR_TS = 0x011E7E90;  // Steam Beta 2.0 was 0x011E4D70, 1.0.0 0x012497F0, 1.0.1 0x012498E0
 LPCSTR TS_PATTERN = "0080264400009444000058420000C0428988083D0000A044";
 DWORD TS_OFFSET = 0x00000010;
 
 // Presentation interval address
-DWORD ADDR_PRESINT = 0x00FFA15E; // 1.0.0 was 0x010275AE, 1.0.1 was 0x0102788E
+DWORD ADDR_PRESINT = 0x00FFB68E; // Steam Beta 2.0 was 0x00FFA15E, 1.0.0 0x010275AE, 1.0.1 0x0102788E
 LPCSTR PRESINT_PATTERN = "FF15xxxxxxxx83C408C78648020000020000005EC20800";
 DWORD PRESINT_OFFSET = 0x0000000F;
 
 // getDrawThreadMsgCommand address in HGCommandDispatcher loop
-DWORD ADDR_GETCMD =	0x00BAC3DD; // 1.0.0 was 0x00BD601D, 1.0.1 was 0x00BD60ED
+DWORD ADDR_GETCMD =	0x00BAC4ED; // Steam Beta 2.0 was 0x00BAC3DD, 1.0.0 0x00BD601D, 1.0.1 0x00BD60ED
 LPCSTR GETCMD_PATTERN = "6A018BCDE8xxxxxxxx8BF08BCEE8xxxxxxxx83F805";
 DWORD GETCMD_OFFSET = 0x0000000D;
 
@@ -86,9 +86,22 @@ float updateAnimationStepTime(float stepTime, float minFPS, float maxFPS) {
 	
 	float cappedStep = 1/(float)FPS;
 	if(RSManager::get().isPaused()) cappedStep = 0.000000000000000001f;
-	DWORD data = *(DWORD*)&cappedStep;
 
-	writeToAddress(&data, convertAddress(ADDR_TS), sizeof(data));
+	// The step lives in the game's read-only constants. Its page is made writable once (it used to be unlocked and
+	// locked again around every write, two system calls per frame); then the step is a plain 4-byte store.
+	static float* stepAddress = nullptr;
+	if (!stepAddress) {
+		float* address = (float*)convertAddress(ADDR_TS);
+		DWORD oldProtect;
+		if (address && VirtualProtect(address, sizeof(float), PAGE_READWRITE, &oldProtect)) stepAddress = address;
+	}
+	if (stepAddress) {
+		*(volatile float*)stepAddress = cappedStep;
+	}
+	else {
+		DWORD data = *(DWORD*)&cappedStep;
+		writeToAddress(&data, convertAddress(ADDR_TS), sizeof(data));
+	}
 	return cappedStep;
 }
 
