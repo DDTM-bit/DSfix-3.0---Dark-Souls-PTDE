@@ -103,14 +103,19 @@ SETTING(std::string, ControllerIcons, "controllerIcons", "off")
 // (Dark Souls 3 style). Part of the bottom-left HUD: hudScaleBottomLeft and hudBottomLeftOpacity apply, also with
 // enableHudMod 0. 0 = off (as before)
 SETTING(bool, WeaponWearBars, "weaponWearBars", false)
-// bulkItemUse: using a stackable item in the pause Inventory menu asks how many to use, then uses them all at once.
-// The list of items this applies to is at the top of BulkItemUse.cpp. Right now it holds the ten ordinary soul items
-// (Soul of a Lost Undead up to Soul of a Great Hero); more item kinds can be added there later. Anything not on that
-// list is never touched, so Boss Souls, Fire Keeper Souls, Humanity, Estus, keys and spells keep their normal
-// behaviour, and the quick-item button during play behaves as before. The number offered never goes above what you
-// own, and never so high that the reward would be lost at the game's limit. With only one of the item owned there is
-// no question and it is used straight away. 0 = off (as before)
+// bulkItemUse: the master switch for using several of the same item at once. With it off nothing below it happens
+// and not one byte of the game is changed. With it on, using a listed item in the pause Inventory menu asks how many
+// to use and uses them all with a single animation. The quick-item button during play always behaves as before, and
+// any item that is not listed keeps its normal behaviour, so Boss Souls and Fire Keeper Souls still ask their own
+// Yes/No question. The number offered is never more than you own and never so many that the reward would be lost at
+// the game's limit; owning only one uses it straight away with no question. 0 = off (as before)
 SETTING(bool, BulkItemUse, "bulkItemUse", false)
+// The two groups bulkItemUse covers. Both only matter when bulkItemUse is 1, and each can be turned off on its own.
+// A group that is off is not merely idle: the piece of game code that belongs to it is never written at all.
+// standardSoulsBulk: the ten ordinary soul items, Soul of a Lost Undead up to Soul of a Great Hero.
+SETTING(bool, StandardSoulsBulk, "standardSoulsBulk", true)
+// humanityBulk: Humanity and Twin Humanities. The number offered is limited so the 99 humanity cap is never passed.
+SETTING(bool, HumanityBulk, "humanityBulk", true)
 
 // Screen Options
 SETTING(bool, BorderlessFullscreen, "borderlessFullscreen", false);

@@ -553,14 +553,16 @@ namespace {
 			return;
 		}
 		// The quantity dialog in the middle of the screen: the number picker the game shows when it asks "how many?"
-		// (discarding a stack, and with bulkItemUse also using several items at once). One GuiElements1 box
-		// [0.282 0.319 0.709 0.694] on a 1024x512 texture, with the up/down arrows, the number and the OK / CANCEL
-		// texts drawn inside it. It is not one of the 1024x1024 windows below, so it is matched here, before that test.
+		// (discarding a stack, and with bulkItemUse also using several items at once). It is drawn as a dark panel
+		// [0.266 0.292 0.735 0.708] first, then a frame on top [0.282 0.319 0.709 0.694], then the up/down arrows, the
+		// number and the OK / CANCEL texts. The panel comes first and must already belong to the window, otherwise it
+		// is drawn at full size and only its contents shrink. So this is matched on any big box in the middle of the
+		// screen, not on one texture, and before the 1024x1024 test below (the frame is on a 1024x512 texture).
 		// It shrinks toward the middle of the screen so it stays centred.
-		if (hudDone && guiTex && canStartAgain(WK_DIALOG) &&
-			cx > 0.44f && cx < 0.56f && cy > 0.40f && cy < 0.60f &&
-			w > 0.28f && w < 0.62f && h > 0.22f && h < 0.52f) {
-			activateWindow(WK_DIALOG, b[0] - 0.02f, b[1] - 0.02f, b[2] + 0.02f, b[3] + 0.02f, kDialogAnchorX, kDialogAnchorY);
+		if (hudDone && canStartAgain(WK_DIALOG) &&
+			cx > 0.46f && cx < 0.54f && cy > 0.45f && cy < 0.55f &&
+			w > 0.38f && w < 0.60f && h > 0.33f && h < 0.52f) {
+			activateWindow(WK_DIALOG, b[0] - 0.03f, b[1] - 0.03f, b[2] + 0.03f, b[3] + 0.03f, kDialogAnchorX, kDialogAnchorY);
 			return;
 		}
 
@@ -2319,6 +2321,22 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 				if (textBox(pVertexStreamZeroData, VertexStreamZeroStride, primNv, x0, y0, x1, y1)) {
 					const float w = (x1 - x0) / 1280.0f, h = (y1 - y0) / 720.0f;
 					HudGroup g = zoneFor((x0 + x1) * 0.5f / 1280.0f, (y0 + y1) * 0.5f / 720.0f, w, h);
+					// A long label on the left side (an item or spell name) reaches far enough to the right that the
+					// MIDDLE of the text leaves the bottom-left zone, even though the text starts well inside it.
+					// It was then taken for boss-zone text and scaled toward the middle of the screen, or for nothing
+					// at all and left unscaled. Seen with "Large Soul of a Proud Knight": its middle lands at 0.301
+					// against a zone that ends at 0.300. Names are longer in German and Russian, so this is easy to
+					// hit there. These labels always start at the same left edge, so for text the LEFT EDGE decides,
+					// not the middle: a label that starts inside the bottom-left zone belongs to it however long it
+					// grows. Quads are not affected, only text, and the boss name is drawn centred around x 0.59, so
+					// it never starts that far left.
+					// The size test from zoneFor is repeated here on purpose: without it this rule could take hold of
+					// a wide or tall piece of text that zoneFor turns down as a fade or a full-screen overlay.
+					if (w <= 0.7f && h <= 0.45f) {
+						const HudLayout TL = getHudLayout();
+						const float textLeft = x0 / 1280.0f, textMidY = (y0 + y1) * 0.5f / 720.0f;
+						if (g != HG_BL && textMidY > TL.blTop && textLeft < TL.blW) g = HG_BL;
+					}
 					// boss-zone text (boss name) only counts inside the HUD buffer window, never dialogue/prompts
 					if (g == HG_BOSS && !onHudRT) g = HG_NONE;
 					// while paused (fading item frames): only the cluster / souls texts count, never enemy names or damage numbers
