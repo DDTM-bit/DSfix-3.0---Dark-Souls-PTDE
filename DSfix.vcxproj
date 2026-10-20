@@ -243,6 +243,7 @@
     <ClCompile Include="AspectFix.cpp" />
     <ClCompile Include="BulkItemUse.cpp" />
     <ClCompile Include="CameraFix.cpp" />
+    <ClCompile Include="CovenantOffer.cpp" />
     <ClCompile Include="d3d9.cpp">
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Disabled</Optimization>
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Disabled</Optimization>
@@ -334,6 +335,7 @@
     <ClInclude Include="AspectFix.h" />
     <ClInclude Include="BulkItemUse.h" />
     <ClInclude Include="CameraFix.h" />
+    <ClInclude Include="CovenantOffer.h" />
     <ClInclude Include="d3d9.h" />
     <ClInclude Include="d3d9query.h" />
     <ClInclude Include="d3dutil.h" />

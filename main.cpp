@@ -23,6 +23,7 @@
 #include "GameParams.h"
 #include "WeaponWearBars.h"
 #include "BulkItemUse.h"
+#include "CovenantOffer.h"
 #include <cstdint>
 #include <mutex>
 #include "RenderstateManager.h"
@@ -360,6 +361,9 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
 
         // bulkItemUse: use several soul items at once from the pause Inventory menu
         if (Settings::get().getBulkItemUse()) installBulkItemUse();
+
+        // covenantOfferings: offer several items, or several humanity, to a covenant at once
+        if (Settings::get().getCovenantOfferings()) installCovenantOffer();
 
         return true;
     }

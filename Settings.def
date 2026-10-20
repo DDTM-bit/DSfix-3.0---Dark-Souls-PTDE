@@ -116,6 +116,13 @@ SETTING(bool, BulkItemUse, "bulkItemUse", false)
 SETTING(bool, StandardSoulsBulk, "standardSoulsBulk", true)
 // humanityBulk: Humanity and Twin Humanities. The number offered is limited so the 99 humanity cap is never passed.
 SETTING(bool, HumanityBulk, "humanityBulk", true)
+// covenantOfferings: offer several at once to a covenant. The "Offer ...?" question at an altar or covenant leader
+// becomes the game's own number picker, and the chosen number of items (or of humanity) is offered in one step.
+// The picker never offers enough to reach the next covenant rank, so the offering that ranks you up is always the
+// game's own single question and its reward arrives exactly as before. Six covenants take offerings: Warriors of
+// Sunlight, Darkwraith, Path of the Dragon, Gravelord Servant, Blade of the Darkmoon and Chaos Servant. Forest
+// Hunter counts invader kills instead, and Way of White and Princess's Guard have no ranks. 0 = off (as before)
+SETTING(bool, CovenantOfferings, "covenantOfferings", false)
 
 // Screen Options
 SETTING(bool, BorderlessFullscreen, "borderlessFullscreen", false);
