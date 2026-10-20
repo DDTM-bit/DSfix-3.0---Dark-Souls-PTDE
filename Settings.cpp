@@ -9,6 +9,16 @@
 
 Settings Settings::instance;
 
+// A line belongs to a setting only when the name ends where the name ends. Without this check a line like
+// "cancelGestureTestAnim 0" also matches the shorter name "cancelGesture" and overwrites it with nonsense.
+static bool settingMatches(const std::string& line, const char* name) {
+	const size_t n = strlen(name);
+	if (line.compare(0, n, name) != 0) return false; // a different setting
+	if (line.length() <= n) return false;            // the name with no value after it
+	const unsigned char c = (unsigned char)line[n];
+	return !((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_');
+}
+
 void Settings::load() {
 	std::ifstream sfile;
 	sfile.open(GetDirectoryFile("DSfix.ini"), std::ios::in);
@@ -20,7 +30,7 @@ void Settings::load() {
 		std::string bstring(buffer);
 
 		#define SETTING(_type, _var, _inistring, _defaultval) \
-		if(bstring.find(_inistring) == 0) { \
+		if(settingMatches(bstring, _inistring)) { \
 			read(buffer + strlen(_inistring) + 1, _var); \
 		}
 		#include "Settings.def"
