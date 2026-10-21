@@ -201,8 +201,14 @@ namespace {
     const BYTE kExpectInvQty[5] = { 0x8B,0x40,0x04, 0x5E, 0xC3 };
     // 8. The "can't use item" animation is set.  mov [esi+0x60],ecx / mov edx,[eax+4]
     const BYTE kExpectWhiff[6] = { 0x89,0x4E,0x60, 0x8B,0x50,0x04 };
-    // 9. The humanity count is written.       mov [esi+0x7C],eax / pop esi / pop ebx
-    const BYTE kExpectHumanity[5] = { 0x89,0x46,0x7C, 0x5E, 0x5B };
+    // 9. The humanity count is written.       mov eax,[eax] / mov [esi+0x7C],eax
+    //    The hook covers these two instructions and nothing after them. The very next one, 'pop esi' at 0xE67A29,
+    //    must stay untouched: at 0xE679D9 the game jumps straight to it whenever the character has no stats block -
+    //    which is every enemy and NPC. The first version of this hook started 2 bytes later and swallowed that
+    //    'pop esi', so the first enemy to pass through here (the archer by the Asylum Demon's fog gate) jumped into
+    //    the middle of our jump instruction and crashed the game. Checked across the whole exe: no other jump lands
+    //    inside any of the nine hooks of this file.
+    const BYTE kExpectHumanity[5] = { 0x8B,0x00, 0x89,0x46,0x7C };
 
     // Addresses the stubs jump back to. Held in variables because inline assembly cannot jump to a number directly.
     DWORD g_useReturn = 0x00E53E54;      // after the replaced instructions
@@ -215,7 +221,7 @@ namespace {
     DWORD g_forceReturn = 0x00E1DA0B;
     DWORD g_soulsReturn = 0x00BFC4E8;
     DWORD g_whiffReturn = 0x00E2B2D5;
-    DWORD g_humanityReturn = 0x00E67A2B; // after the write and the two pops the stub repeats
+    DWORD g_humanityReturn = 0x00E67A29; // 'pop esi', which the game also jumps to directly - left as it is
 
     // The animation the game plays when an item cannot be used (the shoulder shrug). While the number picker is open
     // the item use has been held back on purpose, so the game thinks the item failed and wants to play this. It is
@@ -832,18 +838,19 @@ namespace {
 
     __declspec(naked) void humanity_stub() {
         __asm {
+            // the first instruction the jump replaced: eax points at the value the game chose (already clamped
+            // to 99 by its own code), and this reads it. eax holds a fixed address, so the stack can move freely.
+            mov eax, dword ptr [eax]
             pushad
             pushfd
             push dword ptr [esi + 0x7C]   // what the counter held a moment ago (the write has not happened yet)
-            push eax                      // what the game worked out, already clamped to 99 by its own code
+            push eax                      // what the game worked out
             call bulkAdjustHumanity
             mov dword ptr [esp + 0x20], eax // becomes eax again at POPAD
             popfd
             popad
-            // the three instructions the jump replaced
+            // the second instruction the jump replaced
             mov dword ptr [esi + 0x0000007C], eax
-            pop esi
-            pop ebx
             jmp dword ptr [g_humanityReturn]
         }
     }
@@ -860,7 +867,7 @@ namespace {
         { "inventory quantity",  0x00C0AA80,  5, kExpectInvQty,    kGroupAlways   },
         { "cannot-use animation",0x00E2B2CF,  6, kExpectWhiff,     kGroupAlways   },
         { "soul count",          0x00BFC4E2,  6, kExpectSouls,     kGroupSouls    },
-        { "humanity count",      0x00E67A26,  5, kExpectHumanity,  kGroupHumanity },
+        { "humanity count",      0x00E67A24,  5, kExpectHumanity,  kGroupHumanity },
     };
 
     const void* kStubs[9] = {
