@@ -222,6 +222,38 @@ namespace {
 		return 0;
 	}
 
+	// HUD text drawn directly onto the frame (see textDirect in redirectDrawPrimitiveUP) lies UNDER the HUD buffer, which is
+	// composited over the frame later. Where the text sits on a HUD piece that went into the buffer before it (the item
+	// and spell counts sit on their slot's frame), that piece was laid over the text and dimmed it: the counts were
+	// greyer than the item names next to them, while in vanilla both are equally bright. So right after the text is
+	// drawn, the same glyphs are drawn into the HUD buffer's alpha channel only, removing the buffer's coverage where the
+	// text is (dest alpha *= 1 - text alpha): the buffer no longer covers the text, exactly as if the text were drawn on
+	// top of it. HUD pieces drawn into the buffer after the text still cover it, as in vanilla. Only the buffer's alpha
+	// changes; its colours and the frame are untouched.
+	void clearHudBufferUnderText(IDirect3DDevice9* dev, D3DPRIMITIVETYPE type, UINT prims, const void* data, UINT stride) {
+		if (!dev || !data || !prims) return;
+		DWORD blend = FALSE, src = D3DBLEND_SRCALPHA, dst = D3DBLEND_INVSRCALPHA, op = D3DBLENDOP_ADD, sep = FALSE, cw = 0xF;
+		dev->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend);
+		dev->GetRenderState(D3DRS_SRCBLEND, &src);
+		dev->GetRenderState(D3DRS_DESTBLEND, &dst);
+		dev->GetRenderState(D3DRS_BLENDOP, &op);
+		dev->GetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, &sep);
+		dev->GetRenderState(D3DRS_COLORWRITEENABLE, &cw);
+		dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+		dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ZERO);
+		dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+		dev->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+		dev->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
+		dev->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_ALPHA);
+		dev->DrawPrimitiveUP(type, prims, data, stride);
+		dev->SetRenderState(D3DRS_COLORWRITEENABLE, cw);
+		dev->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, sep);
+		dev->SetRenderState(D3DRS_BLENDOP, op);
+		dev->SetRenderState(D3DRS_DESTBLEND, dst);
+		dev->SetRenderState(D3DRS_SRCBLEND, src);
+		dev->SetRenderState(D3DRS_ALPHABLENDENABLE, blend);
+	}
+
 	// If the draw uses alpha testing, its reference value is scaled with the opacity so faded pixels are not cut away.
 	struct AlphaRefGuard {
 		IDirect3DDevice9* dev;
@@ -559,8 +591,11 @@ namespace {
 		// is drawn at full size and only its contents shrink. So this is matched on any big box in the middle of the
 		// screen, not on one texture, and before the 1024x1024 test below (the frame is on a 1024x512 texture).
 		// It shrinks toward the middle of the screen so it stays centred.
+		// The match is kept tight around the middle (the panel's centre is 0.500 0.500): the item description box of the
+		// loading screen [0.305 0.306 0.768 0.793] (centre 0.537 0.550) has almost the same size and used to be taken for
+		// this dialog in frames where the HUD was drawn too, so the loading screen shrank in those frames.
 		if (hudDone && canStartAgain(WK_DIALOG) &&
-			cx > 0.46f && cx < 0.54f && cy > 0.45f && cy < 0.55f &&
+			cx > 0.48f && cx < 0.52f && cy > 0.47f && cy < 0.53f &&
 			w > 0.38f && w < 0.60f && h > 0.33f && h < 0.52f) {
 			activateWindow(WK_DIALOG, b[0] - 0.03f, b[1] - 0.03f, b[2] + 0.03f, b[3] + 0.03f, kDialogAnchorX, kDialogAnchorY);
 			return;
@@ -2093,8 +2128,13 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		// otherwise the corner opacity regions cut visible edges into it. (The full-screen fade-to-black is NOT affected.)
 		wideBottomOverlay = (qb[2] - qb[0]) > 0.7f && (qb[3] - qb[1]) < 0.7f && (qb[1] + qb[3]) * 0.5f > 0.6f;
 		// A full-screen quad after the HUD (fade from/to black after loading, death fade, ...). hddp >= 7 means the
-		// health bars and humanity counter have already been drawn, i.e. the HUD itself is done.
-		fullScreenFade = (onHudRT || pausedHudRT) && hddp >= 7 && (qb[2] - qb[0]) > 0.95f && (qb[3] - qb[1]) > 0.95f;
+		// health bars and humanity counter have already been drawn, i.e. the HUD itself is done. The HUD buffer may already
+		// have been finished in this frame: the fade then counted as the first draw after the humanity counter (hddp 8) and
+		// finished it, which happens when the fade is drawn with another texture than the counter's. The scaling phase
+		// still has to end there, otherwise the loading screen drawn after the fade was taken for HUD pieces: its frame
+		// and title shrank toward the top-left corner, its bonfire toward the bottom-left, in some frames only, so the
+		// loading screen jumped between a small and the normal size.
+		fullScreenFade = (onHudRT || pausedHudRT || g_hudWindowSeen) && hddp >= 7 && (qb[2] - qb[0]) > 0.95f && (qb[3] - qb[1]) > 0.95f;
 		if (hudGrp == HG_BOSS && idxIsHealthbarTex && (qb[2] - qb[0]) > 0.3f && (qb[3] - qb[1]) < 0.03f) rememberBossRow(qb);
 		if (pausedHudRT) {
 			// The game also "pauses" for any semi-transparent health-bar textured quad. That covers world-anchored things
@@ -2167,8 +2207,10 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		// below 1), and the HUD flickered while the fade-in after loading ran. So the HUD buffer is composited now and the
 		// fade is drawn on top of everything, like in vanilla. Everything after it (loading screen) is not HUD: no scaling.
 		if (g_dumpActive) g_dumpLines.push_back("--- FULL-SCREEN FADE: HUD finished before it ---");
-		if (pausedHudRT) resumeHudRendering();
-		finishHudRendering();
+		if (onHudRT || pausedHudRT) { // not when the HUD buffer was already composited in this frame
+			if (pausedHudRT) resumeHudRendering();
+			finishHudRendering();
+		}
 		pausedHudRT = false;
 		g_hudScalePhase = false;
 		g_lastHudGroup = HG_NONE;
@@ -2423,8 +2465,12 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 		if (op < 0.999f) drawData = applyVertexOpacity(textCopy, drawData, VertexStreamZeroStride, 0, primNv, colOff, op, d3ddev);
 		AlphaRefGuard arg(d3ddev, op);
 		hr = d3ddev->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, drawData, VertexStreamZeroStride);
+		if (textDirect) {
+			resumeHudRendering();
+			// inside this block, so the same alpha test reference applies as for the text itself
+			clearHudBufferUnderText(d3ddev, PrimitiveType, PrimitiveCount, drawData, VertexStreamZeroStride);
+		}
 	}
-	if (textDirect) resumeHudRendering();
 	if (scChanged) d3ddev->SetScissorRect(&savedSc);
 	if (vpChanged) d3ddev->SetViewport(&savedVp);
 	if (subbed) resumeHudRendering();

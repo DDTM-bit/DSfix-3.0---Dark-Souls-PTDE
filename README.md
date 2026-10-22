@@ -53,8 +53,10 @@ To ensure maximum stability on modern machines, configure your environment using
 * **High-FPS Fixes:**
   - **Core Physics & Movement**
     - **Slope Gravity & Friction:** Sliding down slopes and embankments no longer happens at light-speed.
-    - **Airborne Damping:** Normalizes jump distance and walk-off momentum to match the native 30 FPS console release.
-    - **Ladder & Ledge Snap:** Prevents the player from falling through the floor at the bottom of ladders, and stops the engine from aggressively gluing the character to curved lips or stairs.
+    - **Stairs and Slopes (Foot Placement):** The legs and hips no longer bounce on stairs and slopes above 30 FPS. The game's foot placement corrected the body a fixed amount every frame, so at 144 FPS it reacted almost five times faster than at 30 FPS and the camera shook while running on stairs. Its three settings now follow the real frame time, so they behave as at 30 FPS. The small tremble of the feet when walking down stairs is the game's own and happens at 30 FPS too.
+	- **Airborne Damping:** Normalizes jump distance and walk-off momentum to match the native 30 FPS console release.
+    - **Sliding Down Steep Slopes:** While steering, the game restarts the steering animation every frame, and the engine cut that animation's movement to about a tenth at 144 FPS. The engine's limit now follows the frame time, so the hero steers at the same speed as at 30 FPS. Walking, rolling, sprinting and combat are unchanged.At the top of a steep slide, the hero sometimes did a "walking in the air" stumble before sliding above 30 FPS, also when attacking at the edge. The game checks every frame whether the hero is touching the slide surface, and at high frame rates that check could miss for a single frame. The game then stopped the slide. A touch now counts for one 30 FPS frame (1/30 s), which is what the game sees at 30 FPS, so the slide starts straight away.
+	- **Ladder & Ledge Snap:** Prevents the player from falling through the floor at the bottom of ladders, and stops the engine from aggressively gluing the character to curved lips or stairs.
     - **Sprint Graze Check:** Fixes the engine bug where running near walls or complex geometry artificially slows the player down at high framerates.
   - **Combat & Camera**
     - **Accurate Stamina Drain:** Keeps the leftover time of each sprint tick instead of discarding it, guaranteeing a strict 10-point-per-second drain at any frame rate, so stamina no longer lasts artificially long at frame rates that don’t divide evenly into the tick.

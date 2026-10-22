@@ -65,14 +65,19 @@ namespace {
         }
 
         // Golden trail on small changes (stamina while running at 60+ FPS).
-        // Gauge layout (found with a diagnostic log): +0x20 = value the bar must show (0..1), +0x3C = value it shows,
-        // +0x44 = step down, +0x4C = step up, +0x50 = trail state, +0x54 = trail delay timer (advanced in real time).
-        // The follower snaps when the gap is not bigger than the step; otherwise it starts the golden trail
-        // (1 s delay, then draining). Sprinting takes 1 stamina point = 1/160 = 0.00625 every 0.1 s: at 30 FPS the
-        // step 0.012 is bigger, so the bar snaps. At 60 FPS the scaled step is 0.006, smaller than one point, so
-        // every point started a trail. When the gap fits in the unscaled (30 FPS) step, the follower gets that
-        // step: it snaps exactly as it does at 30 FPS. Bigger gaps (real damage) keep the scaled step, so the
-        // golden trail of a hit still drains at the same speed at any frame rate.
+        // Gauge layout (FrpgMenuDlgObjSmoothGauge; checked in the exe: constructor 0x00C88F30, follower 0x00C88BA0,
+        // update 0x00C88FD0): +0x20 = value the bar must show (0..1), +0x3C = value it shows, +0x44 = step down
+        // (0.012 by default), +0x4C = step up, +0x48 = step of the second value (+0x40 toward +0x24).
+        // +0x50 = "moving": set by the follower when a change is bigger than the step. +0x51 = "may move": set by the
+        // update once the hold is over; until then the follower does not move the shown value at all (0x00C88C7F,
+        // 0x00C88CCA). +0x54 = hold timer (the update adds the frame time), +0x5C = hold length (1.5 s by default; the
+        // menu data can give a gauge its own steps and hold). A change not bigger than the step is shown at once.
+        // So the yellow part is the old value held for the hold length, then drained step by step.
+        // Sprinting takes 1 stamina point = 1/160 = 0.00625 every 0.1 s: at 30 FPS the step 0.012 is bigger, so the
+        // bar snaps. At 60 FPS the scaled step is 0.006, smaller than one point, so every point started a hold and
+        // the yellow part came back again and again. When the gap fits in the unscaled (30 FPS) step, the follower
+        // gets that step: it snaps exactly as it does at 30 FPS. Bigger gaps (real damage) keep the scaled step, so
+        // the yellow part of a hit still drains at the same speed at any frame rate.
         const float target = *(float*)(gauge + 0x20);
         const float shown = *(float*)(gauge + 0x3C);
         const float down = shown - target, up = target - shown;
