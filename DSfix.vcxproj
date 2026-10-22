@@ -263,6 +263,7 @@
     <ClCompile Include="Detouring.cpp" />
     <ClCompile Include="dinputWrapper.cpp" />
     <ClCompile Include="Effect.cpp" />
+    <ClCompile Include="FootPlacementFix.cpp" />
     <ClCompile Include="FPS.cpp" />
     <ClCompile Include="FXAA.cpp" />
     <ClCompile Include="GameParams.cpp" />
@@ -317,10 +318,12 @@
     <ClCompile Include="memory.cpp" />
     <ClCompile Include="PhysicsFixes.cpp" />
     <ClCompile Include="RenderstateManager.cpp" />
+    <ClCompile Include="RootMotionFix.cpp" />
     <ClCompile Include="SaveManager.cpp" />
     <ClCompile Include="ScriptFix.cpp" />
     <ClCompile Include="Settings.cpp" />
     <ClCompile Include="SfxFix.cpp" />
+    <ClCompile Include="SlopeSlideFix.cpp" />
     <ClCompile Include="SMAA.cpp" />
     <ClCompile Include="SSAO.cpp" />
     <ClCompile Include="StaminaFix.cpp" />
@@ -343,6 +346,7 @@
     <ClInclude Include="dinput.h" />
     <ClInclude Include="dinputWrapper.h" />
     <ClInclude Include="Effect.h" />
+    <ClInclude Include="FootPlacementFix.h" />
     <ClInclude Include="FXAA.h" />
     <ClInclude Include="GameParams.h" />
     <ClInclude Include="GAUSS.h" />
@@ -356,9 +360,11 @@
     <ClInclude Include="memory.h" />
     <ClInclude Include="PhysicsFixes.h" />
     <ClInclude Include="resource1.h" />
+    <ClInclude Include="RootMotionFix.h" />
     <ClInclude Include="ScriptFix.h" />
     <ClInclude Include="SearchTex.h" />
     <ClInclude Include="SfxFix.h" />
+    <ClInclude Include="SlopeSlideFix.h" />
     <ClInclude Include="SMAA.h" />
     <ClInclude Include="StaminaFix.h" />
     <ClInclude Include="Textures.def" />

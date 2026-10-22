@@ -11,6 +11,9 @@
 #include "RenderstateManager.h"
 #include "memory.h"
 #include "PhysicsFixes.h"
+#include "FootPlacementFix.h"
+#include "RootMotionFix.h"
+#include "SlopeSlideFix.h"
 #include "LadderSnapFix.h"
 #include "StaminaFix.h"
 #include "CameraFix.h"
@@ -133,6 +136,9 @@ void _stdcall updateFramerate(unsigned int cmd) {
 		// so they cannot drift from game time on hitches, frame-limit jitter or pause. During pause the step is ~0,
 		// which updatePhysicsDeltas clamps to its 1 ms minimum (all per-frame factors are then ~neutral).
 		updatePhysicsDeltas(writtenStep);
+		// Foot placement and root motion use the same step; each does nothing unless it was installed (FPS limit above 30).
+		updateFootPlacementFix(writtenStep);
+		updateRootMotionFix(writtenStep);
 	}
 }
 
@@ -222,6 +228,15 @@ void applyFPSPatch() {
 	// Binary patches
 	//--------------------------------------------------------------
 	installPhysicsFixes();
+	// Foot placement on stairs and slopes: always on above 30 FPS (no setting). At 30 it would change nothing.
+	if (Settings::get().getCurrentFPSLimit() > 30) installFootPlacementFix();
+	else SDLOG(0, "FootPlacementFix: FPS limit is 30, nothing patched\n");
+	// Animation root motion (slope slides, steering): always on above 30 FPS (no setting).
+	if (Settings::get().getCurrentFPSLimit() > 30) installRootMotionFix();
+	else SDLOG(0, "RootMotionFix: FPS limit is 30, nothing patched\n");
+	// Slope slides start reliably (slide contact kept for 1/30 s): always on above 30 FPS (no setting).
+	if (Settings::get().getCurrentFPSLimit() > 30) installSlopeSlideFix();
+	else SDLOG(0, "SlopeSlideFix: FPS limit is 30, nothing patched\n");
 	installLadderSnapFix();
 	installStaminaFix();
 	installCameraFix();

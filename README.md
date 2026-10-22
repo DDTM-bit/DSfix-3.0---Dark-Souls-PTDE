@@ -143,6 +143,7 @@ DSfix 3.0 contains code adapted from the following project, used under its licen
 
 ### DS1 FPS Unlock (PTDE & Remastered) by zofrea
 Source: https://github.com/zofrea1/DS1-FPS-Unlock-PTDE-Remastered
+Parts of the FPS fixes are based on the DS1-FPS-Unlock-PTDE-Remastered project.
 
 MIT License
 
