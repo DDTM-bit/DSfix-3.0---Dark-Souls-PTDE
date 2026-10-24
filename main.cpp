@@ -24,6 +24,7 @@
 #include "WeaponWearBars.h"
 #include "BulkItemUse.h"
 #include "CovenantOffer.h"
+#include "QuickSave.h"
 #include <cstdint>
 #include <mutex>
 #include "RenderstateManager.h"
@@ -364,6 +365,9 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
 
         // covenantOfferings: offer several items, or several humanity, to a covenant at once
         if (Settings::get().getCovenantOfferings()) installCovenantOffer();
+
+        // quickSave: a key saves the current character and copies it to QuickSave\QS_DRAKS0005
+        if (Settings::get().getQuickSave()) quickSaveInit();
 
         return true;
     }

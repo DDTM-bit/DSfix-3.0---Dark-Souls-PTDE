@@ -123,6 +123,19 @@ SETTING(bool, HumanityBulk, "humanityBulk", true)
 // Sunlight, Darkwraith, Path of the Dragon, Gravelord Servant, Blade of the Darkmoon and Chaos Servant. Forest
 // Hunter counts invader kills instead, and Way of White and Princess's Guard have no ranks. 0 = off (as before)
 SETTING(bool, CovenantOfferings, "covenantOfferings", false)
+// quickSave: while playing, quickSaveKey makes the game save (as it does on its own) and then copies the character in
+// play - only that character - to QuickSave\QS_DRAKS0005 next to the save file. Every quick save overwrites it, and the
+// game's save file itself is not changed. A short "Quick Saved" message appears at the top of the screen. Not possible
+// while another player is in the world, on the title or loading screen, or when the character is dead. 0 = off
+SETTING(bool, QuickSave, "quickSave", false)
+// the key for quickSave, as a key name like in DSfixKeys.ini (VK_F5, VK_F6, ...)
+SETTING(std::string, QuickSaveKey, "quickSaveKey", "VK_F5")
+// the key for quick load (needs quickSave 1), a key name like VK_F8, or none. While playing, press it, then press it
+// again within 3 seconds. The game quits to the title screen (saving as it always does), the save file as it is then
+// is kept in QuickSave\, the character's quick save is put back into the save file (only that character), and DSfix
+// chooses Load Game and the character for you (if that is not possible, you choose Load Game yourself). Only for the
+// character that made the quick save; not while another player is in the world or the character is dead.
+SETTING(std::string, QuickLoadKey, "quickLoadKey", "none")
 
 // Screen Options
 SETTING(bool, BorderlessFullscreen, "borderlessFullscreen", false);

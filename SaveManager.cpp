@@ -36,6 +36,7 @@ void SaveManager::init() {
 					std::string fn = userSaveFolderData.cFileName;
 					bool dir = userSaveFolderData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY;
 					bool saveFile = fn.substr(fn.find_last_of(".") + 1) == "sl2";
+					if (dir && lstrcmpiA(fn.c_str(), "QuickSave") == 0) continue; // quickSave's own folder, never the save folder
 					if (fn.size() > 2 && (dir || saveFile)) {
 						if (dir)
 							sprintf_s(buffer, "%s%s%s", documents, "\\NBGI\\DarkSouls\\", userSaveFolderData.cFileName);

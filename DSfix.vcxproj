@@ -317,6 +317,7 @@
     </ClCompile>
     <ClCompile Include="memory.cpp" />
     <ClCompile Include="PhysicsFixes.cpp" />
+    <ClCompile Include="QuickSave.cpp" />
     <ClCompile Include="RenderstateManager.cpp" />
     <ClCompile Include="RootMotionFix.cpp" />
     <ClCompile Include="SaveManager.cpp" />
@@ -359,6 +360,7 @@
     <ClInclude Include="LadderSnapFix.h" />
     <ClInclude Include="memory.h" />
     <ClInclude Include="PhysicsFixes.h" />
+    <ClInclude Include="QuickSave.h" />
     <ClInclude Include="resource1.h" />
     <ClInclude Include="RootMotionFix.h" />
     <ClInclude Include="ScriptFix.h" />

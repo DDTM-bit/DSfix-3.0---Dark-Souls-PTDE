@@ -41,6 +41,10 @@ void titleMarkLogoSeen() {
     g_lastLogoMs = GetTickCount64();
 }
 
+bool titleScreenShowing() {
+    return g_lastLogoMs != 0 && GetTickCount64() - g_lastLogoMs < 200;
+}
+
 void titleMarkOnQuad(const float box[4]) {
     // The copyright line at the bottom of the title screen ("DARK SOULS: PREPARE TO DIE EDITION & (c)2012 NAMCO BANDAI
     // ..."), drawn in three pieces from the first frame of the title screen, while the logo animation still plays
