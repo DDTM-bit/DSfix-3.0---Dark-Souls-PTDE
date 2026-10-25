@@ -14,6 +14,7 @@
 #include "FootPlacementFix.h"
 #include "RootMotionFix.h"
 #include "SlopeSlideFix.h"
+#include "CutsceneCameraSmooth.h"
 #include "LadderSnapFix.h"
 #include "StaminaFix.h"
 #include "CameraFix.h"
@@ -237,6 +238,9 @@ void applyFPSPatch() {
 	// Slope slides start reliably (slide contact kept for 1/30 s): always on above 30 FPS (no setting).
 	if (Settings::get().getCurrentFPSLimit() > 30) installSlopeSlideFix();
 	else SDLOG(0, "SlopeSlideFix: FPS limit is 30, nothing patched\n");
+	// Cutscene camera moves on every frame (blended between its 1/30 s keys): always on above 30 FPS (no setting).
+	if (Settings::get().getCurrentFPSLimit() > 30) installCutsceneCameraSmooth();
+	else SDLOG(0, "CutsceneCameraSmooth: FPS limit is 30, nothing patched\n");
 	installLadderSnapFix();
 	installStaminaFix();
 	installCameraFix();
