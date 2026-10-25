@@ -19,6 +19,3 @@ void titleMarkDraw(IDirect3DDevice9* dev);
 
 // Called when the device releases its resources (Reset, Alt+Tab, shutdown).
 void titleMarkRelease();
-
-// True while the title screen is showing (the same test that shows the mark). Used by the quick load.
-bool titleScreenShowing();

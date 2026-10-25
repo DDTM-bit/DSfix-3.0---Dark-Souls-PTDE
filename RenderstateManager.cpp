@@ -816,15 +816,6 @@ namespace {
 	}
 }
 
-// Frames since the game last drew the backdrop of the bottom-left item cluster, its first HUD piece (1 = in the frame
-// just presented). Used by QuickSave.cpp to know the player is in game. Recorded for every draw, with or without
-// enableHudMod and also while DSfix hides the HUD, so it only depends on the game drawing its HUD.
-namespace { unsigned g_hudBackdropFrame = 0xFFF00000u; } // "long ago" until the HUD is first seen
-int hudFramesSinceSeen() {
-	const unsigned d = g_frameNo - g_hudBackdropFrame;
-	return d > 100000u ? 100000 : (int)d;
-}
-
 // Called from the GetCursorPos hook (main.cpp) with the real cursor position in screen coordinates.
 void remapMenuCursor(POINT* p) {
 	if (!p) return;
@@ -2006,17 +1997,6 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 
 	//	//return d3ddev->DrawIndexedPrimitiveUP(PrimitiveType, MinIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, hudVertices, VertexStreamZeroStride);
 	//}
-	// quick save: the item cluster's backdrop (HudHealthbar texture, at 695,3256 in the game's UI space, as the HUD
-	// window fallback below) tells that the game is drawing its HUD
-	if (VertexStreamZeroStride == 12 && PrimitiveCount == 2 && pVertexStreamZeroData) {
-		const INT16* bv = (const INT16*)pVertexStreamZeroData;
-		if (abs((int)bv[0] - 695) <= 64 && abs((int)bv[1] - 3256) <= 64) {
-			IDirect3DBaseTexture9* bt = NULL;
-			d3ddev->GetTexture(0, &bt);
-			if (bt && isTextureHudHealthbar(bt)) g_hudBackdropFrame = g_frameNo;
-			if (bt) bt->Release();
-		}
-	}
 	if (hudStarted && hideHud) {
 		return D3D_OK;
 	}

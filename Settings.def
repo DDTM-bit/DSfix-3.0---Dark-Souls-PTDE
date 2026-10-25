@@ -126,7 +126,8 @@ SETTING(bool, CovenantOfferings, "covenantOfferings", false)
 // quickSave: while playing, quickSaveKey makes the game save (as it does on its own) and then copies the character in
 // play - only that character - to QuickSave\QS_DRAKS0005 next to the save file. Every quick save overwrites it, and the
 // game's save file itself is not changed. A short "Quick Saved" message appears at the top of the screen. Not possible
-// while another player is in the world, on the title or loading screen, or when the character is dead. 0 = off
+// while another player is in the world, on the title or a loading screen, during a cutscene, or when the character is
+// dead. Works with the HUD on or off. 0 = off
 SETTING(bool, QuickSave, "quickSave", false)
 // the key for quickSave, as a key name like in DSfixKeys.ini (VK_F5, VK_F6, ...)
 SETTING(std::string, QuickSaveKey, "quickSaveKey", "VK_F5")

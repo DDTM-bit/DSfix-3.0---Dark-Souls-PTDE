@@ -1,7 +1,6 @@
 #include "QuickSave.h"
 #include "Settings.h"
 #include "main.h" // SDLOG
-#include "TitleMark.h" // titleScreenShowing
 #include <windows.h>
 #include <d3dx9.h>
 #include <shlobj.h>
@@ -13,8 +12,6 @@
 #include <algorithm>
 #pragma comment(lib, "advapi32.lib")
 
-int hudFramesSinceSeen(); // RenderstateManager.cpp: frames since the in-game HUD was last drawn
-
 // =====================================================================================================================
 // LOOK OF THE QUICK SAVE / QUICK LOAD MESSAGES - everything that decides how they look is in this block. Sizes and
 // places are parts of the screen (height for sizes, width / height for the place), so they look the same at every
@@ -24,9 +21,9 @@ namespace QuickSaveLook {
     const char kSavedText[]     = "Quick Saved";
     const char kFailedText[]    = "Quick Save failed";
     const char kBlockedText[]   = "Quick Save not available now";
-    const char kFontName[]      = "Palatino Linotype";          // any font installed with Windows
+    const char kFontName[]      = "Palatino Linotype"; // any font installed with Windows
     const int kFontWeight       = FW_SEMIBOLD;         // FW_NORMAL, FW_SEMIBOLD or FW_BOLD
-    const float kHeight         = 0.027f;              // text height (about 35 pixels at 1080p)
+    const float kHeight         = 0.027f;              // text height (about 29 pixels at 1080p)
     const float kLeft           = 0.78f;               // left edge of the text: right of the longest health bar
     const float kTop            = 0.085f;              // top edge of the text: the row of the health bar
     const float kRightMargin    = 0.09f;               // a longer text moves left to end at least this far from the edge
@@ -84,8 +81,22 @@ namespace QuickSaveLook {
 // save is about 0.15 s, too short to see. So it is held at 1 for kGameIconSeconds from the request, while the game
 // is not writing a save of its own; nothing else in the game reads it.
 //
-// Allowed only while playing: the HUD is drawn, a character is loaded, it is alive, the game allows saving and no
-// other player is in the world (the game's session state [[0x0137D82C]+0x90]: 3 = host, 4 = joining, 6 = client).
+// Allowed only while playing: a character is loaded and in the world, no loading screen, no cutscene or movie, the
+// character is alive, the game allows saving and no other player is in the world (the game's session state
+// [[0x0137D82C]+0x90]: 3 = host, 4 = joining, 6 = client).
+//
+// "PLAYING" IS READ FROM THE GAME'S OWN STATE - nothing is drawn or looked at on the screen, so it works the same with
+// the HUD turned off, with HUD texture mods and with any DSfix HUD setting. Measured with the game (title, loading a
+// character, menus, bonfire, HUD off, death, bonfire warp, Homeward Bone, Darksign, Quit Game, new game intro and
+// cutscene, the Firelink crow cutscene):
+//   the player character    [[0x0137D644]+0x3C] != 0 (WorldChrMan's local player); 0 on the title side
+//   the loading screen      MenuMan+0x7EC ("Nowloading State" in the game's debug text, 0x00C28858): 1..4 while a
+//                           loading screen is up, 0 when it is gone
+//   the title side          MenuMan+0xB4: 1 on the title screen, the title menus and the new game intro, 0 in the
+//                           world (the title steps set it, for example 0x00EEBDEB)
+//   a cutscene              [[0x01378490]+0xE8] (the game's own "cutscene playing" test, 0x00BB1AB0)
+//   a movie                 [[[0x013783C0]+0x6C4]+0x3C / +0x3D] (the game's own "movie playing" test, 0x00C2B500)
+//   The title screen (for the quick load below) is: no player, MenuMan+0xB4 = 1, no loading screen, title flow 0.
 //
 // Quick load (quickLoadKey, pressed twice within kConfirmSeconds; the same rules as quick save, plus the ones of the
 // game's own "Quit Game"):
@@ -120,7 +131,7 @@ namespace QuickSaveLook {
 //        DSfix sets the row (and the scroll if the slot is not in view; the list holds +0x104 slots), checks that the
 //        list took it (+0x438 = the slot), then does what picking it does (0x00C1D375): +0x448 = 1,
 //        [0x0137868A] = 1, +0x90 = 6. The list closes and LoadGameStep (0x00EEEA30) loads slot +0x438, the same way
-//        as when you pick it. When the HUD shows again, "Quick Loaded" appears.
+//        as when you pick it. When the character is in the world again, "Quick Loaded" appears.
 //      Every part waits for the state it expects and has a time limit; if anything is not as expected, DSfix stops
 //      and you choose Load Game yourself ("Quick Load ready - choose Load Game"). Measured with the game: the list
 //      states 3 -> 4 -> 6 (picked) or 6 with +0x448 = -1 (back) -> 0, then the load (save state 2).
@@ -160,6 +171,8 @@ namespace {
     const DWORD kSaveIconMan = 0x013786D0;   // [+0x248] = 1 shows the game's save icon
     const DWORD kMenuMan = 0x013786D0;       // the same object: [+0x238] = quit to the title, [+0x244] = close the menus
     const DWORD kSystemMan = 0x01378700;
+    const DWORD kRemoMan = 0x01378490;       // cutscenes: [+0xE8] = playing
+    const DWORD kMovieMan = 0x013783C0;      // movies: [[+0x6C4]+0x3C / +0x3D] = playing
 
     struct Signature { DWORD addr; const char* hex; };
     const Signature kSignatures[] = {
@@ -169,6 +182,10 @@ namespace {
         { 0x00D5E2E0, "8b0d2cd8370133c083b990000000060f94c0c3" },                               // session state +0x90
         { 0x00EFB040, "51a1a08437018a880f0b00008a90100b0000538a98110b0000885c240484c9750484d2743a83b81c0b000000753184c9" },
         { 0x00C82C2B, "a1d0863701" "8b8048020000" "83f801" },                                 // save icon reads +0x248
+        { 0x00C28858, "8b0dd08637018b81ec0700005068d8fb1c01" },                                 // loading screen +0x7EC
+        { 0x00BB1AB0, "8b159084370132c085d274068a82e8000000" },                                 // cutscene playing
+        { 0x00C2B500, "a1c08337018b80c406000083ec0880783d0056750680783c007407" },               // movie playing
+        { 0x00EEBDD7, "a1d086370183c9ff898854010000898858010000c780b400000001000000" },         // title side +0xB4
     };
     // the automatic load (if these do not match, quick load stops at the title screen and you choose Load Game)
     const Signature kAutoSignatures[] = {
@@ -276,6 +293,7 @@ namespace {
     std::vector<BYTE> g_qlData;         // the quick save file
     bool g_qlBackedUp = false;
     int g_qlTries = 0;
+    bool g_qlLeftWorld = false;         // the game has left the world since the quit was asked for
 
     ID3DXFont* g_font = NULL;
     ID3DXSprite* g_sprite = NULL;
@@ -485,10 +503,43 @@ namespace {
         g_msgStartMs = GetTickCount64();
     }
 
-    // Why a quick save is not possible right now, or NULL when it is. 'inGame' tells whether to show a message at all.
+    // The game's own state (see "PLAYING" at the top of this file).
+    struct GameState {
+        bool player;        // the player character exists
+        bool loading;       // a loading screen is up
+        bool titleSide;     // title screen, title menus or the new game intro
+        bool cutscene;      // a cutscene plays (or the cutscene manager is not there)
+        bool movie;         // a movie plays (or the movie manager is not there)
+        DWORD flow;         // the title flow
+        bool inWorld() const { return player && !loading && !titleSide; }
+        bool playing() const { return inWorld() && !cutscene && !movie; }
+        bool titleScreen() const { return !player && titleSide && !loading && flow == 0; }
+    };
+
+    GameState readGameState() {
+        GameState st;
+        DWORD wcm = 0, player = 0, mm = 0, loading = 1, side = 1, remo = 0, sys = 0, movie = 0;
+        BYTE cut = 1, m1 = 1, m2 = 1;
+        st.player = readDword(kWorldChrMan, wcm) && wcm && readDword(wcm + 0x3C, player) && player;
+        if (readDword(kMenuMan, mm) && mm) { readDword(mm + 0x7EC, loading); readDword(mm + 0xB4, side); }
+        st.loading = loading != 0;
+        st.titleSide = side != 0;
+        st.cutscene = !(readDword(kRemoMan, remo) && remo && readByte(remo + 0xE8, cut) && !cut);
+        st.movie = !(readDword(kMovieMan, sys) && sys && readDword(sys + 0x6C4, movie) && movie &&
+            readByte(movie + 0x3C, m1) && readByte(movie + 0x3D, m2) && !m1 && !m2);
+        st.flow = 0xFFFFFFFF;
+        readDword(kTitleFlow, st.flow);
+        return st;
+    }
+
+    // Why a quick save is not possible right now, or NULL when it is. 'inGame' tells whether to show a message at all
+    // (in the world; on the title or a loading screen the key does nothing).
     const char* blockedReason(int& slot, bool& inGame) {
-        inGame = hudFramesSinceSeen() <= 5;
-        if (!inGame) return "not in game (no HUD drawn: title screen, loading screen or cutscene)";
+        const GameState st = readGameState();
+        inGame = st.inWorld();
+        if (!inGame) return "not in game (title screen, loading screen or no character)";
+        if (st.cutscene) return "a cutscene is playing";
+        if (st.movie) return "a movie is playing";
         DWORD gm = 0, wcm = 0, player = 0, s = 0, net = 0, netState = 0, hp = 0;
         BYTE allowed = 0, req0 = 0, req1 = 0, busy = 0;
         if (!readDword(kGameMan, gm) || !gm) return "the game manager is not there";
@@ -719,6 +770,7 @@ namespace {
         if (!writeDword(mm + 0x238, 1)) { quickLoadFail("could not ask the game to quit"); return; }
         g_qlState = QL_QUITTING;
         g_qlMs = now;
+        g_qlLeftWorld = false;
         g_qlBackedUp = false;
         g_qlTries = 0;
         showMessage(kLoadingText, kAskColor, 120.0f);
@@ -820,7 +872,7 @@ namespace {
             BYTE items = 0xFF, loadOk = 0;
             const bool menu = updated && dlg && readDword(dlg, vt) && vt == kTitleDlgVtable && readByte(dlg + 0x10C, items) &&
                 readDword(dlg + 0x110, closeNow) && !closeNow && readDword(dlg + 0x114, closeWant) && !closeWant &&
-                flow == 0 && titleScreenShowing() && hudFramesSinceSeen() > 30;
+                readGameState().titleScreen();
             if (menu && items == 0) {
                 // "PRESS START BUTTON": what pressing a button there does (0x00C77770)
                 if (stableFor(true, now, 700)) {
@@ -895,21 +947,39 @@ namespace {
             break;
         }
         case QL_AUTO_PLAY:
-            if (hudFramesSinceSeen() <= 5) {
+            if (readGameState().playing()) {
                 showMessage(QuickSaveLook::kLoadedText, QuickSaveLook::kColor);
                 SDLOG(0, "QuickSave: automatic load - playing again\n");
                 g_qlState = QL_IDLE;
             }
-            else if (inState > 120000) g_qlState = QL_IDLE;   // loaded, but no HUD seen (a cutscene?): nothing more to do
+            else if (inState > 120000) g_qlState = QL_IDLE;   // loaded, but not playing yet (a long cutscene?): done
             break;
         default:
             break;
         }
     }
 
+    // You are playing again before the quick load got there (for example you loaded a character yourself): it stops
+    // and its message goes away, so quick save works again at once.
+    void quickLoadCancel(const char* why) {
+        SDLOG(0, "QuickSave: quick load stopped - %s\n", why);
+        g_msgText = NULL;
+        g_qlState = QL_IDLE;
+        g_qlData.clear();
+    }
+
     void followQuickLoad() {
         using namespace QuickSaveLook;
         const ULONGLONG now = GetTickCount64();
+        if (g_qlState >= QL_QUITTING && g_qlState != QL_AUTO_LOAD && g_qlState != QL_AUTO_PLAY) {
+            const GameState st = readGameState();
+            if (!st.inWorld()) g_qlLeftWorld = true;
+            else if (g_qlLeftWorld && st.playing()) {
+                quickLoadCancel(g_qlState >= QL_AUTO_MENU ? "you are playing again (the quick save was already put back)"
+                                                          : "you are playing again before the title screen was reached; nothing changed");
+                return;
+            }
+        }
         DWORD gm = 0, mm = 0, quit = 0;
         BYTE r0 = 1, r1 = 1, busy = 1;
         if (readDword(kGameMan, gm) && gm) { readByte(gm + 0xB0F, r0); readByte(gm + 0xB10, r1); readByte(gm + 0xB1C, busy); }
@@ -935,21 +1005,21 @@ namespace {
             }
             break;
         case QL_WAIT_TITLE: {
-            // the title screen shows, no HUD, and the game is not saving - for one second
-            const bool ready = titleScreenShowing() && hudFramesSinceSeen() > 30 && !r0 && !r1 && !busy;
+            // the title screen, and the game is not saving - for one second
+            const bool ready = readGameState().titleScreen() && !r0 && !r1 && !busy;
             if (!ready) g_qlReadySinceMs = 0;
             else if (!g_qlReadySinceMs) g_qlReadySinceMs = now;
             if (g_qlReadySinceMs && now - g_qlReadySinceMs >= 1000) {
                 g_qlState = QL_RESTORE;
                 g_qlMs = now;
             }
-            else if (now - g_qlMs > 90000) quickLoadFail("the title screen was not reached within 90 s; nothing changed");
+            else if (now - g_qlMs > 30000) quickLoadFail("the title screen was not reached within 30 s; nothing changed");
             break;
         }
         case QL_RESTORE: {
             // done here, on the title screen, in one go: the game cannot load a character in the middle of it
             if (now - g_qlMs < (ULONGLONG)g_qlTries * 250) break;    // a failed try: again after 0.25 s
-            if (!titleScreenShowing() || hudFramesSinceSeen() <= 30) { quickLoadFail("the title screen was left before the quick save was put back; nothing changed"); break; }
+            if (!readGameState().titleScreen()) { quickLoadFail("the title screen was left before the quick save was put back; nothing changed"); break; }
             char why[400] = "";
             bool retry = true;
             const bool ok = restoreSlot(why, sizeof(why), retry);
@@ -977,6 +1047,45 @@ namespace {
             if (g_qlState >= QL_AUTO_MENU) followAutoLoad(now);
             break;
         }
+    }
+
+    // TEMPORARY (until the "playing" check is confirmed in the game): logs the game's own state values whenever one of
+    // them changes, and the quick load step.
+    DWORD g_stLast[16];
+    bool g_stHave = false;
+    ULONGLONG g_stStartMs = 0;
+
+    void traceGameState() {
+        DWORD v[16];
+        memset(v, 0xEE, sizeof(v));
+        DWORD gm = 0, mm = 0, wcm = 0, player = 0, hp = 0, ev = 0, evObj = 0, remo = 0, sys = 0, movie = 0;
+        BYTE b = 0;
+        readDword(kGameMan, gm);
+        readDword(kMenuMan, mm);
+        v[0] = (readDword(kWorldChrMan, wcm) && wcm && readDword(wcm + 0x3C, player) && player) ? 1 : 0;
+        v[1] = (player && readDword(player + 0x2D4, hp) && (int)hp > 0) ? 1 : 0;
+        if (gm) { readDword(gm + 0xA70, v[2]); b = 0; readByte(gm + 0xB40, b); v[3] = b; readDword(gm + 0xB1C, v[4]); }
+        if (mm) { readDword(mm + 0xB4, v[5]); readDword(mm + 0x7EC, v[6]); readDword(mm + 0x7F0, v[7]); readDword(mm + 0x238, v[15]); }
+        if (readDword(0x0137D790, ev) && ev && readDword(ev + 4, evObj) && evObj) { b = 0; readByte(evObj + 0x4D, b); v[8] = b; }
+        if (readDword(kRemoMan, remo) && remo) { b = 0; readByte(remo + 0xE8, b); v[9] = b; }
+        if (readDword(kMovieMan, sys) && sys && readDword(sys + 0x6C4, movie) && movie) {
+            BYTE m1 = 0, m2 = 0;
+            readByte(movie + 0x3C, m1); readByte(movie + 0x3D, m2);
+            v[10] = (m1 ? 1 : 0) | (m2 ? 2 : 0);
+        }
+        readDword(kTitleFlow, v[11]);
+        v[12] = (DWORD)g_qlState;
+        v[13] = (DWORD)g_state;
+        DWORD net = 0;
+        if (readDword(kNetSession, net) && net) readDword(net + 0x90, v[14]);
+        if (g_stHave && memcmp(v, g_stLast, sizeof(v)) == 0) return;
+        const ULONGLONG now = GetTickCount64();
+        if (!g_stStartMs) g_stStartMs = now;
+        SDLOG(0, "QuickSave: state %7.2f s | player %lu alive %lu slot %ld save-ok %lu saving %ld | b4 %ld loading %ld/%ld loadwait %ld | cutscene %ld movie %ld | flow %ld quit %ld | quick load step %lu quick save step %lu | net %ld\n",
+            (now - g_stStartMs) / 1000.0, v[0], v[1], (long)v[2], v[3], (long)v[4], (long)v[5], (long)v[6], (long)v[7], (long)v[8],
+            (long)v[9], (long)v[10], (long)v[11], (long)v[15], v[12], v[13], (long)v[14]);
+        memcpy(g_stLast, v, sizeof(v));
+        g_stHave = true;
     }
 
     // Holds the game's save icon on (see the top of this file). Only while the game is not writing a save itself: then
@@ -1188,11 +1297,13 @@ void quickSaveFrame(IDirect3DDevice9* dev) {
         if (g_qlState != QL_IDLE) followQuickLoad();
     }
     if (g_state != ST_IDLE) followQuickSave();
+    traceGameState(); // TEMPORARY
     if (g_iconUntilMs || g_iconOn) updateGameIcon();
     drawMessage(dev);
 }
 
 void quickSaveRelease() {
+    if (!g_enabled) return;
     if (g_sprite) {
         g_sprite->Release();
         g_sprite = NULL;
