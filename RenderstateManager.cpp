@@ -892,6 +892,8 @@ static const char* VERTEX_SHADER_OVERRIDE_DIR = "dsfix/vertexshader_override";
 
 // ============================================================================================
 // sharpenStrength: contrast-adaptive sharpening (the AMD FidelityFX CAS formula, as in ReShade's CAS.fx).
+// // Adapted from AMD FidelityFX CAS, Copyright (c) 2020 Advanced Micro Devices, Inc., MIT license
+// (https://github.com/GPUOpen-Effects/FidelityFX-CAS; full notice in README.md, Third-Party Licenses).
 // FXAA / SMAA soften the image a little; this pass brings fine detail back. Edges that are already sharp and strong
 // contrasts get less sharpening than flat detail, so it does not draw bright halos. It runs on the finished 3D image
 // right after AA and before SSAO, the HUD and the menus, so text and UI are never sharpened. 0 (default) = off: no
