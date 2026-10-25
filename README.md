@@ -63,7 +63,7 @@ To ensure maximum stability on modern machines, configure your environment using
     - **Accurate Stamina Drain:** Keeps the leftover time of each sprint tick instead of discarding it, guaranteeing a strict 10-point-per-second drain at any frame rate, so stamina no longer lasts artificially long at frame rates that don’t divide evenly into the tick.
     - **Lock-On Body Tracking:** Normalizes the bone rotation speeds for the torso, head, and hips. Enemies will no longer instantly snap their upper bodies to track you, and your own aiming remains smooth.
     - **Camera Smoothing & Panning:** Makes all 16 camera blend weights framerate-independent. Switching lock-on targets smoothly pans the camera instead of instantly snapping, and the mouse/stick "look-at boost" fades out correctly in real-time.
-    - **Smooth Cutscenes:** The cutscene camera no longer jerks at high FPS.
+    - **Smooth Cutscenes at High-FPS:** Tested at max 144fps. The cutscene camera no longer jerks.
   - **Multiplayer & Phantoms**
     - **Flawless Ghost Replays:** Implements a fixed-point translation scaler so bloodstains, wandering ghosts, and network phantoms move at the exact correct speed. Perfectly syncs their walking/running animations to the game's internal 10-frame update clock, completely eliminating phantom skipping, skating, and fast-forwarding.
   - **Visuals, Audio & UI**
