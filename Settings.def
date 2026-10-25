@@ -137,6 +137,9 @@ SETTING(std::string, QuickSaveKey, "quickSaveKey", "VK_F5")
 // chooses Load Game and the character for you (if that is not possible, you choose Load Game yourself). Only for the
 // character that made the quick save; not while another player is in the world or the character is dead.
 SETTING(std::string, QuickLoadKey, "quickLoadKey", "none")
+// quickLoadDoublePress: 1 = the quick load key must be pressed twice within 3 s (the second press confirms);
+// 0 = one press starts the quick load at once
+SETTING(bool, QuickLoadDoublePress, "quickLoadDoublePress", true)
 
 // Screen Options
 SETTING(bool, BorderlessFullscreen, "borderlessFullscreen", false);

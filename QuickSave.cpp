@@ -748,6 +748,7 @@ namespace {
     }
 
     // First press: checks and asks. Second press within kConfirmSeconds: quits to the title screen like "Quit Game".
+    // With quickLoadDoublePress 0 there is no asking: the first press (after the same checks) quits at once.
     void quickLoadKeyPressed() {
         using namespace QuickSaveLook;
         if (g_state != ST_IDLE || (g_qlState != QL_IDLE && g_qlState != QL_ASKED)) return; // a quick save or load is running
@@ -762,7 +763,7 @@ namespace {
             return;
         }
         const ULONGLONG now = GetTickCount64();
-        if (g_qlState == QL_IDLE) {
+        if (g_qlState == QL_IDLE && Settings::get().getQuickLoadDoublePress()) {
             g_qlState = QL_ASKED;
             g_qlMs = now;
             float hold = kConfirmSeconds - kFadeInSeconds - kFadeOutSeconds;
@@ -1226,7 +1227,8 @@ void quickSaveInit() {
         return;
     }
     g_loadEnabled = true;
-    SDLOG(0, "QuickSave: quick load on, key 0x%02X\n", g_loadKey);
+    SDLOG(0, "QuickSave: quick load on, key 0x%02X (%s)\n", g_loadKey,
+    Settings::get().getQuickLoadDoublePress() ? "press twice within 3 s" : "one press");
 
     // the automatic load: its game code, then the title menu's and the list's update slots pointed at the stubs
     for (size_t i = 0; i < sizeof(kAutoSignatures) / sizeof(kAutoSignatures[0]); ++i) {
