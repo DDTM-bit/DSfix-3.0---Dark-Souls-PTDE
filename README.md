@@ -33,7 +33,7 @@ To ensure maximum stability on modern machines, configure your environment using
 
 * **Backup Saves Fix:** Now, the default path can be set in `DSFix.ini` file and it supports Windows environment variables. Example: `%USERPROFILE%\Documents\NBGI\DarkSouls`
 * **Smarter Save Backups:** The backup system now verifies if your game save has actually changed before creating a new backup. This prevents your limited backup slots from being overwritten by identical copies if you frequently launch and exit the game without making any new progress.
-* **Quick Save and Quick Load:** `quickSave` (off by default) adds a quick save key, `quickSaveKey` (F5 by default). While playing, it makes the game save exactly as it does on its own (with its flame icon), then copies the character in play - only that character, never the other slots - into a `QuickSave` folder next to the save file, as `QuickSave\QS_DRAKS0005`. Every quick save replaces the previous one, and a short green "Quick Saved" message appears at the top of the screen. `quickLoadKey` (none by default, for example F8) goes back to that quick save: press it, then press it again within 3 seconds to confirm. The game quits to the title screen the same way as with "Quit Game" (so it saves first, as always), then DSfix keeps the save file exactly as it was then as `QuickSave\BeforeQuickLoad<date-time>_DRAKS0005.sl2.bak` (the 20 newest are kept), puts the quick-saved character back into the save file, and goes through PRESS START, Load Game and the character for you, so the game loads straight into the quick save. Because the game can only load from its one save file, the quick save becomes your normal save after a quick load; what you had just before is always kept in the BeforeQuickLoad file, and to go back to it you copy it into the save folder as `DRAKS0005.sl2` while the game is closed. Quick load only works for the character that made the quick save. Neither key works on the title or loading screen, while the character is dead, or while another player is in your world, and quick load is also refused when the game itself greys out "Quit Game". All quick save files stay inside the `QuickSave` folder, so the regular backup feature never mixes them with its own backups. Every piece of the game's code that these features rely on is checked against this build at start-up; if anything differs, the feature (or only the automatic loading at the title screen) stays off, and at any step where the game is not in the expected state DSfix stops, changes nothing, and lets you continue by hand.
+* **Quick Save and Quick Load:** Press F5 to quick save and press F8 twice to quick load; turn it on in DSfix.ini (`quickSave`, `quickSaveKey`, `quickLoadKey`). Only your current character is affected, and your save is backed up before every quick load (in the `QuickSave` folder). Not available in menus, cutscenes, loading screens, when dead, or online with other players.
 * **HUD Scaling and Opacity Customization:** Resize Individualy the size of the health and stamina bars, the item inventory HUD, the souls counter, and the boss health bar. Set Individual Opacity Levels for the each of the three hud elements. Fixed the issue with boss health bars,switching indicator (for weapons/spells/items), subtitles, damage numbers.
 * **Menu and subtitles scaling Individualy:** Shrinks the game’s menus and windows so they cover less of the screen.
 * **Disable Item Auto-Equip**: Consumables you pick up are no longer put into your quick item slots automatically. The Estus Flask works as before. This is an optional setting.
@@ -139,10 +139,11 @@ To ensure maximum stability on modern machines, configure your environment using
 * **[Hal47](https://github.com/Hal47/dsfix):** Credit for the Sun and Moon rendering fixes.
 * **Bonfire softlock fix:** The Idea is from [Sean Pesce](https://github.com/SeanPesce/FPSFix-Plus).
 * **Dark Souls Overhaul team (metal-crow & Sean Pesce)** – memory research (equipment and parameter table layouts, durability addresses, and the item-use and covenant-offering addresses) used for the item auto-equip, weapon durability bar, multiple item use and multiple covenant offerings features. All of it is DSfix 3.0's own code. https://github.com/metal-crow/Dark-Souls-1-Overhaul
+* **AMD FidelityFX CAS:** the sharpening uses AMD's Contrast Adaptive Sharpening (MIT license, see Third-Party Licenses). https://github.com/GPUOpen-Effects/FidelityFX-CAS
 
 ## Third-Party Licenses
 
-DSfix 3.0 contains code adapted from the following project, used under its license:
+DSfix 3.0 contains code adapted from the following projects, used under its license:
 
 ### DS1 FPS Unlock (PTDE & Remastered) by zofrea
 Source: https://github.com/zofrea1/DS1-FPS-Unlock-PTDE-Remastered
@@ -169,3 +170,29 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+### AMD FidelityFX CAS (Contrast Adaptive Sharpening)
+Source: https://github.com/GPUOpen-Effects/FidelityFX-CAS
+Used for the sharpening (`sharpenStrength`).
+
+MIT License
+
+Copyright (c) 2020 Advanced Micro Devices, Inc. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

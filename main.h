@@ -27,12 +27,12 @@
 
 #define WITHOUT_GFWL_LIB
 
-//#ifndef RELEASE_VER
+#ifndef RELEASE_VER
 #include "Settings.h" // SDLOG reads the log level; needed by every file that uses SDLOG when RELEASE_VER is not defined
 #define SDLOG(_level, _str, ...) if(Settings::get().getLogLevel() > _level) { sdlog(_str, __VA_ARGS__); }
-//#else
-//#define SDLOG(_level, _str, ...) {}
-//#endif
+#else
+#define SDLOG(_level, _str, ...) {}
+#endif
 #define SAFERELEASE(_p) { if(_p) { (_p)->Release(); (_p) = NULL; } }
 #define SAFEDELETE(_p) { if(_p) { delete (_p); (_p) = NULL; } }
 

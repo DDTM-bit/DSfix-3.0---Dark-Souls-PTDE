@@ -96,6 +96,10 @@ namespace QuickSaveLook {
 //                           world (the title steps set it, for example 0x00EEBDEB)
 //   a cutscene              [[0x01378490]+0xE8] (the game's own "cutscene playing" test, 0x00BB1AB0)
 //   a movie                 [[[0x013783C0]+0x6C4]+0x3C / +0x3D] (the game's own "movie playing" test, 0x00C2B500)
+//   a menu                  the game's own "IsShowMenu" test (0x00C2ABE0, the event scripts' IsShowMenu): a bit for
+//                           each of its menus that is open (inventory, equipment, status, system, bonfire, shops,
+//                           dialogs ...), 0 when none is. It only reads MenuMan fields, so DSfix calls it directly.
+//                           Quick save and quick load are not possible while a menu is open.
 //   The title screen (for the quick load below) is: no player, MenuMan+0xB4 = 1, no loading screen, title flow 0.
 //
 // Quick load (quickLoadKey, pressed twice within kConfirmSeconds; the same rules as quick save, plus the ones of the
@@ -173,6 +177,7 @@ namespace {
     const DWORD kSystemMan = 0x01378700;
     const DWORD kRemoMan = 0x01378490;       // cutscenes: [+0xE8] = playing
     const DWORD kMovieMan = 0x013783C0;      // movies: [[+0x6C4]+0x3C / +0x3D] = playing
+    const DWORD kIsShowMenu = 0x00C2ABE0;    // the game's "which menus are open" test (no arguments, returns bits)
 
     struct Signature { DWORD addr; const char* hex; };
     const Signature kSignatures[] = {
@@ -186,6 +191,8 @@ namespace {
         { 0x00BB1AB0, "8b159084370132c085d274068a82e8000000" },                                 // cutscene playing
         { 0x00C2B500, "a1c08337018b80c406000083ec0880783d0056750680783c007407" },               // movie playing
         { 0x00EEBDD7, "a1d086370183c9ff898854010000898858010000c780b400000001000000" },         // title side +0xB4
+        { 0x00C2ABE0, "568b35d08637015733ff397e247405bf00020000837e2800740383cf01837e60007509803d2286370100740383cf08" }, // IsShowMenu
+        { 0x00C2AD8E, "83bec402000000740681cf000100008bc75f5ec3" },                             // ... returns the bits
     };
     // the automatic load (if these do not match, quick load stops at the title screen and you choose Load Game)
     const Signature kAutoSignatures[] = {
@@ -294,6 +301,7 @@ namespace {
     bool g_qlBackedUp = false;
     int g_qlTries = 0;
     bool g_qlLeftWorld = false;         // the game has left the world since the quit was asked for
+    bool g_qlPendingLogged = false;
 
     ID3DXFont* g_font = NULL;
     ID3DXSprite* g_sprite = NULL;
@@ -511,10 +519,17 @@ namespace {
         bool cutscene;      // a cutscene plays (or the cutscene manager is not there)
         bool movie;         // a movie plays (or the movie manager is not there)
         DWORD flow;         // the title flow
+        DWORD menus;        // the game's IsShowMenu bits (0 = no menu open)
         bool inWorld() const { return player && !loading && !titleSide; }
         bool playing() const { return inWorld() && !cutscene && !movie; }
         bool titleScreen() const { return !player && titleSide && !loading && flow == 0; }
     };
+
+    DWORD gameMenusShown() {
+        typedef DWORD(__cdecl* IsShowMenuFn)();
+        __try { return ((IsShowMenuFn)kIsShowMenu)(); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return 0xFFFFFFFF; }
+    }
 
     GameState readGameState() {
         GameState st;
@@ -529,6 +544,7 @@ namespace {
             readByte(movie + 0x3C, m1) && readByte(movie + 0x3D, m2) && !m1 && !m2);
         st.flow = 0xFFFFFFFF;
         readDword(kTitleFlow, st.flow);
+        st.menus = mm ? gameMenusShown() : 0xFFFFFFFF;
         return st;
     }
 
@@ -540,6 +556,7 @@ namespace {
         if (!inGame) return "not in game (title screen, loading screen or no character)";
         if (st.cutscene) return "a cutscene is playing";
         if (st.movie) return "a movie is playing";
+        if (st.menus) return "a menu is open";
         DWORD gm = 0, wcm = 0, player = 0, s = 0, net = 0, netState = 0, hp = 0;
         BYTE allowed = 0, req0 = 0, req1 = 0, busy = 0;
         if (!readDword(kGameMan, gm) || !gm) return "the game manager is not there";
@@ -725,7 +742,7 @@ namespace {
 
     void quickLoadFail(const char* why) {
         SDLOG(0, "QuickSave: quick load failed - %s\n", why);
-        showMessage(QuickSaveLook::kLoadFailedText, QuickSaveLook::kFailColor);
+        showMessage(QuickSaveLook::kLoadFailedText, QuickSaveLook::kFailColor, QuickSaveLook::kReadyHoldSeconds);
         g_qlState = QL_IDLE;
         g_qlData.clear();
     }
@@ -771,6 +788,7 @@ namespace {
         g_qlState = QL_QUITTING;
         g_qlMs = now;
         g_qlLeftWorld = false;
+        g_qlPendingLogged = false;
         g_qlBackedUp = false;
         g_qlTries = 0;
         showMessage(kLoadingText, kAskColor, 120.0f);
@@ -1005,8 +1023,14 @@ namespace {
             }
             break;
         case QL_WAIT_TITLE: {
-            // the title screen, and the game is not saving - for one second
-            const bool ready = readGameState().titleScreen() && !r0 && !r1 && !busy;
+            // the title screen, and the game is not writing a save - for one second. Save requests the game still has
+            // (B0F / B10) do not count: they only run in the world, so on the title screen they wait (seen when quitting
+            // with the inventory open); the quit save itself has been written by then (it runs before the game leaves).
+            const bool ready = readGameState().titleScreen() && !busy;
+            if (ready && (r0 || r1) && !g_qlPendingLogged) {
+                g_qlPendingLogged = true;
+                SDLOG(0, "QuickSave: on the title screen the game still has a save request waiting (profile %d, option %d); it only runs in the world\n", r0, r1);
+            }
             if (!ready) g_qlReadySinceMs = 0;
             else if (!g_qlReadySinceMs) g_qlReadySinceMs = now;
             if (g_qlReadySinceMs && now - g_qlReadySinceMs >= 1000) {
@@ -1047,45 +1071,6 @@ namespace {
             if (g_qlState >= QL_AUTO_MENU) followAutoLoad(now);
             break;
         }
-    }
-
-    // TEMPORARY (until the "playing" check is confirmed in the game): logs the game's own state values whenever one of
-    // them changes, and the quick load step.
-    DWORD g_stLast[16];
-    bool g_stHave = false;
-    ULONGLONG g_stStartMs = 0;
-
-    void traceGameState() {
-        DWORD v[16];
-        memset(v, 0xEE, sizeof(v));
-        DWORD gm = 0, mm = 0, wcm = 0, player = 0, hp = 0, ev = 0, evObj = 0, remo = 0, sys = 0, movie = 0;
-        BYTE b = 0;
-        readDword(kGameMan, gm);
-        readDword(kMenuMan, mm);
-        v[0] = (readDword(kWorldChrMan, wcm) && wcm && readDword(wcm + 0x3C, player) && player) ? 1 : 0;
-        v[1] = (player && readDword(player + 0x2D4, hp) && (int)hp > 0) ? 1 : 0;
-        if (gm) { readDword(gm + 0xA70, v[2]); b = 0; readByte(gm + 0xB40, b); v[3] = b; readDword(gm + 0xB1C, v[4]); }
-        if (mm) { readDword(mm + 0xB4, v[5]); readDword(mm + 0x7EC, v[6]); readDword(mm + 0x7F0, v[7]); readDword(mm + 0x238, v[15]); }
-        if (readDword(0x0137D790, ev) && ev && readDword(ev + 4, evObj) && evObj) { b = 0; readByte(evObj + 0x4D, b); v[8] = b; }
-        if (readDword(kRemoMan, remo) && remo) { b = 0; readByte(remo + 0xE8, b); v[9] = b; }
-        if (readDword(kMovieMan, sys) && sys && readDword(sys + 0x6C4, movie) && movie) {
-            BYTE m1 = 0, m2 = 0;
-            readByte(movie + 0x3C, m1); readByte(movie + 0x3D, m2);
-            v[10] = (m1 ? 1 : 0) | (m2 ? 2 : 0);
-        }
-        readDword(kTitleFlow, v[11]);
-        v[12] = (DWORD)g_qlState;
-        v[13] = (DWORD)g_state;
-        DWORD net = 0;
-        if (readDword(kNetSession, net) && net) readDword(net + 0x90, v[14]);
-        if (g_stHave && memcmp(v, g_stLast, sizeof(v)) == 0) return;
-        const ULONGLONG now = GetTickCount64();
-        if (!g_stStartMs) g_stStartMs = now;
-        SDLOG(0, "QuickSave: state %7.2f s | player %lu alive %lu slot %ld save-ok %lu saving %ld | b4 %ld loading %ld/%ld loadwait %ld | cutscene %ld movie %ld | flow %ld quit %ld | quick load step %lu quick save step %lu | net %ld\n",
-            (now - g_stStartMs) / 1000.0, v[0], v[1], (long)v[2], v[3], (long)v[4], (long)v[5], (long)v[6], (long)v[7], (long)v[8],
-            (long)v[9], (long)v[10], (long)v[11], (long)v[15], v[12], v[13], (long)v[14]);
-        memcpy(g_stLast, v, sizeof(v));
-        g_stHave = true;
     }
 
     // Holds the game's save icon on (see the top of this file). Only while the game is not writing a save itself: then
@@ -1297,7 +1282,6 @@ void quickSaveFrame(IDirect3DDevice9* dev) {
         if (g_qlState != QL_IDLE) followQuickLoad();
     }
     if (g_state != ST_IDLE) followQuickSave();
-    traceGameState(); // TEMPORARY
     if (g_iconUntilMs || g_iconOn) updateGameIcon();
     drawMessage(dev);
 }
