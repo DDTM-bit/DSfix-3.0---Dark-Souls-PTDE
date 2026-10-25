@@ -15,6 +15,7 @@
 #include "RootMotionFix.h"
 #include "SlopeSlideFix.h"
 #include "CutsceneCameraSmooth.h"
+#include "SoulCounterFix.h"
 #include "LadderSnapFix.h"
 #include "StaminaFix.h"
 #include "CameraFix.h"
@@ -241,6 +242,9 @@ void applyFPSPatch() {
 	// Cutscene camera moves on every frame (blended between its 1/30 s keys): always on above 30 FPS (no setting).
 	if (Settings::get().getCurrentFPSLimit() > 30) installCutsceneCameraSmooth();
 	else SDLOG(0, "CutsceneCameraSmooth: FPS limit is 30, nothing patched\n");
+	// Soul counter rolls up at the 30 FPS speed: always on above 30 FPS (no setting).
+	if (Settings::get().getCurrentFPSLimit() > 30) installSoulCounterFix();
+	else SDLOG(0, "SoulCounterFix: FPS limit is 30, nothing patched\n");
 	installLadderSnapFix();
 	installStaminaFix();
 	installCameraFix();

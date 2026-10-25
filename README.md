@@ -72,6 +72,7 @@ To ensure maximum stability on modern machines, configure your environment using
     - **Timers & Fades:** Corrects the duration of weapon buff glows, dropped item pulses, and ragdoll blend-in animations.
     - **Menu Input Repeat:** Locks the D-Pad and menu navigation delay to the engine's default timing so players do not accidentally skip past items in their inventory.
     - **HUD Animations:** Health, stamina, and boss bars smoothly fill and deplete rather than instantly snapping to new values. The loading screen bonfire swirl rotates at the correct cinematic speed.
+	- **Soul Counter:** The souls counter no longer rolls up too fast at high FPS.
   - **Engine Stability**
     - **VRR / G-Sync Stutter Fix:** Bypasses the engine's hardcoded "Present" catch-up loop, eliminating erratic refresh-rate bouncing and micro-stutters on variable-refresh-rate monitors.
 

@@ -327,6 +327,7 @@
     <ClCompile Include="SfxFix.cpp" />
     <ClCompile Include="SlopeSlideFix.cpp" />
     <ClCompile Include="SMAA.cpp" />
+    <ClCompile Include="SoulCounterFix.cpp" />
     <ClCompile Include="SSAO.cpp" />
     <ClCompile Include="StaminaFix.cpp" />
     <ClCompile Include="TitleMark.cpp" />
@@ -370,6 +371,7 @@
     <ClInclude Include="SfxFix.h" />
     <ClInclude Include="SlopeSlideFix.h" />
     <ClInclude Include="SMAA.h" />
+    <ClInclude Include="SoulCounterFix.h" />
     <ClInclude Include="StaminaFix.h" />
     <ClInclude Include="Textures.def" />
     <ClInclude Include="RenderstateManager.h" />
