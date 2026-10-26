@@ -46,6 +46,40 @@ namespace {
 	bool     g_hudWindowSeen = false;   // a HUD window (buffer) was started in this frame
 	HudGroup g_lastHudGroup = HG_NONE; // text/button glyphs follow the element drawn just before them
 
+	// Floating gauge of a friendly phantom (a summoned NPC like Knight Solaire, or a co-op phantom): backdrop, name plate,
+	// name and health bar above the character's head, drawn inside the HUD window and moving with the character.
+	// It is world-anchored like enemy health bars: never scaled, and its name plate (GuiElements1 texture) must neither
+	// end the HUD scaling (all HUD corners went back to scale 1) nor be taken for the quick menu (the plate was then
+	// scaled toward the menu's corner and jumped to the right). Seen in dumps at the Gaping Dragon fog gate: backdrop
+	// (HudHealthbar) 0.234 x 0.079, then the plate (GuiElements1) at +0.009 +0.029 -0.013 -0.018 inside it, a degenerate
+	// piece, the name, three bar layers, another degenerate piece; anywhere from x 0.37 to 0.80 and y 0.00 to 0.88.
+	// Its size changes (0.128 x 0.044 at "YOU DIED"), so it is found by its shape: the backdrop is about 2.95 times wider
+	// than high, and the plate sits inside it at the same proportions (3.6% / 37% / 5.7% / 23% of the backdrop size).
+	// The game draws these gauges first in the HUD window, before the player's own HUD, so a backdrop is only looked for
+	// until the first other HUD draw (the left ends of the player's HP and stamina bars have the same shape).
+	// The backdrop is only taken for a gauge when the very next draw is that plate; otherwise nothing changes.
+	int   g_gaugeState = 0;                  // 0 none, 1 backdrop seen (waiting for the plate), 2 inside a gauge
+	int   g_gaugeLeft = 0;                   // draws left that may still belong to the gauge
+	bool  g_gaugeFirst = true;               // nothing but gauges drawn yet in this frame's HUD (gauges always come first)
+	float g_gaugeBox[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+	bool isGaugeBackdrop(const float* b) {
+		const float w = b[2] - b[0], h = b[3] - b[1];
+		return w > 0.02f && w < 0.30f && h > 0.0f && w > 2.6f * h && w < 3.3f * h;
+	}
+	bool isGaugePlate(const float* b) {
+		const float* g = g_gaugeBox;
+		const float w = g[2] - g[0], h = g[3] - g[1];
+		return fabsf((b[0] - g[0]) / w - 0.036f) < 0.025f && fabsf((b[1] - g[1]) / h - 0.37f) < 0.06f &&
+			fabsf((g[2] - b[2]) / w - 0.057f) < 0.025f && fabsf((g[3] - b[3]) / h - 0.23f) < 0.06f;
+	}
+	// a later piece of the gauge: inside the backdrop, or one of its degenerate pieces (a vertex far off to the left)
+	bool inGauge(const float* b) {
+		if (b[0] < -1.0f) return true;
+		const float* g = g_gaugeBox;
+		return b[0] > g[0] - 0.01f && b[1] > g[1] - 0.01f && b[2] < g[2] + 0.01f && b[3] < g[3] + 0.01f;
+	}
+
 	const float kUiW = 10240.0f;
 	const float kUiH = 5760.0f;
 
@@ -1264,6 +1298,9 @@ void RSManager::releaseResources() {
 	g_hudScalePhase = false;
 	g_hudWindowSeen = false;
 	g_lastHudGroup = HG_NONE;
+	g_gaugeState = 0;
+	g_gaugeLeft = 0;
+	g_gaugeFirst = true;
 	g_dumpActive = false;
 	g_dumpLines.clear();
 	g_heldMainRT = NULL; // the surfaces are released with the device
@@ -1363,6 +1400,9 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 	g_hudScalePhase = false;
 	g_hudWindowSeen = false;
 	g_lastHudGroup = HG_NONE;
+	g_gaugeState = 0;
+	g_gaugeLeft = 0;
+	g_gaugeFirst = true;
 	if (g_rtDumpFrames > 0) {
 		rtDumpLine("--- PRESENT: %u render target calls, effects %s, mainRTuses %u, held uses %u, held depth seen %d ---",
 			nrts, g_effectsDone ? "applied" : "NOT applied", mainRTuses, g_heldMainUses, g_heldZSeen ? 1 : 0);
@@ -2064,6 +2104,35 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 			}
 		}
 	}
+	// friendly phantom's floating gauge (see g_gaugeState): world-anchored, never HUD, never a menu. Checked before the
+	// HUD draw counter (hddp) below: the gauge is drawn first in the HUD window and has 5 HudHealthbar draws, which
+	// otherwise filled the counter's first stage (normally the item cluster's pieces). In frames without the player's
+	// own HUD (the death screen) the HUD buffer was then finished at the wrong point and the boss bar's layers came
+	// apart (the yellow damage trail showed over the bar).
+	bool gaugePiece = false;
+	if (hud && doHud && (g_hudScalePhase || g_gaugeState) && VertexStreamZeroStride == 12 && pVertexStreamZeroData && NumVertices) {
+		float gb[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, NULL, gb);
+		IDirect3DBaseTexture9* gt = NULL;
+		d3ddev->GetTexture(0, &gt);
+		if (g_gaugeState == 1) {
+			if (gt && PrimitiveCount == 2 && isTextureGuiElements1(gt) && isGaugePlate(gb)) { g_gaugeState = 2; g_gaugeLeft = 9; gaugePiece = true; }
+			else g_gaugeState = 0;
+		}
+		else if (g_gaugeState == 2) {
+			if (g_gaugeLeft > 0 && inGauge(gb)) { --g_gaugeLeft; gaugePiece = true; }
+			else g_gaugeState = 0;
+		}
+		if (g_gaugeState == 0 && !gaugePiece && g_gaugeFirst && g_hudScalePhase && gt && PrimitiveCount == 2 && isTextureHudHealthbar(gt) && isGaugeBackdrop(gb)) {
+			g_gaugeState = 1;
+			for (int i = 0; i < 4; ++i) g_gaugeBox[i] = gb[i];
+			gaugePiece = true;
+		}
+		if (gt) gt->Release();
+		if (gaugePiece) g_lastHudGroup = HG_NONE;
+		if (gaugePiece && g_dumpActive) g_dumpLines.push_back("--- phantom gauge piece (not scaled) ---");
+	}
+	if (hud && doHud && g_hudScalePhase && !gaugePiece) g_gaugeFirst = false;
 	bool isTargetIndicator = false;
 	if (pausedHudRT) {
 		IDirect3DBaseTexture9* t;
@@ -2084,7 +2153,7 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		IDirect3DBaseTexture9* t;
 		d3ddev->GetTexture(0, &t);
 		SDLOG(4, "On HUD, redirectDrawIndexedPrimitiveUP texture: %s\n", getTextureName(t));
-		if ((hddp < 5 && isTextureHudHealthbar(t)) || (hddp >= 5 && hddp < 7 && isTextureCategoryIconsHumanityCount(t)) || (hddp >= 7 && !isTextureCategoryIconsHumanityCount(t))) hddp++;
+		if ((hddp < 5 && isTextureHudHealthbar(t) && !gaugePiece) || (hddp >= 5 && hddp < 7 && isTextureCategoryIconsHumanityCount(t)) || (hddp >= 7 && !isTextureCategoryIconsHumanityCount(t))) hddp++;
 		// check for target indicator
 		if (isTextureHudHealthbar(t)) {
 			INT16* vertices = (INT16*)pVertexStreamZeroData;
@@ -2105,7 +2174,7 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		}
 	}
 	bool idxIsHealthbarTex = false;
-	if (g_hudScalePhase) {
+	if (g_hudScalePhase && !gaugePiece) {
 		// menu draws end the HUD scaling phase; they must never be scaled
 		IDirect3DBaseTexture9* mt = NULL;
 		d3ddev->GetTexture(0, &mt);
@@ -2120,7 +2189,7 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 	HudGroup hudGrp = HG_NONE;
 	bool wideBottomOverlay = false;
 	bool fullScreenFade = false;
-	if (g_hudScalePhase && hud && doHud && pVertexStreamZeroData) {
+	if (g_hudScalePhase && hud && doHud && pVertexStreamZeroData && !gaugePiece) {
 		float qb[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		hudGrp = classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, NULL, qb);
 		// The small right end cap of a long health / stamina bar ([0.615 0.100 0.620 0.128] with a high-HP character) lies
@@ -2162,7 +2231,7 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 	int winK = -1;
 	// "in game": a HUD window in this frame or in one of the last frames (the quick menu can come before the HUD)
 	const bool hudDoneNow = g_hudWindowSeen && !onHudRT && !pausedHudRT;
-	if (hud && doHud && (g_hudWindowSeen || g_framesSinceHud < 30) && VertexStreamZeroStride == 12 && pVertexStreamZeroData) {
+	if (!gaugePiece && hud && doHud && (g_hudWindowSeen || g_framesSinceHud < 30) && VertexStreamZeroStride == 12 && pVertexStreamZeroData) {
 		float wb[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		bool wok = false;
 		classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, &wok, wb);
@@ -2339,7 +2408,28 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 	// pieces and text of a window (main menu, list window, prompt) detected earlier in this frame
 	int winK = -1;
 	const bool hudDoneNow = g_hudWindowSeen && !onHudRT && !pausedHudRT;
-	if (hud && doHud && primNv && pVertexStreamZeroData && anyWindowActive()) {
+	// the name (and any other piece) of a friendly phantom's floating gauge: not scaled, not a window piece
+	bool gaugePiece = false;
+	if (g_gaugeState && primNv && pVertexStreamZeroData) {
+		float gb[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		bool gok = false;
+		if (VertexStreamZeroStride == 24) {
+			float x0, y0, x1, y1;
+			if (textBox(pVertexStreamZeroData, VertexStreamZeroStride, primNv, x0, y0, x1, y1)) {
+				gb[0] = x0 / 1280.0f; gb[1] = y0 / 720.0f; gb[2] = x1 / 1280.0f; gb[3] = y1 / 720.0f;
+				gok = true;
+			}
+		}
+		else if (VertexStreamZeroStride == 12) {
+			classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, 0, primNv, NULL, gb);
+			gok = true;
+		}
+		if (g_gaugeState == 2 && g_gaugeLeft > 0 && gok && inGauge(gb)) { --g_gaugeLeft; gaugePiece = true; g_lastHudGroup = HG_NONE; }
+		else g_gaugeState = 0;
+		if (gaugePiece && g_dumpActive) g_dumpLines.push_back("--- phantom gauge piece (not scaled) ---");
+	}
+	if (hud && doHud && g_hudScalePhase && !gaugePiece) g_gaugeFirst = false;
+	if (!gaugePiece && hud && doHud && primNv && pVertexStreamZeroData && anyWindowActive()) {
 		float wb[4];
 		bool wok = false;
 		if (VertexStreamZeroStride == 24) {
@@ -2355,7 +2445,7 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 		}
 		if (wok) winK = windowFor(wb, hudDoneNow, false);
 	}
-	if (winK < 0 && g_hudScalePhase && hud && doHud) {
+	if (winK < 0 && g_hudScalePhase && hud && doHud && !gaugePiece) {
 		IDirect3DBaseTexture9* tt = NULL;
 		d3ddev->GetTexture(0, &tt);
 		const bool sub = tt && isTextureText00(tt);
