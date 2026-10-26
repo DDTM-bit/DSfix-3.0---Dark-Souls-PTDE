@@ -2110,7 +2110,7 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 	// own HUD (the death screen) the HUD buffer was then finished at the wrong point and the boss bar's layers came
 	// apart (the yellow damage trail showed over the bar).
 	bool gaugePiece = false;
-	if (hud && doHud && (g_hudScalePhase || g_gaugeState) && VertexStreamZeroStride == 12 && pVertexStreamZeroData && NumVertices) {
+	if (hud && doHud && ((g_hudScalePhase && g_gaugeFirst) || g_gaugeState) && VertexStreamZeroStride == 12 && pVertexStreamZeroData && NumVertices) {
 		float gb[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, NULL, gb);
 		IDirect3DBaseTexture9* gt = NULL;
