@@ -61,6 +61,18 @@ namespace {
 	int   g_gaugeState = 0;                  // 0 none, 1 backdrop seen (waiting for the plate), 2 inside a gauge
 	int   g_gaugeLeft = 0;                   // draws left that may still belong to the gauge
 	bool  g_gaugeFirst = true;               // nothing but gauges drawn yet in this frame's HUD (gauges always come first)
+
+	// The item cluster (bottom left) was drawn in this frame's HUD. While the player switches a spell, weapon or item,
+	// the game draws a highlight over the slot with the menu texture (GuiElements1), e.g. [0.144 0.564 0.221 0.716].
+	// Menu-texture draws normally end the HUD scaling (a menu starts there), so the rest of the HUD (rest of the
+	// cluster, health bars, souls) was drawn at scale 1 on top of the scaled HUD. Real menus never start with a small
+	// piece inside the item cluster, so such a piece after the cluster is part of the HUD and scaled with it.
+	bool  g_clusterSeen = false;
+	bool isSlotHighlight(const float* b) {
+		const float w = b[2] - b[0], h = b[3] - b[1];
+		return g_clusterSeen && w > 0.02f && w < 0.12f && h > 0.02f && h < 0.22f &&
+			b[0] > 0.05f && b[2] < 0.31f && b[1] > 0.49f && b[3] < 0.97f;
+	}
 	float g_gaugeBox[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
 	bool isGaugeBackdrop(const float* b) {
@@ -1301,6 +1313,7 @@ void RSManager::releaseResources() {
 	g_gaugeState = 0;
 	g_gaugeLeft = 0;
 	g_gaugeFirst = true;
+	g_clusterSeen = false;
 	g_dumpActive = false;
 	g_dumpLines.clear();
 	g_heldMainRT = NULL; // the surfaces are released with the device
@@ -1403,6 +1416,7 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 	g_gaugeState = 0;
 	g_gaugeLeft = 0;
 	g_gaugeFirst = true;
+	g_clusterSeen = false;
 	if (g_rtDumpFrames > 0) {
 		rtDumpLine("--- PRESENT: %u render target calls, effects %s, mainRTuses %u, held uses %u, held depth seen %d ---",
 			nrts, g_effectsDone ? "applied" : "NOT applied", mainRTuses, g_heldMainUses, g_heldZSeen ? 1 : 0);
@@ -2179,9 +2193,18 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		IDirect3DBaseTexture9* mt = NULL;
 		d3ddev->GetTexture(0, &mt);
 		if (mt && isTextureGuiElements1(mt)) {
-			g_hudScalePhase = false;
-			g_lastHudGroup = HG_NONE;
-			if (g_dumpActive) g_dumpLines.push_back("--- PHASE END (menu texture) ---");
+			float sb[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			if (VertexStreamZeroStride == 12 && pVertexStreamZeroData && NumVertices)
+				classifyHudQuad((const INT16*)pVertexStreamZeroData, VertexStreamZeroStride, MinIndex, NumVertices, NULL, sb);
+			if (PrimitiveCount == 2 && isSlotHighlight(sb)) {
+				// a slot highlight of the item cluster (see g_clusterSeen): HUD, scaled with the cluster
+				if (g_dumpActive) g_dumpLines.push_back("--- item slot highlight (scaled with the item cluster) ---");
+			}
+			else {
+				g_hudScalePhase = false;
+				g_lastHudGroup = HG_NONE;
+				if (g_dumpActive) g_dumpLines.push_back("--- PHASE END (menu texture) ---");
+			}
 		}
 		idxIsHealthbarTex = mt && isTextureHudHealthbar(mt);
 		if (mt) mt->Release();
@@ -2226,6 +2249,7 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		// the boss zone only ever scales health-bar textured quads (not dialogue/prompt boxes)
 		if (hudGrp == HG_BOSS && !idxIsHealthbarTex) hudGrp = HG_NONE;
 		g_lastHudGroup = hudGrp;
+		if (hudGrp == HG_BL) g_clusterSeen = true;
 	}
 	// windows (main menu, list windows, prompts): drawn after the HUD, never part of it
 	int winK = -1;
