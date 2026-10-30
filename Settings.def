@@ -115,6 +115,9 @@ SETTING(bool, WeaponWearBars, "weaponWearBars", false)
 // Box. Hold RS (keyboard: LALT); D-pad left / right (arrows) picks the value, D-pad up / down (arrows) switches DESC / ASC;
 // release to sort. The choice is remembered in %LOCALAPPDATA%\NBGI\DarkSouls\DSfixSort.ini. 0 = off (nothing is patched)
 SETTING(bool, WeaponsArmorSort, "WeaponsArmorSort", true)
+// BottomlessBoxMarkers: in the Bottomless Box list, a small chest picture in the top-right corner of an item's picture
+// when nothing of it is held and all of it is in the box. 0 = off (nothing is patched)
+SETTING(bool, BottomlessBoxMarkers, "BottomlessBoxMarkers", false)
 // bulkItemUse: the master switch for using several of the same item at once. With it off nothing below it happens
 // and not one byte of the game is changed. With it on, using a listed item in the pause Inventory menu asks how many
 // to use and uses them all with a single animation. The quick-item button during play always behaves as before, and

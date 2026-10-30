@@ -311,6 +311,8 @@ namespace wasort {
     DWORD g_keyboardCont = 0x006447CD; // the jne that uses the compare
 
     bool g_installed = false;
+    bool g_refreshPatched = false;     // hook 1 is in place (WeaponsArmorSort or BottomlessBoxMarkers put it there)
+    bool g_markersInstalled = false;   // BottomlessBoxMarkers
 
     // ---------------------------------------------------------------------------------------------------------------
     // The remembered choice and the file
@@ -885,10 +887,14 @@ namespace wasort {
     // ---------------------------------------------------------------------------------------------------------------
     // Hook bodies
     // ---------------------------------------------------------------------------------------------------------------
+    // the Bottomless Box's list, noted at its last rebuild (BottomlessBoxMarkers reads it while the box is on screen)
+    volatile DWORD g_boxList = 0;
+
     void __stdcall sortOnRefresh(DWORD list, DWORD frame) {
         int window = W_NONE;
         const int kind = kindOf(list, frame, &window);
         if (window == W_NONE) return; // shops and the rest: nothing to note
+        if (window == W_BOX) g_boxList = list;
         rememberList(list, window, kind);
     }
 
@@ -1007,6 +1013,7 @@ bool installWeaponsArmorSort() {
         { "XInput",         0x00ABA542, 6, kExpXInput,   (const void*)&sortXInputGetState },
     };
     for (int i = 0; i < 5; ++i) {
+        if (i == 0 && g_refreshPatched) continue;   // already put there by BottomlessBoxMarkers
         if (memcmp((const void*)sites[i].address, sites[i].expected, sites[i].length) != 0) {
             SDLOG(0, "WeaponsArmorSort: the code for '%s' at 0x%08X is not what this build should have, sorting stays off\n",
                 sites[i].name, sites[i].address);
@@ -1014,12 +1021,14 @@ bool installWeaponsArmorSort() {
         }
     }
     for (int i = 0; i < 5; ++i) {
+        if (i == 0 && g_refreshPatched) continue;
         if (!writeJump(sites[i].address, sites[i].length, sites[i].target)) {
             SDLOG(0, "WeaponsArmorSort: could not write at 0x%08X, sorting stays off\n", sites[i].address);
             return false;
         }
     }
     g_installed = true;
+    g_refreshPatched = true;
     HANDLE h = CreateThread(NULL, 0, loadThread, NULL, 0, NULL);
     if (h) CloseHandle(h);
     SDLOG(0, "WeaponsArmorSort: on (Weapons and Armor lists: RS + D-pad / LALT + arrows)\n");
@@ -1043,4 +1052,83 @@ bool weaponsArmorSortPrompt(SortPromptInfo* out) {
     out->held = g_padMode ? 1 : (g_kbMode ? 2 : 0);
     out->ownKeyboard = g_lastKeyboard ? 1 : 0;
     return true;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// BottomlessBoxMarkers: in the Bottomless Box list, the rows with nothing held and some stored get a small chest picture
+// (drawn by RenderstateManager.cpp). The game side only needs hook 1 above, to know the box's list object.
+// ---------------------------------------------------------------------------------------------------------------------
+namespace wasort {
+    // the inventory slot of an inventory position (28 bytes: +0 kind, +4 id, +8 count held, +0x14 durability)
+    DWORD inventorySlot(DWORD player, DWORD i) {
+        const DWORD inv = player + 0x1B8;
+        if ((int)i < 0 || i >= rd32(inv + 0x110)) return 0;
+        const DWORD block = (i < rd32(inv + 0x118)) ? rd32(inv + 0x120) : rd32(inv + 0x124);
+        return block ? block + i * 28 : 0;
+    }
+
+    // An entry of the box list: (inventory position * 2) | 1 for a held item, (box position * 2) for an item only in the
+    // box. True when nothing of it is held and some of it is stored.
+    bool allInBox(DWORD player, DWORD entry) {
+        const DWORD box = rd32(player + 0x420);
+        if (!box) return false;
+        if (!(entry & 1)) {
+            const DWORD i = entry >> 1;
+            if (i > 0x7FF) return false;
+            return (rd32(box + 8 + i * 32 + 8) & 0xFFFF) > 0;   // the count stored
+        }
+        // held in the inventory: a slot can stay with 0 held (used up) while the box keeps some
+        const DWORD slot = inventorySlot(player, entry >> 1);
+        if (!slot || rd32(slot + 8) != 0) return false;
+        return boxCount(player, rd32(slot), rd32(slot + 4)) > 0;
+    }
+}
+
+bool installBottomlessBoxMarkers() {
+    using namespace wasort;
+    if (g_markersInstalled) return true;
+    if (!Settings::get().getBottomlessBoxMarkers()) return false;
+    if (!g_refreshPatched) {
+        const DWORD address = 0x00CA0985;
+        if (memcmp((const void*)address, kExpRefresh, sizeof(kExpRefresh)) != 0) {
+            SDLOG(0, "BottomlessBoxMarkers: the code at 0x%08X is not what this build should have, markers stay off\n", address);
+            return false;
+        }
+        if (!writeJump(address, sizeof(kExpRefresh), (const void*)&refresh_stub)) {
+            SDLOG(0, "BottomlessBoxMarkers: could not write at 0x%08X, markers stay off\n", address);
+            return false;
+        }
+        g_refreshPatched = true;
+    }
+    g_markersInstalled = true;
+    SDLOG(0, "BottomlessBoxMarkers: on\n");
+    return true;
+}
+
+bool bottomlessBoxMarkersActive() {
+    return wasort::g_markersInstalled;
+}
+
+int bottomlessBoxMarkerRows(unsigned char* flags, int max) {
+    using namespace wasort;
+    if (!g_markersInstalled || !flags || max <= 0) return 0;
+    const DWORD list = g_boxList;
+    if (!list || windowOf(list) != W_BOX || !(rd32(list + 0x98) & 0xFF)) return 0;   // +0x98: the list is shown
+    const DWORD player = playerData();
+    const DWORD entriesVec = rd32(list + kListEntries);
+    const DWORD orderVec = rd32(list + kListOrder);
+    if (!player || !entriesVec || !orderVec) return 0;
+    const DWORD eBegin = rd32(entriesVec + 4), eEnd = rd32(entriesVec + 8);
+    const DWORD oBegin = rd32(orderVec + 4), oEnd = rd32(orderVec + 8);
+    if (!eBegin || !oBegin || eEnd < eBegin || oEnd < oBegin) return 0;
+    const int entries = (int)((eEnd - eBegin) / 4);
+    const int n = (int)((oEnd - oBegin) / 4);
+    const int scroll = (int)rd32(list + kListScroll);
+    if (scroll < 0 || scroll > n) return 0;
+    int rows = 0;
+    for (; rows < max && scroll + rows < n; ++rows) {
+        const int index = (int)rd32(oBegin + 4 * (DWORD)(scroll + rows));
+        flags[rows] = (index >= 0 && index < entries && allInBox(player, rd32(eBegin + 4 * (DWORD)index))) ? 1 : 0;
+    }
+    return rows;
 }

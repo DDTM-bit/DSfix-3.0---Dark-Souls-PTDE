@@ -32,6 +32,11 @@ namespace sortPrompt {
 	void newFrame();
 	void release();
 }
+// BottomlessBoxMarkers: the same (defined right after sortPrompt)
+namespace boxMarkers {
+	void newFrame();
+	void release();
+}
 #include "Effect.h"
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
@@ -1249,6 +1254,7 @@ void RSManager::releaseResources() {
 	titleMarkRelease();
 	quickSaveRelease();
 	sortPrompt::release();
+	boxMarkers::release();
 	if (g_hudBufOwn) {
 		SAFERELEASE(g_hudBufSurf);
 		SAFERELEASE(g_hudBufTex);
@@ -1320,6 +1326,7 @@ void RSManager::releaseResources() {
 HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion) {
 	weaponWearBarsNewFrame();
 	if (weaponsArmorSortActive()) sortPrompt::newFrame();
+	if (bottomlessBoxMarkersActive()) boxMarkers::newFrame();
 	capturing = false;
 	if (captureNextFrame) {
 		capturing = true;
@@ -2528,6 +2535,13 @@ namespace SortPromptLook {
 	const wchar_t* const kTexts[] = { L" + ", L"Sort By ", L"Desc", L"Asc", L"Game Order" };
 }
 
+// BottomlessBoxMarkers: the look of the chest marker, measured on the item's picture (the item's own icon quad)
+namespace BoxMarkerLook {
+	const float kSize = 0.333f;              // marker width as a part of the picture's width (its height follows the chest)
+	const float kRight = 0.02f;              // gap between the marker and the picture's right edge (part of its width)
+	const float kTop = 0.10f;                // marker top below the picture's top (part of its height): the frame's inner top
+}
+
 namespace sortPrompt {
 	struct Vtx { float x, y, z, u, v; D3DCOLOR c; };   // the game's 24-byte prompt / text vertex
 	struct Piece { IDirect3DBaseTexture9* tex; Vtx v[6]; };
@@ -2935,6 +2949,128 @@ namespace sortPrompt {
 	}
 }
 
+// BottomlessBoxMarkers. The box screen is known by its chest picture above "Storage" (drawn before the list). In the list,
+// every item picture comes right after its stand (a quad of the frame texture with its own UV), at the same x. The k-th
+// picture of the frame is the k-th row on screen; the game side says which rows get the marker. The marker is the
+// box's own chest picture, drawn right after the item picture with the same vertices (so DSfix's window scaling, the
+// scissor and the fading are the same), only placed in the picture's top-right corner.
+namespace boxMarkers {
+	const int kMaxRows = 16;                   // the list shows 4 rows (in both displays); a few more never hurt
+	const int kStandU = 3744, kStandV = 2832;  // the stand under every item picture (UV in 1/4096)
+	bool g_on = false;                         // the feature is on (set at Present)
+	bool g_boxSeen = false;                    // this frame draws the box screen
+	int g_rows = 0;                            // rows read from the game side for this frame
+	unsigned char g_flags[kMaxRows];
+	int g_picture = 0;                         // item pictures seen so far in this frame
+	bool g_afterStand = false;
+	int g_standX0 = 0, g_standX1 = 0;
+	IDirect3DBaseTexture9* g_chestTex = NULL;  // the chest picture (kept with a reference)
+	int g_chestUv[4] = { 0, 0, 0, 0 };         // its UV in 1/4096: left, top, right, bottom
+	float g_chestAspect = 1.0f;                // its height / width in screen units
+
+	void newFrame() {
+		g_on = bottomlessBoxMarkersActive();
+		g_boxSeen = false;
+		g_rows = 0;
+		g_picture = 0;
+		g_afterStand = false;
+	}
+
+	void release() {
+		SAFERELEASE(g_chestTex);
+	}
+
+	// Looks at one of the game's INT16 quads before it is drawn (4 vertices: x y colour colour u v). Returns true when it
+	// is an item picture that gets the marker.
+	bool onQuad(IDirect3DDevice9* dev, const INT16* v) {
+		int minX = 32767, maxX = -32768, minY = 32767, maxY = -32768, minU = 32767, maxU = -32768, minV = 32767, maxV = -32768;
+		for (int i = 0; i < 4; ++i) {
+			const INT16* p = v + i * 6;
+			if (p[0] < minX) minX = p[0];
+			if (p[0] > maxX) maxX = p[0];
+			if (p[1] < minY) minY = p[1];
+			if (p[1] > maxY) maxY = p[1];
+			if (p[4] < minU) minU = p[4];
+			if (p[4] > maxU) maxU = p[4];
+			if (p[5] < minV) minV = p[5];
+			if (p[5] > maxV) maxV = p[5];
+		}
+		if (!g_boxSeen) {
+			// the chest above "Storage" (the same place the sort prompt takes it from)
+			const float* box = sortPrompt::kStoreBox;
+			const float x0 = minX / 10240.0f, y0 = minY / 5760.0f, w = (maxX - minX) / 10240.0f, h = (maxY - minY) / 5760.0f;
+			if (fabsf(x0 - box[0]) < 0.006f && fabsf(y0 - box[1]) < 0.006f && fabsf(w - box[2]) < 0.006f &&
+				fabsf(h - box[3]) < 0.008f && maxU > minU && maxV > minV) {
+				IDirect3DBaseTexture9* t = NULL;
+				dev->GetTexture(0, &t);
+				if (!t) return false;
+				if (g_chestTex != t) { if (g_chestTex) g_chestTex->Release(); g_chestTex = t; }   // keeps the reference
+				else t->Release();
+				g_chestUv[0] = minU; g_chestUv[1] = minV; g_chestUv[2] = maxU; g_chestUv[3] = maxV;
+				g_chestAspect = (float)(maxY - minY) / (float)(maxX - minX);
+				g_boxSeen = true;
+				g_rows = bottomlessBoxMarkerRows(g_flags, kMaxRows);
+			}
+			return false;
+		}
+		if (minU == kStandU && minV == kStandV) {
+			g_afterStand = true;
+			g_standX0 = minX;
+			g_standX1 = maxX;
+			return false;
+		}
+		if (!g_afterStand) return false;
+		g_afterStand = false;
+		if (abs(minX - g_standX0) > 16 || abs(maxX - g_standX1) > 16 || maxY - minY < 8) return false;
+		const int k = g_picture++;
+		return k < g_rows && g_flags[k] != 0 && g_chestTex;
+	}
+
+	// Draws the marker for the item picture just drawn. 'drawn' = the picture's vertices as they were drawn (after DSfix
+	// moved / scaled / faded them); the same index data and render states are used.
+	void draw(IDirect3DDevice9* dev, D3DPRIMITIVETYPE type, UINT minIndex, UINT nv, UINT prims, const void* indices,
+		D3DFORMAT indexFormat, const void* drawn) {
+		using namespace BoxMarkerLook;
+		if (!g_chestTex || !drawn || nv != 4) return;
+		BYTE mv[48];
+		memcpy(mv, drawn, sizeof(mv));
+		int minX = 32767, maxX = -32768, minY = 32767, maxY = -32768;
+		for (int i = 0; i < 4; ++i) {
+			const INT16* p = (const INT16*)(mv + i * 12);
+			if (p[0] < minX) minX = p[0];
+			if (p[0] > maxX) maxX = p[0];
+			if (p[1] < minY) minY = p[1];
+			if (p[1] > maxY) maxY = p[1];
+		}
+		const float w = (float)(maxX - minX), h = (float)(maxY - minY);
+		if (w < 4.0f || h < 4.0f) return;
+		const float mw = w * kSize, mh = mw * g_chestAspect;
+		const float x1 = maxX - w * kRight, x0 = x1 - mw;
+		const float y0 = minY + h * kTop, y1 = y0 + mh;
+		const float midX = (minX + maxX) * 0.5f, midY = (minY + maxY) * 0.5f;
+		for (int i = 0; i < 4; ++i) {
+			INT16* p = (INT16*)(mv + i * 12);
+			const bool right = p[0] > midX, bottom = p[1] > midY;
+			p[0] = (INT16)floorf((right ? x1 : x0) + 0.5f);
+			p[1] = (INT16)floorf((bottom ? y1 : y0) + 0.5f);
+			p[4] = (INT16)(right ? g_chestUv[2] : g_chestUv[0]);   // the colour (p[2], p[3]) stays: the same fading
+			p[5] = (INT16)(bottom ? g_chestUv[3] : g_chestUv[1]);
+		}
+		IDirect3DBaseTexture9* saved = NULL;
+		dev->GetTexture(0, &saved);
+		// the chest is drawn at about a third of its size: its smaller copies (if it has them) keep it smooth
+		DWORD mip = D3DTEXF_NONE;
+		dev->GetSamplerState(0, D3DSAMP_MIPFILTER, &mip);
+		const bool setMip = g_chestTex->GetLevelCount() > 1 && mip == D3DTEXF_NONE;
+		if (setMip) dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
+		dev->SetTexture(0, g_chestTex);
+		dev->DrawIndexedPrimitiveUP(type, minIndex, nv, prims, indices, indexFormat, mv, 12);
+		dev->SetTexture(0, saved);
+		if (saved) saved->Release();
+		if (setMip) dev->SetSamplerState(0, D3DSAMP_MIPFILTER, mip);
+	}
+}
+
 HRESULT RSManager::redirectSetTexture(DWORD Stage, IDirect3DBaseTexture9* pTexture) {
 	if (pTexture == NULL) return d3ddev->SetTexture(Stage, pTexture);
 	// DDTMControllerMappings: keyboard / mouse prompts (kbIcons above)
@@ -3125,6 +3261,10 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 	// WeaponsArmorSort: while a sortable list has focus, the value icons of its rows are noted for the prompt
 	if (sortPrompt::g_capture && VertexStreamZeroStride == 12 && NumVertices == 4 && PrimitiveCount == 2 && MinIndex == 0 && pVertexStreamZeroData)
 		sortPrompt::captureAttr(d3ddev, (const INT16*)pVertexStreamZeroData);
+	// BottomlessBoxMarkers: is this the item picture of a row that gets the chest marker?
+	bool boxMark = false;
+	if (boxMarkers::g_on && VertexStreamZeroStride == 12 && NumVertices == 4 && PrimitiveCount == 2 && MinIndex == 0 && pVertexStreamZeroData)
+		boxMark = boxMarkers::onQuad(d3ddev, (const INT16*)pVertexStreamZeroData);
 	//if(onHudRT) {
 	//	SDLOG(0, "HUD render: primitive type: %d, MinIndex: %u, NumVertices: %u, PrimitiveCount: %u, IndexDataFormat: %s\n", PrimitiveType, MinIndex, NumVertices, PrimitiveCount, D3DFormatToString(IndexDataFormat));
 
@@ -3445,6 +3585,8 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		const void* vdata = applyVertexOpacity(vcopy, srcData, VertexStreamZeroStride, MinIndex, NumVertices, 4, op, d3ddev);
 		AlphaRefGuard arg(d3ddev, op);
 		hr = d3ddev->DrawIndexedPrimitiveUP(PrimitiveType, MinIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, vdata, VertexStreamZeroStride);
+		// BottomlessBoxMarkers: the chest marker on top of the item picture, with its vertices
+		if (boxMark && SUCCEEDED(hr)) boxMarkers::draw(d3ddev, PrimitiveType, MinIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, vdata);
 	}
 	// weaponWearBars: watches the weapon slots' pictures and frames; right after a frame it draws the bar under it, into the
 	// same target with the same (possibly bottom-left scaled) viewport, and with the same opacity this draw got

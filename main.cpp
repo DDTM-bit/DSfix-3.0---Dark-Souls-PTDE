@@ -369,6 +369,9 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
         // WeaponsArmorSort: sort the Weapons / Armor lists (Inventory, Equipment, Bottomless Box) by a row value
         if (Settings::get().getWeaponsArmorSort()) installWeaponsArmorSort();
 
+        // BottomlessBoxMarkers: a chest picture on the Bottomless Box rows that are all in the box
+        if (Settings::get().getBottomlessBoxMarkers()) installBottomlessBoxMarkers();
+
         // quickSave: a key saves the current character and copies it to QuickSave\QS_DRAKS0005
         if (Settings::get().getQuickSave()) quickSaveInit();
 

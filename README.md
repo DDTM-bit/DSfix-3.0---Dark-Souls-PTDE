@@ -96,6 +96,14 @@ Sort the Weapons and Armor lists in the Inventory, the Equipment item list and t
 - Your choice is saved in `%LOCALAPPDATA%\NBGI\DarkSouls\DSfixSort.ini`.
 - On by default. Turn it off with `WeaponsArmorSort 0` in DSfix.ini.
 
+
+### Bottomless Box Markers
+In the Bottomless Box list, a small chest icon in the top-right corner of an item's picture shows that **all of it is in the box** (Held 0).
+
+- Works in all box tabs and in both list views.
+- Uses the game's own chest icon, so texture mods change it too.
+- Off by default. Turn it on with `BottomlessBoxMarkers 1` in DSfix.ini.
+
 ## Bugs and Issues Fixed
 
 ### Frame Pacing Conflict between Limiter and Present

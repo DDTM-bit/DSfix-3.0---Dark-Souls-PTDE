@@ -31,3 +31,11 @@ struct SortPromptInfo {
     int ownKeyboard;  // without DDTM: 1 = keyboard / mouse used last
 };
 bool weaponsArmorSortPrompt(SortPromptInfo* out);
+
+// BottomlessBoxMarkers: in the Bottomless Box list, a small chest picture on the rows with nothing held and some stored.
+// Nothing is patched when the setting is off.
+bool installBottomlessBoxMarkers();
+bool bottomlessBoxMarkersActive();
+// The rows of the box list on screen now, from the top: flags[k] = 1 when that row gets the marker. Returns how many rows
+// were filled (0 = the box list is not on screen).
+int bottomlessBoxMarkerRows(unsigned char* flags, int max);
