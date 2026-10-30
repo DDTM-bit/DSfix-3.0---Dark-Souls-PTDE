@@ -14,3 +14,20 @@ void startGameParamsThread();
 // Maximum durability of a weapon (the id as stored in the equipment slot, upgrade level included).
 // Returns false while the weapon table has not been found yet, or if the weapon is not in it.
 bool weaponMaxDurability(uint32_t weaponId, uint32_t* maxDurability);
+
+// WeaponsArmorSort: sorting of the Weapons and Armor lists (Inventory, Equipment "select item", Bottomless Box).
+// Hold RS + D-pad left / right / up / down (or LALT + arrows) to pick the value and the order, release to sort. Nothing is patched
+// when the setting is off.
+bool installWeaponsArmorSort();
+bool weaponsArmorSortActive();
+
+// What the sort prompt shows. False when no sortable list has focus (then nothing is drawn).
+struct SortPromptInfo {
+    int window;       // 1 Inventory / Equipment (prompt on the help bar), 2 Bottomless Box (prompt in the header)
+    int kind;         // 1 weapons, 2 armor
+    int choice;       // 0 game order, 1..4 physical / magic / fire / lightning, 5 durability, 6 weight, 7 storage (box)
+    int desc;         // 1 DESC, 0 ASC
+    int held;         // 0 nothing held, 1 RS held (controller prompt), 2 LALT held (keyboard prompt)
+    int ownKeyboard;  // without DDTM: 1 = keyboard / mouse used last
+};
+bool weaponsArmorSortPrompt(SortPromptInfo* out);

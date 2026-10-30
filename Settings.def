@@ -111,6 +111,10 @@ SETTING(bool, DDTMControllerMappings, "DDTMControllerMappings", false)
 // (Dark Souls 3 style). Part of the bottom-left HUD: hudScaleBottomLeft and hudBottomLeftOpacity apply, also with
 // enableHudMod 0. 0 = off (as before)
 SETTING(bool, WeaponWearBars, "weaponWearBars", false)
+// WeaponsArmorSort: sort the Weapons and Armor lists of the Inventory, the Equipment "select item" list and the Bottomless
+// Box. Hold RS (keyboard: LALT); D-pad left / right (arrows) picks the value, D-pad up / down (arrows) switches DESC / ASC;
+// release to sort. The choice is remembered in %LOCALAPPDATA%\NBGI\DarkSouls\DSfixSort.ini. 0 = off (nothing is patched)
+SETTING(bool, WeaponsArmorSort, "WeaponsArmorSort", true)
 // bulkItemUse: the master switch for using several of the same item at once. With it off nothing below it happens
 // and not one byte of the game is changed. With it on, using a listed item in the pause Inventory menu asks how many
 // to use and uses them all with a single animation. The quick-item button during play always behaves as before, and

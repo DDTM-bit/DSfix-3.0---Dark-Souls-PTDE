@@ -86,6 +86,16 @@ Needs DDTMControllerFix.dll. Set `DDTMControllerMappings 1` in DSfix.ini.
 - The key icons come from `KeyboardMouse.png`, built into DSfix. To change their look, replace it with your own 16 × 16 grid picture (for example 1024 × 1024) in the same order.
 ---
 
+### Weapons & Armor Sort
+Sort the Weapons and Armor lists in the Inventory, the Equipment item list and the Bottomless Box.
+
+- **Controller:** hold **RS**, press **D-pad ←/→** to choose what to sort by and **D-pad ↑/↓** for Desc/Asc, then release **RS** to sort.
+- **Keyboard:** hold **Left Alt**, press **←/→** to choose and **↑/↓** for Desc/Asc, then release **Left Alt** to sort.
+- Sort by: Game Order, Physical, Magic, Fire, Lightning (attack or defense), Durability, Weight, and Storage (Bottomless Box only).
+- A prompt in the menu shows the current choice. It works with the HUD on or off.
+- Your choice is saved in `%LOCALAPPDATA%\NBGI\DarkSouls\DSfixSort.ini`.
+- On by default. Turn it off with `WeaponsArmorSort 0` in DSfix.ini.
+
 ## Bugs and Issues Fixed
 
 ### Frame Pacing Conflict between Limiter and Present

@@ -25,6 +25,13 @@
 #include "WeaponWearBars.h"
 #include "TitleMark.h"
 #include "QuickSave.h"
+#include "GameParams.h"
+
+// WeaponsArmorSort prompt: defined further down (before redirectSetTexture), used earlier by Present and releaseResources
+namespace sortPrompt {
+	void newFrame();
+	void release();
+}
 #include "Effect.h"
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
@@ -1241,6 +1248,7 @@ void RSManager::releaseResources() {
 	SDLOG(0, "RenderstateManager releasing resources\n");
 	titleMarkRelease();
 	quickSaveRelease();
+	sortPrompt::release();
 	if (g_hudBufOwn) {
 		SAFERELEASE(g_hudBufSurf);
 		SAFERELEASE(g_hudBufTex);
@@ -1311,6 +1319,7 @@ void RSManager::releaseResources() {
 
 HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion) {
 	weaponWearBarsNewFrame();
+	if (weaponsArmorSortActive()) sortPrompt::newFrame();
 	capturing = false;
 	if (captureNextFrame) {
 		capturing = true;
@@ -1862,6 +1871,14 @@ namespace kbIcons {
 	const int CELL_ARROWS = 10 * 16 + 0, CELL_ARROWS_LR = 10 * 16 + 1, CELL_ARROWS_UD = 10 * 16 + 2, CELL_MOUSE_MOVE = 10 * 16 + 3;
 
 	const UINT32 HASH_A = 0x40fbc4ad, HASH_B = 0x43a2b23a;
+	// Keys in a copy made at screen size (g_fitW) keep on screen exactly the shape they have in KeyboardMouse.png. The
+	// game's cell is narrower than tall (about 36 x 40 pixels at 1080p), so the template's keys are drawn 52 x 58 in
+	// their 64 x 64 cells (every picture at most 52 wide): a cell is then painted by the game cell's HEIGHT (this
+	// allowance lets the height decide) and the key still fits its width. In a copy with equal scales (sx == sy,
+	// the 1024 fallback) nothing changes.
+	const float kKeyWidthRoom = 1.20f;
+	// WeaponsArmorSort: the cell (1024 space) of the menu keyboard copy where L ALT is painted for the sort prompt
+	const float kSortAltCell[4] = { 900.0f, 900.0f, 956.0f, 952.0f };
 	// keyboard copies (game / menus, quick menu / other windows) and controller copies (DDTMControllerMappings.ini [Bindings])
 	enum { V_A_GAME, V_A_MENU, V_B_TABS, V_B_ARROWS, V_A_PAD, V_B_PAD, V_COUNT };
 
@@ -1874,6 +1891,19 @@ namespace kbIcons {
 	bool g_origHeld[2] = { false, false };            // AddRef'd by us (managed pool)
 	IDirect3DTexture9* g_var[V_COUNT] = {};
 	bool g_varFailed[V_COUNT] = {};
+	// The keyboard copies of 40fbc4ad (V_A_GAME, V_A_MENU) are made at the size the screen shows them: one texture
+	// pixel = one screen pixel. The game always maps a 56 x 52 cell to the same UI size (at 1080p about 36 x 40 pixels),
+	// so a 1024 texture is shrunk - and squeezed - by the GPU, which made the keys soft. At screen size the keys are
+	// painted once, square and at their final pixels, and the GPU only places them.
+	// The size is measured from the game's own draws of the copy (watchFit), the copy is rebuilt at the next SetTexture
+	// (never during a draw), only when the measured size grows (at most kMaxFitBuilds times) or the screen size changes.
+	int g_fitW[V_COUNT] = {}, g_fitH[V_COUNT] = {};     // 0 = not measured yet (built as before), -1 = not possible
+	int g_fitBuilds[V_COUNT] = {};
+	volatile bool g_fitRebuild[V_COUNT] = {};
+	UINT g_fitVpW[V_COUNT] = {}, g_fitVpH[V_COUNT] = {};   // the viewport each copy was measured in
+	DWORD g_fitResetTime[V_COUNT] = {};
+	const int kMaxFitBuilds = 3;
+	const DWORD kFitResetMs = 5000;                        // a new screen size is taken at most this often
 	volatile bool g_dirty[2] = { false, false };      // a new prompt texture was loaded: rebuild its copies
 	Image g_src[2];                                   // pixels of the loaded prompt textures (read once, when a copy is first needed)
 	Image g_atlas;                                    // KeyboardMouse.png
@@ -2001,6 +2031,50 @@ namespace kbIcons {
 	}
 
 	// ---- painting (coordinates are the pixels of the image) ----
+	// One axis of an area resample (each new pixel = the exact average of the source area it covers), on premultiplied
+	// colour, so edges keep their colour. src / dst: n lines of srcLen / dstLen RGBA floats, 'stride' floats apart.
+	void areaLine(const float* src, int srcLen, float* dst, int dstLen, int step) {
+		const float scale = (float)srcLen / dstLen;
+		for (int i = 0; i < dstLen; ++i) {
+			const float a0 = i * scale, a1 = (i + 1) * scale;
+			float acc[4] = { 0, 0, 0, 0 }, wsum = 0.0f;
+			for (int j = (int)a0; j < srcLen && j < a1; ++j) {
+				const float w = kmin(a1, (float)(j + 1)) - kmax(a0, (float)j);
+				if (w <= 0.0f) continue;
+				const float* p = src + (size_t)j * step;
+				acc[0] += p[0] * w; acc[1] += p[1] * w; acc[2] += p[2] * w; acc[3] += p[3] * w;
+				wsum += w;
+			}
+			float* q = dst + (size_t)i * step;
+			for (int c = 0; c < 4; ++c) q[c] = wsum > 0.0f ? acc[c] / wsum : 0.0f;
+		}
+	}
+	// Resizes to W x H: bigger with bilinear doubling first (upscale2), then smaller with an area average.
+	Image resizeTo(const Image& in, int W, int H) {
+		Image src = in;
+		for (int i = 0; i < 3 && (src.w < W || src.h < H); ++i) src = upscale2(src);
+		std::vector<float> a((size_t)src.w * src.h * 4), b((size_t)W * src.h * 4), c((size_t)W * H * 4);
+		for (size_t i = 0; i < (size_t)src.w * src.h; ++i) {
+			const UINT32 p = src.px[i];
+			const float al = (p >> 24) / 255.0f;
+			a[i * 4 + 0] = ((p >> 16) & 255) * al; a[i * 4 + 1] = ((p >> 8) & 255) * al; a[i * 4 + 2] = (p & 255) * al; a[i * 4 + 3] = al;
+		}
+		for (int y = 0; y < src.h; ++y) areaLine(&a[(size_t)y * src.w * 4], src.w, &b[(size_t)y * W * 4], W, 4);
+		for (int x = 0; x < W; ++x) areaLine(&b[(size_t)x * 4], src.h, &c[(size_t)x * 4], H, W * 4);
+		Image out;
+		out.w = W; out.h = H;
+		out.px.resize((size_t)W * H);
+		for (size_t i = 0; i < (size_t)W * H; ++i) {
+			const float al = c[i * 4 + 3];
+			UINT32 o = 0;
+			if (al > 0.0001f)
+				o = ((UINT32)(al * 255.0f + 0.5f) << 24) | ((UINT32)kmin(255.0f, c[i * 4 + 0] / al + 0.5f) << 16) |
+					((UINT32)kmin(255.0f, c[i * 4 + 1] / al + 0.5f) << 8) | (UINT32)kmin(255.0f, c[i * 4 + 2] / al + 0.5f);
+			out.px[i] = o;
+		}
+		return out;
+	}
+
 	void clearRect(Image& im, int x0, int y0, int x1, int y1) {
 		x0 = kmax(x0, 0); y0 = kmax(y0, 0); x1 = kmin(x1, im.w); y1 = kmin(y1, im.h);
 		for (int y = y0; y < y1; ++y)
@@ -2103,7 +2177,7 @@ namespace kbIcons {
 		const float cy = rowCentre * sy;
 		if (contentBox(im, X0, Y0, X1, Y1, bx0, by0, bx1, by1)) cx = (bx0 + bx1) * 0.5f;
 		clearRect(im, X0, Y0, X1, Y1);
-		const int s = (int)(size * kmin(sx, sy) + 0.5f);
+		const int s = (int)(size * kmin(sy, sx * kKeyWidthRoom) + 0.5f);   // see kKeyWidthRoom
 		paintCell(im, (int)(cx - s * 0.5f + 0.5f), (int)(cy - s * 0.5f + 0.5f), s, cell);
 	}
 
@@ -2115,7 +2189,7 @@ namespace kbIcons {
 		int bx0, by0, bx1, by1;
 		if (!contentBox(im, X0, Y0, X1, Y1, bx0, by0, bx1, by1)) return;
 		clearRect(im, X0, Y0, X1, Y1);
-		const int s = (int)(size * kmin(sx, sy) + 0.5f);
+		const int s = (int)(size * kmin(sy, sx * kKeyWidthRoom) + 0.5f);   // see kKeyWidthRoom
 		paintCell(im, bx1 - s, (int)(130 * sy - s * 0.5f + 0.5f), s, cell);   // centre of the game's picture row 104..156
 	}
 
@@ -2237,6 +2311,10 @@ namespace kbIcons {
 			// third row (y 104..158): the wide "VIEW" and "MENU" pictures
 			replaceWide(im, sx, sy, 0, 104, 222, 158, cell[SLOT_GESTURES], 52);
 			replaceWide(im, sx, sy, 222, 104, 412, 158, cell[SLOT_MENU], 52);
+			// WeaponsArmorSort's prompt (menus): L ALT, painted like the keys above, in a cell the game never uses
+			// (empty in every icon set: nothing is drawn below y 270). The prompt draws it from here, like E / T / R.
+			if (v == V_A_MENU) replaceIcon(im, sx, sy, (int)kSortAltCell[0], (int)kSortAltCell[1], (int)kSortAltCell[2],
+				(int)kSortAltCell[3], 6 * 16 + 4, 50, (int)((kSortAltCell[1] + kSortAltCell[3]) * 0.5f));
 		}
 		else {
 			const float sx = im.w / 512.0f, sy = im.h / 256.0f;
@@ -2269,6 +2347,14 @@ namespace kbIcons {
 		// are made at twice the size (the game picks pixels by position, so a bigger texture shows the same), and
 		// the key icons stay sharp.
 		Image im = which == 1 ? upscale2(g_src[which]) : g_src[which];
+		// The keys of the keyboard copies are painted at the copy's own size. When the game's original (smaller)
+		// textures are loaded - controllerIcons off, or auto with no controller found - the copy is first made at least
+		// 1024 pixels wide (the size of the built-in icon sets), so the keys stay sharp with any icon texture. The
+		// game's own icons in it are only enlarged (they look as before); the game picks icons by position, not pixels.
+		bool enlarged = false;
+		const bool fit = (v == V_A_GAME || v == V_A_MENU) && g_fitW[v] > 0 && g_fitH[v] > 0;
+		if (fit) { im = resizeTo(im, g_fitW[v], g_fitH[v]); enlarged = true; }   // at screen size (see g_fitW)
+		else if (!pad) for (int i = 0; i < 3 && im.w < 1024; ++i) { im = upscale2(im); enlarged = true; }
 		if (pad) paintPadVariant(im, v, g_src[0], g_shared);
 		else {
 			INT32 cells[16];
@@ -2277,14 +2363,30 @@ namespace kbIcons {
 		}
 
 		IDirect3DTexture9* tex = NULL;
-		const DWORD levels = which == 1 ? 1 : orig->GetLevelCount();
-		if (FAILED(D3DXCreateTexture(dev, im.w, im.h, levels, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex)) || !tex) { SDLOG(0, "DDTMControllerMappings: could not create copy %d\n", v); return NULL; }
+		const DWORD levels = which == 1 ? 1 : (enlarged ? 0 : orig->GetLevelCount());   // 0 = the full chain
+		if (FAILED(D3DXCreateTexture(dev, im.w, im.h, levels, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex)) || !tex) {
+			SDLOG(0, "DDTMControllerMappings: could not create copy %d\n", v);
+			if (fit) { g_fitW[v] = -1; g_fitH[v] = -1; return buildVariant(dev, v); }   // screen size not possible: as before
+			return NULL;
+		}
+		if (fit) {
+			// the card may round the size (no free texture sizes): then the copy is made as before
+			D3DSURFACE_DESC dd = {};
+			tex->GetLevelDesc(0, &dd);
+			if ((int)dd.Width != im.w || (int)dd.Height != im.h) {
+				tex->Release();
+				SDLOG(0, "DDTMControllerMappings: copy %d cannot be %d x %d on this card, made as before\n", v, im.w, im.h);
+				g_fitW[v] = -1; g_fitH[v] = -1;
+				return buildVariant(dev, v);
+			}
+		}
 		D3DLOCKED_RECT lr;
 		if (FAILED(tex->LockRect(0, &lr, NULL, 0))) { tex->Release(); SDLOG(0, "DDTMControllerMappings: could not fill copy %d\n", v); return NULL; }
 		for (int y = 0; y < im.h; ++y) memcpy((BYTE*)lr.pBits + (size_t)y * lr.Pitch, &im.px[(size_t)y * im.w], im.w * 4);
 		tex->UnlockRect(0);
-		if (levels > 1) D3DXFilterTexture(tex, NULL, 0, D3DX_FILTER_BOX);
-		SDLOG(0, "DDTMControllerMappings: copy %d built (%d x %d, %u levels)\n", v, im.w, im.h, levels);
+		if (levels != 1) D3DXFilterTexture(tex, NULL, 0, D3DX_FILTER_BOX);
+		SDLOG(0, "DDTMControllerMappings: copy %d built (%d x %d, %u levels%s)\n", v, im.w, im.h, tex->GetLevelCount(),
+			fit ? ", at screen size" : (enlarged ? ", enlarged from the game's smaller icon texture" : ""));
 		return tex;
 	}
 
@@ -2335,6 +2437,11 @@ namespace kbIcons {
 		if (g_dirty[0]) dropCopies(0);
 		if (g_dirty[1]) dropCopies(1);
 		if (v >= 0 && (IDirect3DBaseTexture9*)g_orig[which] == t) {
+			if (g_fitRebuild[v]) {   // a new screen size was measured: made again here, between draws
+				g_fitRebuild[v] = false;
+				if (g_var[v]) { g_var[v]->Release(); g_var[v] = NULL; }
+				g_varFailed[v] = false;
+			}
 			if (!g_var[v] && !g_varFailed[v]) { g_var[v] = buildVariant(dev, v); g_varFailed[v] = !g_var[v]; }
 			if (g_var[v]) out = g_var[v];
 		}
@@ -2350,9 +2457,482 @@ namespace kbIcons {
 			t == (IDirect3DBaseTexture9*)g_var[V_A_PAD]);
 	}
 
+	// true while a keyboard copy of 40fbc4ad exists (the only time watchFit has anything to measure)
+	inline bool fitWatch() { return g_var[V_A_GAME] || g_var[V_A_MENU]; }
+
+	// Called with every 24-byte prompt / text draw as it is finally drawn (render thread). If it uses a keyboard copy of
+	// 40fbc4ad, the size the screen shows that texture at is measured: its first quad in screen pixels over its UV size.
+	void watchFit(IDirect3DDevice9* dev, IDirect3DBaseTexture9* t, const void* data, UINT nv) {
+		if (!t || !data || nv < 4) return;
+		int v = -1;
+		if (t == (IDirect3DBaseTexture9*)g_var[V_A_GAME]) v = V_A_GAME;
+		else if (t == (IDirect3DBaseTexture9*)g_var[V_A_MENU]) v = V_A_MENU;
+		if (v < 0 || g_fitW[v] < 0) return;
+		D3DVIEWPORT9 vp;
+		if (FAILED(dev->GetViewport(&vp)) || vp.Width < 64 || vp.Height < 64) return;
+		if (vp.Width != g_fitVpW[v] || vp.Height != g_fitVpH[v]) {
+			// a new screen size: this copy is measured again from scratch (at most every kFitResetMs, so a copy that
+			// is drawn into two differently sized targets can never be rebuilt over and over)
+			const DWORD now = GetTickCount();
+			if (g_fitVpW[v] != 0 && now - g_fitResetTime[v] < kFitResetMs) return;
+			g_fitResetTime[v] = now;
+			g_fitVpW[v] = vp.Width; g_fitVpH[v] = vp.Height;
+			if (g_fitW[v] > 0) { g_fitW[v] = 0; g_fitH[v] = 0; }
+			g_fitBuilds[v] = 0;
+		}
+		if (g_fitBuilds[v] >= kMaxFitBuilds) return;
+		float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f, u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
+		const UINT m = nv < 6 ? nv : 6;
+		for (UINT i = 0; i < m; ++i) {
+			const float* f = (const float*)((const BYTE*)data + (size_t)i * 24);
+			x0 = kmin(x0, f[0]); x1 = kmax(x1, f[0]); y0 = kmin(y0, f[1]); y1 = kmax(y1, f[1]);
+			u0 = kmin(u0, f[3]); u1 = kmax(u1, f[3]); v0 = kmin(v0, f[4]); v1 = kmax(v1, f[4]);
+		}
+		const float du = u1 - u0, dv = v1 - v0;
+		if (du < 0.01f || dv < 0.01f || du > 0.5f || dv > 0.5f || x1 - x0 < 2.0f || y1 - y0 < 2.0f) return;
+		const int W = (int)((x1 - x0) * vp.Width / 1280.0f / du + 0.5f);
+		const int H = (int)((y1 - y0) * vp.Height / 720.0f / dv + 0.5f);
+		if (W < 256 || H < 256 || W > 4096 || H > 4096) return;
+		// only a bigger size counts (a copy shown at two sizes is made for the bigger one, never enlarged on screen)
+		if (g_fitW[v] > 0 && W <= g_fitW[v] * 1.03f && H <= g_fitH[v] * 1.03f) return;
+		g_fitW[v] = kmax(W, g_fitW[v]);
+		g_fitH[v] = kmax(H, g_fitH[v]);
+		++g_fitBuilds[v];
+		g_fitRebuild[v] = true;
+		SDLOG(0, "DDTMControllerMappings: copy %d is shown at %d x %d screen pixels per texture, made at that size\n", v, g_fitW[v], g_fitH[v]);
+	}
+
 	// The controller mapping comes from DDTMControllerFix.dll: then swapConfirmIcons / swapXYIcons are not used
 	// (the controller copy already shows the right buttons; both together would swap twice)
 	bool padMappingFromDdtm() { return g_state == 1 && g_shared && g_shared->version >= 2 && g_shared->ready; }
+}
+
+// ---- WeaponsArmorSort prompt (the sorting itself is in GameParams.cpp) ----
+// LOOK OF THE PROMPT - everything that decides how it looks is in this block. Sizes are in the game's UI pixels
+// (1280 x 720), so the prompt follows menuScale and every resolution exactly like the game's own prompts.
+namespace SortPromptLook {
+	const float kTextScale = 1.00f;          // text height as a part of the prompt line (1.0 = the game's text line)
+	const float kIconScale = 1.00f;          // icon size (1.0 = the size the game's own prompt icons have)
+	const float kGapAfterHelp = 19.0f;       // Inventory / Equipment: space after the game's last prompt (its own spacing)
+	const float kGapIconText = 2.0f;         // between an icon and the text after it
+	const float kGapTextIcon = 1.0f;         // between a text and the icon after it
+	const float kGapIconIcon = 3.0f;         // between two icons
+	const float kBoxRight = 0.635f;          // Bottomless Box: right end of the prompt (part of the screen width)
+	const float kBoxTop = 0.126f;            // Bottomless Box: the header's second line (part of the screen height)
+	const float kBoxBottom = 0.160f;
+	const D3DCOLOR kTextColor = 0xFFFFFFFF;  // white
+	const D3DCOLOR kIconColor = 0xFFF0F0F0;  // like the game's prompt icons
+	const wchar_t* const kFontName = L"Palatino Linotype";
+	const int kFontWeight = FW_SEMIBOLD;
+	// The texts. "Game Order" stands where the value's icon goes when the list is in the game's own order.
+	const wchar_t* const kTexts[] = { L" + ", L"Sort By ", L"Desc", L"Asc", L"Game Order" };
+}
+
+namespace sortPrompt {
+	struct Vtx { float x, y, z, u, v; D3DCOLOR c; };   // the game's 24-byte prompt / text vertex
+	struct Piece { IDirect3DBaseTexture9* tex; Vtx v[6]; };
+	enum { T_PLUS, T_SORTBY, T_DESC, T_ASC, T_GAMEORDER, T_COUNT };
+	const int kMaxPieces = 8;
+	const int kRowPx = 64;                    // one text line in the text texture
+
+	// textures made once (managed: they survive a device reset)
+	IDirect3DTexture9* g_textTex = NULL;
+	float g_textW[T_COUNT];                   // width of each text in texture pixels
+	UINT g_textTexW = 0, g_textTexH = 0;
+	bool g_textFailed = false;
+	IDirect3DTexture9* g_keysTex = NULL;      // KeyboardMouse.png
+	float g_keyUv[3][4];                      // L ALT (its key), left / right and up / down arrows (whole cells)
+	bool g_keysFailed = false;
+
+	// the six value icons of the list rows (physical, magic, fire, lightning, durability, weight), taken from the
+	// game's own row drawing, so a texture mod that changes them changes the prompt too
+	IDirect3DBaseTexture9* g_attrTex[6] = { NULL, NULL, NULL, NULL, NULL, NULL };
+	float g_attrUv[6][4];
+	// the Bottomless Box's chest picture above "Storage" (right side), for the storage choice
+	IDirect3DBaseTexture9* g_storeTex = NULL;
+	float g_storeUv[4];
+	const float kStoreBox[4] = { 0.837f, 0.156f, 0.063f, 0.111f };   // left, top, width, height (part of the screen)
+	const float kAttrX[6] = { 0.166f, 0.235f, 0.304f, 0.373f, 0.445f, 0.514f };
+
+	// the help bar (Inventory / Equipment): its right end in the last frame. Only the help bar's own pieces count: it
+	// is followed from its first piece on, piece by piece, as long as each one starts close to where the last one ended
+	// (the HUD's soul counter is on the same line further right, and is drawn before the menu).
+	float g_helpMaxX = 0.0f, g_helpMaxXPrev = 0.0f;
+	const float kHelpChainGap = 60.0f;        // UI pixels: a larger gap ends the help bar
+	bool g_triggered = false;                 // the prompt was drawn this frame
+	bool g_capture = false;                   // a sortable list has focus: watch the row icons
+
+	// How the game draws its prompt icons: UI pixels per whole texture width / height, and the height of that icon,
+	// read from the help bar's first icon (its button texture). The game does not draw them square: a 56 x 52 cell
+	// becomes about 24 x 27 UI pixels. The keys and buttons of the prompt use exactly the same, so they match.
+	float g_unitX = 444.0f, g_unitY = 524.6f, g_unitH = 26.64f;   // from the F9 dumps, until the game's own are read
+	// controller icons in ButtonsEffects (1024 space): R click, D-pad left / right, D-pad up / down
+	const float kPadUv[3][4] = {
+		{ 574.0f / 1024.0f, 0.0f, 630.0f / 1024.0f, 52.0f / 1024.0f },
+		{ 740.0f / 1024.0f, 0.0f, 798.0f / 1024.0f, 52.0f / 1024.0f },
+		{ 798.0f / 1024.0f, 0.0f, 856.0f / 1024.0f, 52.0f / 1024.0f },
+	};
+
+	bool texSize2D(IDirect3DBaseTexture9* t, float& w, float& h) {
+		if (!t || t->GetType() != D3DRTYPE_TEXTURE) return false;
+		D3DSURFACE_DESC d;
+		if (FAILED(((IDirect3DTexture9*)t)->GetLevelDesc(0, &d)) || !d.Width || !d.Height) return false;
+		w = (float)d.Width; h = (float)d.Height;
+		return true;
+	}
+
+	// white text with its own alpha, one line per text, drawn once with GDI
+	bool buildText(IDirect3DDevice9* dev) {
+		using namespace SortPromptLook;
+		if (g_textTex) return true;
+		if (g_textFailed) return false;
+		g_textFailed = true;
+		const int W = 1024, H = 512;
+		BITMAPINFO bi = {};
+		bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+		bi.bmiHeader.biWidth = W;
+		bi.bmiHeader.biHeight = -H;           // top-down
+		bi.bmiHeader.biPlanes = 1;
+		bi.bmiHeader.biBitCount = 32;
+		bi.bmiHeader.biCompression = BI_RGB;
+		void* bits = NULL;
+		HDC dc = CreateCompatibleDC(NULL);
+		HBITMAP bmp = dc ? CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0) : NULL;
+		HFONT font = CreateFontW(kRowPx, 0, 0, 0, kFontWeight, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS,
+			CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_ROMAN, kFontName);
+		bool ok = false;
+		if (dc && bmp && bits && font) {
+			HGDIOBJ oldBmp = SelectObject(dc, bmp);
+			HGDIOBJ oldFont = SelectObject(dc, font);
+			memset(bits, 0, (size_t)W * H * 4);
+			SetTextColor(dc, RGB(255, 255, 255));
+			SetBkMode(dc, TRANSPARENT);
+			for (int i = 0; i < T_COUNT; ++i) {
+				const int len = (int)wcslen(kTexts[i]);
+				SIZE sz = { 0, 0 };
+				GetTextExtentPoint32W(dc, kTexts[i], len, &sz);
+				TextOutW(dc, 4, i * kRowPx, kTexts[i], len);
+				g_textW[i] = (float)(sz.cx + 8);
+			}
+			GdiFlush();
+			IDirect3DTexture9* t = NULL;
+			if (SUCCEEDED(dev->CreateTexture(W, H, 0, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &t, NULL)) && t) {
+				D3DLOCKED_RECT lr;
+				if (SUCCEEDED(t->LockRect(0, &lr, NULL, 0))) {
+					for (int y = 0; y < H; ++y) {
+						const UINT32* src = (const UINT32*)bits + (size_t)y * W;
+						UINT32* dst = (UINT32*)((BYTE*)lr.pBits + (size_t)y * lr.Pitch);
+						for (int x = 0; x < W; ++x) {
+							const UINT32 p = src[x];
+							UINT32 a = p & 0xFF;
+							if (((p >> 8) & 0xFF) > a) a = (p >> 8) & 0xFF;
+							if (((p >> 16) & 0xFF) > a) a = (p >> 16) & 0xFF;
+							dst[x] = (a << 24) | 0x00FFFFFF;
+						}
+					}
+					t->UnlockRect(0);
+					D3DXFilterTexture(t, NULL, 0, D3DX_FILTER_BOX);
+					g_textTex = t;
+					g_textTexW = W; g_textTexH = H;
+					ok = true;
+				}
+				else t->Release();
+			}
+			SelectObject(dc, oldFont);
+			SelectObject(dc, oldBmp);
+		}
+		if (font) DeleteObject(font);
+		if (bmp) DeleteObject(bmp);
+		if (dc) DeleteDC(dc);
+		if (ok) { g_textFailed = false; SDLOG(0, "WeaponsArmorSort: prompt text ready\n"); }
+		else SDLOG(0, "WeaponsArmorSort: the prompt text could not be made\n");
+		return ok;
+	}
+
+	// KeyboardMouse.png as a texture, and where L ALT and the two arrow pairs are in it. L ALT: just its key, as big
+	// as the line. The two arrow pairs: the whole cell, so each small key keeps the size it has in the cell.
+	bool buildKeys(IDirect3DDevice9* dev) {
+		if (g_keysTex) return true;
+		if (g_keysFailed) return false;
+		g_keysFailed = true;
+		if (!kbIcons::loadAtlas(dev)) return false;
+		const kbIcons::Image& im = kbIcons::g_atlas;
+		const int cw = im.w / 16, ch = im.h / 16;
+		const int cells[3] = { 6 * 16 + 4, kbIcons::CELL_ARROWS_LR, kbIcons::CELL_ARROWS_UD };
+		for (int i = 0; i < 3; ++i) {
+			const int x0 = (cells[i] % 16) * cw, y0 = (cells[i] / 16) * ch;
+			int bx0 = x0, by0 = y0, bx1 = x0 + cw, by1 = y0 + ch;
+			if (i == 0 && !kbIcons::contentBox(im, x0, y0, x0 + cw, y0 + ch, bx0, by0, bx1, by1)) { bx0 = x0; by0 = y0; bx1 = x0 + cw; by1 = y0 + ch; }
+			g_keyUv[i][0] = (float)bx0 / im.w; g_keyUv[i][1] = (float)by0 / im.h;
+			g_keyUv[i][2] = (float)bx1 / im.w; g_keyUv[i][3] = (float)by1 / im.h;
+		}
+		IDirect3DTexture9* t = NULL;
+		if (FAILED(dev->CreateTexture(im.w, im.h, 0, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &t, NULL)) || !t) return false;
+		D3DLOCKED_RECT lr;
+		if (FAILED(t->LockRect(0, &lr, NULL, 0))) { t->Release(); return false; }
+		for (int y = 0; y < im.h; ++y) memcpy((BYTE*)lr.pBits + (size_t)y * lr.Pitch, &im.px[(size_t)y * im.w], (size_t)im.w * 4);
+		t->UnlockRect(0);
+		D3DXFilterTexture(t, NULL, 0, D3DX_FILTER_BOX);
+		g_keysTex = t;
+		g_keysFailed = false;
+		return true;
+	}
+
+	// called at Present: the help bar's end is kept for the next frame
+	void newFrame() {
+		g_helpMaxXPrev = g_helpMaxX;
+		g_helpMaxX = 0.0f;
+		g_triggered = false;
+		SortPromptInfo info;
+		g_capture = weaponsArmorSortPrompt(&info);
+	}
+
+	void release() {
+		SAFERELEASE(g_textTex);
+		SAFERELEASE(g_keysTex);
+		g_textFailed = false;
+		g_keysFailed = false;
+		for (int i = 0; i < 6; ++i) SAFERELEASE(g_attrTex[i]);
+		SAFERELEASE(g_storeTex);
+	}
+
+	// a row's value icon (INT16 quad, 4 vertices: x y colour colour u v; positions in 10240 x 5760, UV in 1/4096)
+	void captureAttr(IDirect3DDevice9* dev, const INT16* v) {
+		int minX = 32767, maxX = -32768, minY = 32767, maxY = -32768, minU = 32767, maxU = -32768, minV = 32767, maxV = -32768;
+		for (int i = 0; i < 4; ++i) {
+			const INT16* p = v + i * 6;
+			if (p[0] < minX) minX = p[0];
+			if (p[0] > maxX) maxX = p[0];
+			if (p[1] < minY) minY = p[1];
+			if (p[1] > maxY) maxY = p[1];
+			if (p[4] < minU) minU = p[4];
+			if (p[4] > maxU) maxU = p[4];
+			if (p[5] < minV) minV = p[5];
+			if (p[5] > maxV) maxV = p[5];
+		}
+		const float x0 = minX / 10240.0f, y0 = minY / 5760.0f, w = (maxX - minX) / 10240.0f, h = (maxY - minY) / 5760.0f;
+		if (maxU <= minU || maxV <= minV) return;
+		IDirect3DBaseTexture9** slot = NULL;
+		float* uv = NULL;
+		if (w >= 0.018f && w <= 0.026f && h >= 0.033f && h <= 0.045f) {
+			int col = -1;
+			for (int i = 0; i < 6; ++i) if (fabsf(x0 - kAttrX[i]) < 0.004f) col = i;
+			if (col < 0) return;
+			slot = &g_attrTex[col];
+			uv = g_attrUv[col];
+		}
+		else if (fabsf(x0 - kStoreBox[0]) < 0.006f && fabsf(y0 - kStoreBox[1]) < 0.006f && fabsf(w - kStoreBox[2]) < 0.006f &&
+			fabsf(h - kStoreBox[3]) < 0.008f) {
+			slot = &g_storeTex;
+			uv = g_storeUv;
+		}
+		else return;
+		IDirect3DBaseTexture9* t = NULL;
+		dev->GetTexture(0, &t);
+		if (!t) return;
+		if (*slot != t) { if (*slot) (*slot)->Release(); *slot = t; } // keeps the reference
+		else t->Release();
+		uv[0] = minU / 4096.0f; uv[1] = minV / 4096.0f;
+		uv[2] = maxU / 4096.0f; uv[3] = maxV / 4096.0f;
+	}
+
+	struct Elem { IDirect3DBaseTexture9* tex; float uv[4]; float w, h; D3DCOLOR c; float gapBefore; };
+
+	void quad(Piece& p, IDirect3DBaseTexture9* tex, float x0, float y0, float x1, float y1, const float* uv, float z, D3DCOLOR c) {
+		p.tex = tex;
+		const Vtx q[6] = {
+			{ x0, y0, z, uv[0], uv[1], c }, { x1, y0, z, uv[2], uv[1], c }, { x0, y1, z, uv[0], uv[3], c },
+			{ x1, y0, z, uv[2], uv[1], c }, { x1, y1, z, uv[2], uv[3], c }, { x0, y1, z, uv[0], uv[3], c },
+		};
+		memcpy(p.v, q, sizeof(q));
+	}
+
+	// The prompt follows the game's piece it is drawn after: DSfix may have moved or scaled that piece (window scaling,
+	// HUD text rules) or faded it. 'before' is the piece as the game sent it, 'after' as it was drawn. The change is a
+	// scale and a shift on each axis, plus an opacity; the same is applied to the prompt's pieces.
+	void followPiece(Piece* pieces, int n, const void* before, const void* after, UINT nv) {
+		if (!before || !after || before == after) return;   // the piece was drawn unchanged: so is the prompt
+		const UINT m = nv < 6 ? nv : 6;
+		float b0x = 1e9f, b0y = 1e9f, b1x = -1e9f, b1y = -1e9f, a0x = 1e9f, a0y = 1e9f, a1x = -1e9f, a1y = -1e9f;
+		for (UINT i = 0; i < m; ++i) {
+			const float* fb = (const float*)((const BYTE*)before + (size_t)i * 24);
+			const float* fa = (const float*)((const BYTE*)after + (size_t)i * 24);
+			if (fb[0] < b0x) b0x = fb[0];
+			if (fb[0] > b1x) b1x = fb[0];
+			if (fb[1] < b0y) b0y = fb[1];
+			if (fb[1] > b1y) b1y = fb[1];
+			if (fa[0] < a0x) a0x = fa[0];
+			if (fa[0] > a1x) a1x = fa[0];
+			if (fa[1] < a0y) a0y = fa[1];
+			if (fa[1] > a1y) a1y = fa[1];
+		}
+		const float sx = (b1x - b0x) > 0.5f ? (a1x - a0x) / (b1x - b0x) : 1.0f;
+		const float sy = (b1y - b0y) > 0.5f ? (a1y - a0y) / (b1y - b0y) : 1.0f;
+		const float tx = a0x - b0x * sx, ty = a0y - b0y * sy;
+		// opacity: the alpha DSfix gave the piece's colour (the colour sits at offset 20 of the vertex)
+		const D3DCOLOR cb = *(const D3DCOLOR*)((const BYTE*)before + 20), ca = *(const D3DCOLOR*)((const BYTE*)after + 20);
+		float op = (cb >> 24) ? (float)(ca >> 24) / (float)(cb >> 24) : 1.0f;
+		if (op > 1.0f) op = 1.0f;
+		for (int p = 0; p < n; ++p)
+			for (int i = 0; i < 6; ++i) {
+				Vtx& v = pieces[p].v[i];
+				v.x = v.x * sx + tx;
+				v.y = v.y * sy + ty;
+				if (op < 0.999f) v.c = (v.c & 0x00FFFFFF) | ((DWORD)((v.c >> 24) * op + 0.5f) << 24);
+			}
+	}
+
+	// Looks at one of the game's 24-byte prompt / text draws. Notes the help bar's right end, and right after the help
+	// bar's first piece of the frame fills 'out' with the prompt's pieces. Returns how many to draw (0 = nothing).
+	int onDraw(IDirect3DDevice9* dev, const void* data, UINT nv, IDirect3DTexture9* buttons, Piece* out) {
+		using namespace SortPromptLook;
+		float x0, y0, x1, y1;
+		if (!textBox(data, 24, nv, x0, y0, x1, y1)) return 0;
+		// the help bar line at the bottom of the menu
+		if (y0 < 0.875f * 720.0f || y0 > 0.900f * 720.0f || y1 < 0.910f * 720.0f || y1 > 0.940f * 720.0f) return 0;
+		if (g_triggered) {
+			// a later piece of the help bar: it extends the bar only if it follows on from it
+			if (x0 <= g_helpMaxX + kHelpChainGap && x1 > g_helpMaxX) g_helpMaxX = x1;
+			return 0;
+		}
+		if (x0 > 0.15f * 1280.0f) return 0;   // not the help bar's first piece (the soul counter, for example)
+		g_triggered = true;
+		g_helpMaxX = x1;
+		// the game's own icon: how its texture maps to the screen (only from a button texture, never from text)
+		{
+			IDirect3DBaseTexture9* cur = NULL;
+			dev->GetTexture(0, &cur);
+			if (cur && (cur == (IDirect3DBaseTexture9*)buttons || kbIcons::isButtonsCopy(cur))) {
+				float qx0 = 1e9f, qy0 = 1e9f, qx1 = -1e9f, qy1 = -1e9f, u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
+				const UINT m = nv < 6 ? nv : 6;   // the first quad
+				for (UINT i = 0; i < m; ++i) {
+					const float* f = (const float*)((const BYTE*)data + (size_t)i * 24);
+					if (f[0] < qx0) qx0 = f[0];
+					if (f[0] > qx1) qx1 = f[0];
+					if (f[1] < qy0) qy0 = f[1];
+					if (f[1] > qy1) qy1 = f[1];
+					if (f[3] < u0) u0 = f[3];
+					if (f[3] > u1) u1 = f[3];
+					if (f[4] < v0) v0 = f[4];
+					if (f[4] > v1) v1 = f[4];
+				}
+				if (qx1 - qx0 > 4.0f && qy1 - qy0 > 4.0f && u1 - u0 > 0.005f && v1 - v0 > 0.005f && u1 - u0 < 0.5f && v1 - v0 < 0.5f) {
+					g_unitX = (qx1 - qx0) / (u1 - u0);
+					g_unitY = (qy1 - qy0) / (v1 - v0);
+					g_unitH = qy1 - qy0;
+				}
+			}
+			if (cur) cur->Release();
+		}
+		SortPromptInfo info;
+		if (!weaponsArmorSortPrompt(&info)) return 0;
+
+		// where: the help bar line after the game's last prompt, or the Bottomless Box header line (right-aligned)
+		float rowY0 = y0, rowY1 = y1, startX = g_helpMaxXPrev + kGapAfterHelp;
+		const bool box = info.window == 2;
+		if (box) { rowY0 = kBoxTop * 720.0f; rowY1 = kBoxBottom * 720.0f; }
+		else if (g_helpMaxXPrev <= 0.0f) return 0;   // the help bar's end is known from the next frame on
+		const float rowH = rowY1 - rowY0, iconH = rowH * kIconScale, textH = rowH * kTextScale;
+		// buttons and keys: the game's own mapping, made smaller on the box's lower header line
+		const float unitScale = (g_unitH > 0.0f ? rowH / g_unitH : 1.0f) * kIconScale;
+
+		// which device: the one held right now, else DDTM's "keyboard used last", else DSfix's own guess
+		bool keyboard;
+		if (info.held == 2) keyboard = true;
+		else if (info.held == 1) keyboard = false;
+		else {
+			const kbIcons::Shared* s = kbIcons::shared();
+			keyboard = s ? s->kbmActive != 0 : info.ownKeyboard != 0;
+		}
+		if (!buildText(dev)) return 0;
+		if (keyboard && !kbIcons::g_var[kbIcons::V_A_MENU] && !buildKeys(dev)) return 0;
+		if (!keyboard && !buttons) return 0;
+		// keyboard: the game's own menu keyboard copy (DDTMControllerMappings) has the arrow keys in the D-pad cells and
+		// L ALT in its own cell, painted like E / T / R: drawn from there they look exactly like the game's keys.
+		// Without that copy, KeyboardMouse.png is used directly.
+		IDirect3DTexture9* kbCopy = keyboard ? kbIcons::g_var[kbIcons::V_A_MENU] : NULL;
+		const float kbCopyUv[3][4] = {
+			{ kbIcons::kSortAltCell[0] / 1024.0f, kbIcons::kSortAltCell[1] / 1024.0f, kbIcons::kSortAltCell[2] / 1024.0f, kbIcons::kSortAltCell[3] / 1024.0f },
+			{ kPadUv[1][0], kPadUv[1][1], kPadUv[1][2], kPadUv[1][3] },
+			{ kPadUv[2][0], kPadUv[2][1], kPadUv[2][2], kPadUv[2][3] },
+		};
+		IDirect3DBaseTexture9* iconTex = !keyboard ? (IDirect3DBaseTexture9*)buttons :
+			(kbCopy ? (IDirect3DBaseTexture9*)kbCopy : (IDirect3DBaseTexture9*)g_keysTex);
+		float iw = 0.0f, ih = 0.0f;
+		if (!texSize2D(iconTex, iw, ih)) return 0;
+
+		Elem e[kMaxPieces];
+		int n = 0;
+		// a value icon (the row's own pictures): the line's height, its own proportions
+		auto icon = [&](IDirect3DBaseTexture9* t, const float* uv, float tw, float th, float gap) {
+			Elem& el = e[n++];
+			el.tex = t;
+			memcpy(el.uv, uv, sizeof(el.uv));
+			el.h = iconH;
+			el.w = el.h * ((uv[2] - uv[0]) * tw) / ((uv[3] - uv[1]) * th);
+			el.c = kIconColor;
+			el.gapBefore = gap;
+		};
+		// a button or key: drawn as the game draws its prompt icons. sizeU / sizeV: its size in the game's button
+		// texture (a part of the texture's width / height).
+		auto button = [&](IDirect3DBaseTexture9* t, const float* uv, float sizeU, float sizeV, float gap) {
+			Elem& el = e[n++];
+			el.tex = t;
+			memcpy(el.uv, uv, sizeof(el.uv));
+			el.w = sizeU * g_unitX * unitScale;
+			el.h = sizeV * g_unitY * unitScale;
+			el.c = kIconColor;
+			el.gapBefore = gap;
+		};
+		auto key = [&](int i, float gap) {
+			if (keyboard && kbCopy)                                     // from the game's keyboard copy: like the controller
+				button(iconTex, kbCopyUv[i], kbCopyUv[i][2] - kbCopyUv[i][0], kbCopyUv[i][3] - kbCopyUv[i][1], gap);
+			else if (keyboard) icon(iconTex, g_keyUv[i], iw, ih, gap);  // without the copy: the line's height, own proportions
+			else button(iconTex, kPadUv[i], kPadUv[i][2] - kPadUv[i][0], kPadUv[i][3] - kPadUv[i][1], gap);
+		};
+		auto text = [&](int id, float gap) {
+			Elem& el = e[n++];
+			el.tex = g_textTex;
+			el.uv[0] = 0.0f; el.uv[1] = (float)(id * kRowPx) / g_textTexH;
+			el.uv[2] = g_textW[id] / g_textTexW; el.uv[3] = (float)((id + 1) * kRowPx) / g_textTexH;
+			el.h = textH;
+			el.w = textH * g_textW[id] / kRowPx;
+			el.c = kTextColor;
+			el.gapBefore = gap;
+		};
+		key(0, 0.0f);                                                // L ALT / RS
+		text(T_PLUS, kGapIconText);                                  // " + "
+		key(1, kGapTextIcon);                                        // left / right
+		text(T_SORTBY, kGapIconText);                                // "Sort By "
+		const int col = info.choice == 5 ? 4 : (info.choice == 6 ? 5 : info.choice - 1);
+		float aw = 0.0f, ah = 0.0f;
+		bool attrIcon = false;
+		if (info.choice == 0) text(T_GAMEORDER, 0.0f);               // "Game Order"
+		else if (info.choice == 7) {
+			if (g_storeTex && texSize2D(g_storeTex, aw, ah)) {         // the box's chest picture above "Storage"
+				icon(g_storeTex, g_storeUv, aw, ah, kGapTextIcon);
+				attrIcon = true;
+			}
+		}
+		else if (col >= 0 && col < 6 && g_attrTex[col] && texSize2D(g_attrTex[col], aw, ah)) {
+			icon(g_attrTex[col], g_attrUv[col], aw, ah, kGapTextIcon); // the value's own icon
+			attrIcon = true;
+		}
+		key(2, attrIcon ? kGapIconIcon : kGapTextIcon);              // up / down
+		text(info.desc ? T_DESC : T_ASC, kGapIconText);              // "DESC" / "ASC"
+
+		float total = 0.0f;
+		for (int i = 0; i < n; ++i) total += e[i].gapBefore + e[i].w;
+		float x = box ? kBoxRight * 1280.0f - total : startX;
+		const float cy = (rowY0 + rowY1) * 0.5f;
+		const float z = ((const float*)data)[2];                    // the same depth as the game's prompts
+		for (int i = 0; i < n; ++i) {
+			x += e[i].gapBefore;
+			quad(out[i], e[i].tex, x, cy - e[i].h * 0.5f, x + e[i].w, cy + e[i].h * 0.5f, e[i].uv, z, e[i].c);
+			x += e[i].w;
+		}
+		return n;
+	}
 }
 
 HRESULT RSManager::redirectSetTexture(DWORD Stage, IDirect3DBaseTexture9* pTexture) {
@@ -2542,6 +3122,9 @@ void RSManager::reloadAA() {
 
 
 HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT MinIndex, UINT NumVertices, UINT PrimitiveCount, CONST void* pIndexData, D3DFORMAT IndexDataFormat, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride) {
+	// WeaponsArmorSort: while a sortable list has focus, the value icons of its rows are noted for the prompt
+	if (sortPrompt::g_capture && VertexStreamZeroStride == 12 && NumVertices == 4 && PrimitiveCount == 2 && MinIndex == 0 && pVertexStreamZeroData)
+		sortPrompt::captureAttr(d3ddev, (const INT16*)pVertexStreamZeroData);
 	//if(onHudRT) {
 	//	SDLOG(0, "HUD render: primitive type: %d, MinIndex: %u, NumVertices: %u, PrimitiveCount: %u, IndexDataFormat: %s\n", PrimitiveType, MinIndex, NumVertices, PrimitiveCount, D3DFormatToString(IndexDataFormat));
 
@@ -3108,6 +3691,13 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 		if (op < 0.999f) drawData = applyVertexOpacity(textCopy, drawData, VertexStreamZeroStride, 0, primNv, colOff, op, d3ddev);
 		AlphaRefGuard arg(d3ddev, op);
 		hr = d3ddev->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, drawData, VertexStreamZeroStride);
+		// keyboard icons: how big the screen shows a keyboard copy (only while one exists; see kbIcons::watchFit)
+		if (VertexStreamZeroStride == 24 && primNv && drawData && kbIcons::fitWatch()) {
+			IDirect3DBaseTexture9* ft = NULL;
+			d3ddev->GetTexture(0, &ft);
+			kbIcons::watchFit(d3ddev, ft, drawData, primNv);
+			if (ft) ft->Release();
+		}
 		if (textDirect) {
 			resumeHudRendering();
 			// inside this block, so the same alpha test reference applies as for the text itself
@@ -3120,6 +3710,34 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 	//if(onHudRT) {
 	//	if(takeScreenshot) dumpSurface("HUD_PrimUP", rgbaBuffer1Surf);
 	//}
+	// WeaponsArmorSort: right after the help bar's first piece (menu draws only, never the HUD buffer), the sort prompt
+	// is drawn. Its pieces do NOT go through this function again (that would run the HUD / window / gauge tracking above
+	// for them). Instead they get exactly the placement the game's piece just got: the change DSfix made to that piece's
+	// vertices (window scaling, HUD text moves, whatever applies) is measured and applied to the prompt, and so are its
+	// scissor rectangle and opacity. Textures are set on the device directly, so the keyboard icon swap never sees them.
+	if (!onHudRT && !pausedHudRT && weaponsArmorSortActive() && VertexStreamZeroStride == 24 && primNv && pVertexStreamZeroData && drawData) {
+		sortPrompt::Piece pieces[sortPrompt::kMaxPieces];
+		const int n = sortPrompt::onDraw(d3ddev, pVertexStreamZeroData, primNv, textureButtonsEffects, pieces);
+		if (n > 0) {
+			sortPrompt::followPiece(pieces, n, pVertexStreamZeroData, drawData, primNv);
+			RECT promptSc;
+			const bool promptScChanged = winK >= 0 && scaleWindowScissor(d3ddev, windowScale(winK), g_win[winK].ax, g_win[winK].ay, promptSc);
+			IDirect3DBaseTexture9* oldTex = NULL;
+			d3ddev->GetTexture(0, &oldTex);
+			DWORD oldCull = D3DCULL_NONE;
+			d3ddev->GetRenderState(D3DRS_CULLMODE, &oldCull);
+			d3ddev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+			// the game's own sampling settings are kept: the keys are made to be sampled exactly like the game's
+			for (int i = 0; i < n; ++i) {
+				d3ddev->SetTexture(0, pieces[i].tex);
+				d3ddev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, pieces[i].v, sizeof(sortPrompt::Vtx));
+			}
+			d3ddev->SetRenderState(D3DRS_CULLMODE, oldCull);
+			d3ddev->SetTexture(0, oldTex);
+			if (oldTex) oldTex->Release();
+			if (promptScChanged) d3ddev->SetScissorRect(&promptSc);
+		}
+	}
 	return hr;
 }
 
