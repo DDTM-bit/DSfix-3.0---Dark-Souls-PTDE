@@ -807,14 +807,19 @@ namespace {
 	// Subtitles (NPC dialogue, Text00 font, lower part of the screen) shrink toward the bottom centre.
 	float subtitleScale() { return clampScale(Settings::get().getSubtitleScale()); }
 
-	// ---- mouse: the game reads the cursor with GetCursorPos (hooked in main.cpp). While a shrunk main menu or list window
-	// is open, the cursor position is moved back to where that spot was before the shrink, so hovering and clicking hit
-	// what is drawn under the cursor. Written on the render thread at every Present, read on the game's thread.
+	// ---- mouse: the game reads the cursor with GetCursorPos (hooked in main.cpp). While a shrunk window is open (main menu,
+	// list window, popup, prompt / question, quantity dialog), the cursor position over it is moved back to where that spot
+	// was before the shrink, so hovering and clicking hit what is drawn under the cursor. Where windows overlap, the one
+	// drawn on top (detected later in the frame) wins, as for the drawing. The main menu owns the whole screen.
+	// Written on the render thread at every Present, read on the game's thread.
+	struct MouseWin {
+		float ax, ay, s, r[4];        // anchor, scale and (unscaled) rectangle
+		unsigned order;               // drawn later = on top
+		bool whole;                   // the main menu: every cursor position belongs to it
+	};
 	struct MouseMapData {
-		bool panel, list, pop, popOnTop;
-		float pax, pay, ps;           // main menu anchor and scale
-		float lax, lay, ls, lr[4];    // list window anchor, scale and (unscaled) rectangle
-		float oax, oay, os, orr[4];   // popup / prompt open over the list window: anchor, scale and (unscaled) rectangle
+		int n;
+		MouseWin w[WK_COUNT];
 		LONG cx, cy, cw, ch;          // client area of the game window, screen coordinates
 	};
 	volatile LONG g_mouseSeq = 0;     // odd while being written
@@ -822,40 +827,29 @@ namespace {
 
 	void publishMouseMap(IDirect3DDevice9* dev) {
 		MouseMapData m = {};
-		m.panel = g_win[WK_PANEL].active && windowScale(WK_PANEL) < 1.0f;
-		m.list = !m.panel && g_win[WK_LIST].active && windowScale(WK_LIST) < 1.0f;
-		if (m.panel || m.list) {
+		bool shrunk = false;
+		for (int k = 0; k < WK_COUNT; ++k) if (g_win[k].active && windowScale(k) < 1.0f) shrunk = true;
+		if (shrunk) {
 			HWND hwnd = NULL;
 			D3DDEVICE_CREATION_PARAMETERS cp;
 			if (dev && SUCCEEDED(dev->GetCreationParameters(&cp))) hwnd = cp.hFocusWindow;
 			RECT rc;
 			POINT o = { 0, 0 };
-			if (!hwnd || !::GetClientRect(hwnd, &rc) || !::ClientToScreen(hwnd, &o) || rc.right <= 0 || rc.bottom <= 0) {
-				m.panel = m.list = false;
-			}
-			else {
+			if (hwnd && ::GetClientRect(hwnd, &rc) && ::ClientToScreen(hwnd, &o) && rc.right > 0 && rc.bottom > 0) {
 				m.cx = o.x; m.cy = o.y; m.cw = rc.right; m.ch = rc.bottom;
-				m.pax = g_win[WK_PANEL].ax; m.pay = g_win[WK_PANEL].ay; m.ps = windowScale(WK_PANEL);
-				m.lax = g_win[WK_LIST].ax; m.lay = g_win[WK_LIST].ay; m.ls = windowScale(WK_LIST);
-				for (int i = 0; i < 4; ++i) m.lr[i] = g_win[WK_LIST].r[i];
-				// a confirmation popup over the list window: the cursor over it must not be moved as if it were over the list
-				if (m.list && (g_win[WK_POPUP].active || g_win[WK_PROMPT].active)) {
-					m.pop = true;
-					m.popOnTop = false;
-					m.orr[0] = m.orr[1] = 1e9f; m.orr[2] = m.orr[3] = -1e9f;
-					for (int k = WK_POPUP; k <= WK_PROMPT; ++k) {
-						if (!g_win[k].active) continue;
-						if (g_win[k].order > g_win[WK_LIST].order) m.popOnTop = true; // drawn over the list
-						m.oax = g_win[k].ax; m.oay = g_win[k].ay; m.os = windowScale(k);
-						if (g_win[k].r[0] < m.orr[0]) m.orr[0] = g_win[k].r[0];
-						if (g_win[k].r[1] < m.orr[1]) m.orr[1] = g_win[k].r[1];
-						if (g_win[k].r[2] > m.orr[2]) m.orr[2] = g_win[k].r[2];
-						if (g_win[k].r[3] > m.orr[3]) m.orr[3] = g_win[k].r[3];
-					}
+				// every open window, also the ones at full size: over those the real position is right, and they still
+				// cover a shrunk window under them
+				for (int k = 0; k < WK_COUNT; ++k) {
+					if (!g_win[k].active) continue;
+					MouseWin& w = m.w[m.n++];
+					w.ax = g_win[k].ax; w.ay = g_win[k].ay; w.s = windowScale(k);
+					for (int i = 0; i < 4; ++i) w.r[i] = g_win[k].r[i];
+					w.order = g_win[k].order;
+					w.whole = k == WK_PANEL;
 				}
 			}
 		}
-		if (!m.panel && !m.list && !g_mouseMap.panel && !g_mouseMap.list) return; // nothing to change
+		if (m.n == 0 && g_mouseMap.n == 0) return; // nothing to change
 		InterlockedIncrement(&g_mouseSeq);
 		g_mouseMap = m;
 		InterlockedIncrement(&g_mouseSeq);
@@ -874,38 +868,25 @@ void remapMenuCursor(POINT* p) {
 		MemoryBarrier();
 		b = g_mouseSeq;
 	}
-	if (a != b || (a & 1) || (!m.panel && !m.list) || m.cw <= 0 || m.ch <= 0) return;
+	if (a != b || (a & 1) || m.n <= 0 || m.cw <= 0 || m.ch <= 0) return;
 	// screen -> normalized UI coordinates
 	float u = (float)(p->x - m.cx) / m.cw;
 	float v = (float)(p->y - m.cy) / m.ch;
-	if (m.panel) {
-		u = m.pax + (u - m.pax) / m.ps;
-		v = m.pay + (v - m.pay) / m.ps;
-	}
-	else {
-		// the shrunk list window
-		const float x0 = m.lax + (m.lr[0] - m.lax) * m.ls, x1 = m.lax + (m.lr[2] - m.lax) * m.ls;
-		const float y0 = m.lay + (m.lr[1] - m.lay) * m.ls, y1 = m.lay + (m.lr[3] - m.lay) * m.ls;
-		const bool overList = !(u < x0 || u > x1 || v < y0 || v > y1);
-		// a popup over the list window: over the (shrunk) popup the cursor follows the popup, not the list. A popup under
-		// the list (an item pickup popup left open when the bonfire menu opened) only where the list does not cover it.
-		if (m.pop && (m.popOnTop || !overList)) {
-			const float px0 = m.oax + (m.orr[0] - m.oax) * m.os, px1 = m.oax + (m.orr[2] - m.oax) * m.os;
-			const float py0 = m.oay + (m.orr[1] - m.oay) * m.os, py1 = m.oay + (m.orr[3] - m.oay) * m.os;
-			if (u >= px0 && u <= px1 && v >= py0 && v <= py1) {
-				if (m.os >= 1.0f) return; // popup not shrunk: the real position is right
-				u = m.oax + (u - m.oax) / m.os;
-				v = m.oay + (v - m.oay) / m.os;
-				p->x = m.cx + (LONG)floorf(u * m.cw + 0.5f);
-				p->y = m.cy + (LONG)floorf(v * m.ch + 0.5f);
-				return;
-			}
+	// the window on top under the cursor, as it is drawn (shrunk toward its anchor)
+	const MouseWin* best = NULL;
+	for (int i = 0; i < m.n; ++i) {
+		const MouseWin& w = m.w[i];
+		bool over = w.whole;
+		if (!over) {
+			const float x0 = w.ax + (w.r[0] - w.ax) * w.s, x1 = w.ax + (w.r[2] - w.ax) * w.s;
+			const float y0 = w.ay + (w.r[1] - w.ay) * w.s, y1 = w.ay + (w.r[3] - w.ay) * w.s;
+			over = u >= x0 && u <= x1 && v >= y0 && v <= y1;
 		}
-		// only over the shrunk list window itself
-		if (!overList) return;
-		u = m.lax + (u - m.lax) / m.ls;
-		v = m.lay + (v - m.lay) / m.ls;
+		if (over && (!best || w.order > best->order)) best = &w;
 	}
+	if (!best || best->s >= 1.0f) return; // no window there, or one at full size: the real position is right
+	u = best->ax + (u - best->ax) / best->s;
+	v = best->ay + (v - best->ay) / best->s;
 	// normalized UI -> screen
 	p->x = m.cx + (LONG)floorf(u * m.cw + 0.5f);
 	p->y = m.cy + (LONG)floorf(v * m.ch + 0.5f);
@@ -1835,8 +1816,549 @@ HRESULT RSManager::redirectStretchRect(IDirect3DSurface9* pSourceSurface, CONST 
 	return d3ddev->StretchRect(pSourceSurface, pSourceRect, pDestSurface, pDestRect, D3DTEXF_LINEAR);
 }
 
+// ---- DDTMControllerMappings: keyboard / mouse button prompts (with DDTMControllerFix.dll) ----
+// While the player uses keyboard and mouse, the two prompt textures (40fbc4ad, the game's ButtonsEffects, and
+// 43a2b23a, the quick menu icons) are swapped for keyboard copies. A copy is the loaded texture (any icon set:
+// controllerIcons, tex_override or the game's own) with the controller icons painted over by key icons from
+// Resources\KeyboardMouse.png (built into the DLL), chosen from the keys in DDTMControllerMappings.ini.
+// DDTMControllerFix.dll tells DSfix which device was used last, what the game shows (game / menu / quick menu) and
+// the key of each prompt, through its export DDTM_GetSharedState (a small block it keeps up to date; DSfix only
+// reads it). The copies are made once, the first time they are needed, so a controller-only player never pays
+// for them. With the option off, or without DDTMControllerFix.dll, nothing here runs.
+// Controller: when [Bindings] in DDTMControllerMappings.ini maps a face button, LB / RB or LT / RT differently
+// (for example A = R1), a controller copy shows on each game button the icon of the real button that triggers it.
+// The icons come from the loaded texture itself, so every icon set works. swapConfirmIcons / swapXYIcons are then
+// not used. With the default mapping nothing changes.
+//
+// KeyboardMouse.png: a 16 x 16 grid of square cells (1024 x 1024 = 64 px cells, any size divisible by 16 works).
+// Cell index = row * 16 + column; the order is the same list as in DDTMControllerFix.dll (KbmShared.cs):
+//   row 0  A..P            row 1  Q..Z            row 2  0..9
+//   row 3  F1..F12         row 4  F13..F24
+//   row 5  NUMPAD0..9, NUMPAD_ADD, NUMPAD_SUBTRACT, NUMPAD_MULTIPLY, NUMPAD_DIVIDE, NUMPAD_DECIMAL
+//   row 6  LSHIFT RSHIFT LCTRL RCTRL LALT RALT SPACE TAB ENTER ESC BACKSPACE CAPSLOCK
+//   row 7  UP DOWN LEFT RIGHT INSERT DELETE HOME END PAGEUP PAGEDOWN
+//   row 8  MINUS EQUALS LBRACKET RBRACKET BACKSLASH SEMICOLON APOSTROPHE GRAVE COMMA PERIOD SLASH NUMLOCK SCROLLLOCK PAUSE
+//   row 9  MOUSE_LEFT MOUSE_RIGHT MOUSE_MIDDLE MOUSE_4 MOUSE_5 MOUSE_WHEEL_UP MOUSE_WHEEL_DOWN
+//   row 10 all arrow keys, left + right arrows, up + down arrows, mouse moving (4 directions)
+extern HMODULE g_hModule;
+namespace kbIcons {
+	// the block DDTMControllerFix.dll shares (same layout as DdtmSharedState in KbmShared.cs)
+	struct Shared {
+		UINT32 magic;              // 0x4D544444 "DDTM"
+		INT32 version;             // 1
+		volatile INT32 ready;      // 1 once cell[] is filled
+		volatile INT32 kbmActive;  // 1 = keyboard / mouse used last
+		volatile INT32 phase;      // 0 game (hint messages included), 1 menu, 2 quick menu or a menu opened from it
+		volatile UINT32 menuMask;  // the game's open-menu mask (for the log)
+		INT32 cell[16];            // KeyboardMouse.png cell of each prompt below, -1 = no single key (the controller icon stays)
+		INT32 pad[8];              // version 2+: for game buttons A B X Y LB RB LT RT, the real button that triggers it
+		                           // (same order: 0 A/south 1 B/east 2 X/west 3 Y/north 4 LB 5 RB 6 LT 7 RT), -1 = other / none
+	};
+	enum { SLOT_TWO_HAND, SLOT_USE_ITEM, SLOT_DASH, SLOT_INTERACT, SLOT_GESTURES, SLOT_LOCK_ON, SLOT_MENU, SLOT_MENU_LEFT, SLOT_MENU_RIGHT,
+		SLOT_LIGHT_ATTACK, SLOT_HEAVY_ATTACK, SLOT_BLOCK, SLOT_PARRY };
+	// fixed cells
+	const int CELL_UP = 7 * 16 + 0, CELL_DOWN = 7 * 16 + 1, CELL_LEFT = 7 * 16 + 2, CELL_RIGHT = 7 * 16 + 3;
+	const int CELL_MOUSE_RIGHT = 9 * 16 + 1;
+	const int CELL_ARROWS = 10 * 16 + 0, CELL_ARROWS_LR = 10 * 16 + 1, CELL_ARROWS_UD = 10 * 16 + 2, CELL_MOUSE_MOVE = 10 * 16 + 3;
+
+	const UINT32 HASH_A = 0x40fbc4ad, HASH_B = 0x43a2b23a;
+	// keyboard copies (game / menus, quick menu / other windows) and controller copies (DDTMControllerMappings.ini [Bindings])
+	enum { V_A_GAME, V_A_MENU, V_B_TABS, V_B_ARROWS, V_A_PAD, V_B_PAD, V_COUNT };
+
+	struct Image { std::vector<UINT32> px; int w = 0, h = 0; };
+	template<class T> inline T kmin(T a, T b) { return a < b ? a : b; }
+	template<class T> inline T kmax(T a, T b) { return a > b ? a : b; }
+
+	volatile int g_state = 0;                         // 0 not decided, 1 on, 2 off
+	IDirect3DTexture9* volatile g_orig[2] = { NULL, NULL };   // the game's two prompt textures (A, B)
+	bool g_origHeld[2] = { false, false };            // AddRef'd by us (managed pool)
+	IDirect3DTexture9* g_var[V_COUNT] = {};
+	bool g_varFailed[V_COUNT] = {};
+	volatile bool g_dirty[2] = { false, false };      // a new prompt texture was loaded: rebuild its copies
+	Image g_src[2];                                   // pixels of the loaded prompt textures (read once, when a copy is first needed)
+	Image g_atlas;                                    // KeyboardMouse.png
+	bool g_atlasTried = false;
+	Shared* g_shared = NULL;
+	DWORD g_nextLookup = 0;
+	int g_lookups = 0;                                // DDTMControllerFix.dll is loaded with the game: 5 tries are plenty
+	CRITICAL_SECTION g_cs;
+	struct CsInit { CsInit() { InitializeCriticalSection(&g_cs); } } g_csInit;   // ready before any texture is loaded
+	__declspec(thread) bool g_inPromptCreate = false;   // see redirectD3DXCreateTextureFromFileInMemoryEx
+
+	// on = option set (decided once). Whether DDTMControllerFix.dll is there is found by shared() below: without it
+	// nothing is ever replaced, and after a few tries DSfix stops looking.
+	bool wanted() {
+		if (g_state == 0) {
+			const bool on = Settings::get().getDDTMControllerMappings();
+			if (on) SDLOG(0, "DDTMControllerMappings 1: keyboard icons on (if DDTMControllerFix.dll is loaded)\n");
+			g_state = on ? 1 : 2;
+		}
+		return g_state == 1;
+	}
+
+	// DDTMControllerFix.dll's block: as DSfix's dinput8 wrapper, or loaded by the game as dinput8.dll
+	Shared* shared() {
+		if (g_shared) return g_shared;
+		if (g_lookups >= 5) return NULL;
+		const DWORD now = GetTickCount();
+		if ((int)(now - g_nextLookup) < 0) return NULL;
+		++g_lookups;
+		g_nextLookup = now + 2000;
+		std::string names[3] = { Settings::get().getDinput8dllWrapper(), "DDTMControllerFix.dll", "dinput8.dll" };
+		for (int i = 0; i < 3 && !g_shared; ++i) {
+			if (names[i].empty() || names[i].find("none") == 0) continue;
+			HMODULE m = GetModuleHandleA(names[i].c_str());
+			if (!m) continue;
+			typedef void* (WINAPI* GetShared_t)();
+			GetShared_t f = (GetShared_t)GetProcAddress(m, "DDTM_GetSharedState");
+			if (!f) f = (GetShared_t)GetProcAddress(m, "_DDTM_GetSharedState@0");
+			if (!f) continue;
+			Shared* s = (Shared*)f();
+			if (s && s->magic == 0x4D544444 && s->version >= 1) {
+				g_shared = s;
+				SDLOG(0, "DDTMControllerMappings: DDTMControllerFix.dll found (%s), shared block version %d\n", names[i].c_str(), s->version);
+			}
+		}
+		if (!g_shared && g_lookups >= 5) SDLOG(0, "DDTMControllerMappings: DDTMControllerFix.dll is not loaded, keyboard icons stay off\n");
+		return g_shared;
+	}
+
+	bool loadAtlas(IDirect3DDevice9* dev) {
+		if (g_atlasTried) return !g_atlas.px.empty();
+		g_atlasTried = true;
+		HRSRC r = FindResource(g_hModule, MAKEINTRESOURCE(IDR_TEX_KEYBOARDMOUSE), RT_RCDATA);
+		HGLOBAL hg = r ? LoadResource(g_hModule, r) : NULL;
+		const void* data = hg ? LockResource(hg) : NULL;
+		const DWORD size = r ? SizeofResource(g_hModule, r) : 0;
+		if (!data || !size) { SDLOG(0, "DDTMControllerMappings: KeyboardMouse.png is missing from the DLL\n"); return false; }
+		IDirect3DTexture9* t = NULL;
+		if (FAILED(TrueD3DXCreateTextureFromFileInMemoryEx(dev, data, size, D3DX_DEFAULT_NONPOW2, D3DX_DEFAULT_NONPOW2, 1, 0, D3DFMT_A8R8G8B8,
+			D3DPOOL_SCRATCH, D3DX_FILTER_NONE, D3DX_FILTER_NONE, 0, NULL, NULL, &t)) || !t) { SDLOG(0, "DDTMControllerMappings: KeyboardMouse.png could not be read\n"); return false; }
+		D3DSURFACE_DESC d;
+		D3DLOCKED_RECT lr;
+		if (SUCCEEDED(t->GetLevelDesc(0, &d)) && d.Width >= 16 && d.Height >= 16 && SUCCEEDED(t->LockRect(0, &lr, NULL, D3DLOCK_READONLY))) {
+			g_atlas.w = d.Width; g_atlas.h = d.Height;
+			g_atlas.px.resize((size_t)d.Width * d.Height);
+			for (UINT y = 0; y < d.Height; ++y) memcpy(&g_atlas.px[(size_t)y * d.Width], (BYTE*)lr.pBits + (size_t)y * lr.Pitch, d.Width * 4);
+			t->UnlockRect(0);
+		}
+		t->Release();
+		SDLOG(0, "DDTMControllerMappings: KeyboardMouse.png: %d x %d (cells %d x %d)\n", g_atlas.w, g_atlas.h, g_atlas.w / 16, g_atlas.h / 16);
+		return !g_atlas.px.empty();
+	}
+
+	// level 0 of a texture as A8R8G8B8 pixels (D3DX converts any format, compressed ones included)
+	bool readPixels(IDirect3DDevice9* dev, IDirect3DTexture9* tex, Image& out) {
+		D3DSURFACE_DESC d;
+		if (FAILED(tex->GetLevelDesc(0, &d))) return false;
+		IDirect3DSurface9 *src = NULL, *tmp = NULL;
+		bool ok = false;
+		if (SUCCEEDED(tex->GetSurfaceLevel(0, &src)) &&
+			SUCCEEDED(dev->CreateOffscreenPlainSurface(d.Width, d.Height, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &tmp, NULL)) &&
+			SUCCEEDED(D3DXLoadSurfaceFromSurface(tmp, NULL, NULL, src, NULL, NULL, D3DX_FILTER_NONE, 0))) {
+			D3DLOCKED_RECT lr;
+			if (SUCCEEDED(tmp->LockRect(&lr, NULL, D3DLOCK_READONLY))) {
+				out.w = d.Width; out.h = d.Height;
+				out.px.resize((size_t)d.Width * d.Height);
+				for (UINT y = 0; y < d.Height; ++y) memcpy(&out.px[(size_t)y * d.Width], (BYTE*)lr.pBits + (size_t)y * lr.Pitch, d.Width * 4);
+				tmp->UnlockRect();
+				ok = true;
+			}
+		}
+		if (src) src->Release();
+		if (tmp) tmp->Release();
+		return ok;
+	}
+
+	// twice the size, bilinear (premultiplied alpha, so transparent pixels do not darken the edges)
+	Image upscale2(const Image& src) {
+		Image out;
+		out.w = src.w * 2; out.h = src.h * 2;
+		out.px.resize((size_t)out.w * out.h);
+		for (int y = 0; y < out.h; ++y) {
+			const float fy = kmax(0.0f, (y + 0.5f) * 0.5f - 0.5f);
+			const int y0 = kmin((int)fy, src.h - 1), y1 = kmin(y0 + 1, src.h - 1);
+			const float ty = fy - y0;
+			for (int x = 0; x < out.w; ++x) {
+				const float fx = kmax(0.0f, (x + 0.5f) * 0.5f - 0.5f);
+				const int x0 = kmin((int)fx, src.w - 1), x1 = kmin(x0 + 1, src.w - 1);
+				const float tx = fx - x0;
+				const UINT32 p[4] = { src.px[(size_t)y0 * src.w + x0], src.px[(size_t)y0 * src.w + x1], src.px[(size_t)y1 * src.w + x0], src.px[(size_t)y1 * src.w + x1] };
+				const float w[4] = { (1 - tx) * (1 - ty), tx * (1 - ty), (1 - tx) * ty, tx * ty };
+				float a = 0, r = 0, g = 0, b = 0;
+				for (int i = 0; i < 4; ++i) {
+					const float pa = (p[i] >> 24) / 255.0f * w[i];
+					a += pa; r += pa * ((p[i] >> 16) & 255); g += pa * ((p[i] >> 8) & 255); b += pa * (p[i] & 255);
+				}
+				UINT32 o = 0;
+				if (a > 0.0001f)
+					o = ((UINT32)(a * 255.0f + 0.5f) << 24) | ((UINT32)kmin(255.0f, r / a + 0.5f) << 16) |
+						((UINT32)kmin(255.0f, g / a + 0.5f) << 8) | (UINT32)kmin(255.0f, b / a + 0.5f);
+				out.px[(size_t)y * out.w + x] = o;
+			}
+		}
+		return out;
+	}
+
+	// ---- painting (coordinates are the pixels of the image) ----
+	void clearRect(Image& im, int x0, int y0, int x1, int y1) {
+		x0 = kmax(x0, 0); y0 = kmax(y0, 0); x1 = kmin(x1, im.w); y1 = kmin(y1, im.h);
+		for (int y = y0; y < y1; ++y)
+			for (int x = x0; x < x1; ++x) im.px[(size_t)y * im.w + x] = 0;
+	}
+
+	// Clears a rectangle but keeps the light marks (the small "<" / ">" arrows) that lie completely between keepX0 and
+	// keepX1. A light shape that reaches outside (a light button, its letters) is cleared like the rest.
+	void clearKeepArrow(Image& im, int x0, int y0, int x1, int y1, int keepX0, int keepX1) {
+		x0 = kmax(x0, 0); y0 = kmax(y0, 0); x1 = kmin(x1, im.w); y1 = kmin(y1, im.h);
+		const int w = x1 - x0, h = y1 - y0;
+		if (w <= 0 || h <= 0) return;
+		std::vector<int> label((size_t)w * h, 0), stack;
+		auto light = [&](int x, int y) {
+			const UINT32 p = im.px[(size_t)(y0 + y) * im.w + x0 + x];
+			return (p >> 24) > 40 && (((p >> 16) & 255) * 3 + ((p >> 8) & 255) * 6 + (p & 255)) / 10 >= 110;
+		};
+		std::vector<bool> keep(1, false);
+		for (int sy = 0; sy < h; ++sy)
+			for (int sx = 0; sx < w; ++sx) {
+				if (label[(size_t)sy * w + sx] || !light(sx, sy)) continue;
+				const int id = (int)keep.size();
+				int minX = sx, maxX = sx;
+				stack.assign(1, sy * w + sx);
+				label[(size_t)sy * w + sx] = id;
+				while (!stack.empty()) {
+					const int i = stack.back(); stack.pop_back();
+					const int cx = i % w, cy = i / w;
+					minX = kmin(minX, cx); maxX = kmax(maxX, cx);
+					for (int dy = -1; dy <= 1; ++dy)
+						for (int dx = -1; dx <= 1; ++dx) {
+							const int nx = cx + dx, ny = cy + dy;
+							if (nx < 0 || ny < 0 || nx >= w || ny >= h || label[(size_t)ny * w + nx] || !light(nx, ny)) continue;
+							label[(size_t)ny * w + nx] = id;
+							stack.push_back(ny * w + nx);
+						}
+				}
+				keep.push_back(x0 + minX >= keepX0 && x0 + maxX < keepX1);
+			}
+		for (int y = 0; y < h; ++y)
+			for (int x = 0; x < w; ++x)
+				if (!keep[label[(size_t)y * w + x]]) im.px[(size_t)(y0 + y) * im.w + x0 + x] = 0;
+	}
+
+	// bounding box of the visible pixels inside a rectangle; false if it is empty
+	bool contentBox(const Image& im, int x0, int y0, int x1, int y1, int& bx0, int& by0, int& bx1, int& by1) {
+		x0 = kmax(x0, 0); y0 = kmax(y0, 0); x1 = kmin(x1, im.w); y1 = kmin(y1, im.h);
+		bx0 = x1; by0 = y1; bx1 = x0; by1 = y0;
+		for (int y = y0; y < y1; ++y)
+			for (int x = x0; x < x1; ++x)
+				if ((im.px[(size_t)y * im.w + x] >> 24) > 40) {
+					if (x < bx0) bx0 = x;
+					if (x >= bx1) bx1 = x + 1;
+					if (y < by0) by0 = y;
+					if (y >= by1) by1 = y + 1;
+				}
+		return bx1 > bx0 && by1 > by0;
+	}
+
+	// draws atlas cell 'cell' into the square (x0, y0, size) of the image (box filtered, straight alpha)
+	void paintCell(Image& im, int x0, int y0, int size, int cell) {
+		if (cell < 0 || cell >= 256 || size <= 0 || g_atlas.px.empty()) return;
+		const int cw = g_atlas.w / 16, ch = g_atlas.h / 16;
+		const int cx = (cell % 16) * cw, cy = (cell / 16) * ch;
+		const int n = kmax(1, kmin(8, (kmax(cw, ch) + size - 1) / size + 1));   // samples per axis
+		for (int dy = 0; dy < size; ++dy) {
+			const int y = y0 + dy;
+			if (y < 0 || y >= im.h) continue;
+			for (int dx = 0; dx < size; ++dx) {
+				const int x = x0 + dx;
+				if (x < 0 || x >= im.w) continue;
+				float a = 0, r = 0, g = 0, b = 0;
+				for (int sy = 0; sy < n; ++sy)
+					for (int sx = 0; sx < n; ++sx) {
+						const int px = cx + kmin(cw - 1, (int)((dx + (sx + 0.5f) / n) * cw / size));
+						const int py = cy + kmin(ch - 1, (int)((dy + (sy + 0.5f) / n) * ch / size));
+						const UINT32 p = g_atlas.px[(size_t)py * g_atlas.w + px];
+						const float pa = (p >> 24) / 255.0f;
+						a += pa; r += pa * ((p >> 16) & 255); g += pa * ((p >> 8) & 255); b += pa * (p & 255);
+					}
+				const float inv = 1.0f / (n * n);
+				a *= inv;
+				if (a <= 0.002f) continue;   // the cleared area stays transparent
+				r *= inv / a; g *= inv / a; b *= inv / a;
+				im.px[(size_t)y * im.w + x] = ((UINT32)(a * 255.0f + 0.5f) << 24) | ((UINT32)kmin(255.0f, r + 0.5f) << 16) |
+					((UINT32)kmin(255.0f, g + 0.5f) << 8) | (UINT32)kmin(255.0f, b + 0.5f);
+			}
+		}
+	}
+
+	// One icon of the texture: the rectangle (in the coordinates of the original layout) is cleared and the key
+	// icon is drawn where the controller icon was: across, centred on the old icon; up / down, centred on the
+	// game's own picture square (rows of 52: centre 26, 78, 130), so it is never cut at the bottom.
+	// Without a key (NONE) the controller icon stays.
+	void replaceIcon(Image& im, float sx, float sy, int x0, int y0, int x1, int y1, int cell, int size, int rowCentre) {
+		if (cell < 0) return;
+		const int X0 = (int)(x0 * sx), Y0 = (int)(y0 * sy), X1 = (int)(x1 * sx + 0.5f), Y1 = (int)(y1 * sy + 0.5f);
+		int bx0, by0, bx1, by1;
+		float cx = (X0 + X1) * 0.5f;
+		const float cy = rowCentre * sy;
+		if (contentBox(im, X0, Y0, X1, Y1, bx0, by0, bx1, by1)) cx = (bx0 + bx1) * 0.5f;
+		clearRect(im, X0, Y0, X1, Y1);
+		const int s = (int)(size * kmin(sx, sy) + 0.5f);
+		paintCell(im, (int)(cx - s * 0.5f + 0.5f), (int)(cy - s * 0.5f + 0.5f), s, cell);
+	}
+
+	// The wide "VIEW" / "MENU" pictures (button + word): the word is removed and the key icon goes at the right end,
+	// where the word ended (next to the text the game writes after it).
+	void replaceWide(Image& im, float sx, float sy, int x0, int y0, int x1, int y1, int cell, int size) {
+		if (cell < 0) return;
+		const int X0 = (int)(x0 * sx), Y0 = (int)(y0 * sy), X1 = (int)(x1 * sx + 0.5f), Y1 = (int)(y1 * sy + 0.5f);
+		int bx0, by0, bx1, by1;
+		if (!contentBox(im, X0, Y0, X1, Y1, bx0, by0, bx1, by1)) return;
+		clearRect(im, X0, Y0, X1, Y1);
+		const int s = (int)(size * kmin(sx, sy) + 0.5f);
+		paintCell(im, bx1 - s, (int)(130 * sy - s * 0.5f + 0.5f), s, cell);   // centre of the game's picture row 104..156
+	}
+
+	// ---- controller copies: each game button shows the icon of the real button mapped to it ----
+	// The icons of A B X Y LB RB LT RT in 40fbc4ad (1024 x 1024 layout), in the order of Shared::pad
+	const int PAD_RECT[8][4] = {
+		{ 168, 0, 224, 56 }, { 112, 0, 168, 52 }, { 56, 0, 112, 52 }, { 0, 0, 56, 52 },   // A B X Y
+		{ 452, 0, 518, 56 }, { 334, 0, 402, 56 }, { 518, 0, 574, 56 }, { 402, 0, 452, 56 } // LB RB LT RT
+	};
+
+	inline bool padRemapped(const Shared* s, int i) { return s && s->version >= 2 && s->pad[i] >= 0 && s->pad[i] < 8 && s->pad[i] != i; }
+
+	// Copies the visible part of a rectangle of 'src' into 'dst', scaled to fit maxW x maxH (never bigger than the
+	// original unless allowUp), centred on (cx, cy). Bilinear, premultiplied alpha.
+	void copyFit(Image& dst, const Image& src, int x0, int y0, int x1, int y1, float cx, float cy, float maxW, float maxH, bool allowUp) {
+		int bx0, by0, bx1, by1;
+		if (!contentBox(src, x0, y0, x1, y1, bx0, by0, bx1, by1)) return;
+		const float bw = (float)(bx1 - bx0), bh = (float)(by1 - by0);
+		float sc = kmin(maxW / bw, maxH / bh);
+		if (!allowUp) sc = kmin(sc, 1.0f);
+		const float dw = bw * sc, dh = bh * sc;
+		const int dx0 = (int)(cx - dw * 0.5f + 0.5f), dy0 = (int)(cy - dh * 0.5f + 0.5f);
+		const int dW = (int)(dw + 0.5f), dH = (int)(dh + 0.5f);
+		const int n = kmax(1, kmin(6, (int)(1.0f / sc) + 1));   // samples per axis when shrinking
+		for (int y = 0; y < dH; ++y) {
+			const int ty = dy0 + y;
+			if (ty < 0 || ty >= dst.h) continue;
+			for (int x = 0; x < dW; ++x) {
+				const int tx = dx0 + x;
+				if (tx < 0 || tx >= dst.w) continue;
+				float a = 0, r = 0, g = 0, b = 0;
+				for (int sy = 0; sy < n; ++sy)
+					for (int sx = 0; sx < n; ++sx) {
+						const float fx = kmin(bw - 1.0f, kmax(0.0f, (x + (sx + 0.5f) / n) / sc - 0.5f)) + bx0;
+						const float fy = kmin(bh - 1.0f, kmax(0.0f, (y + (sy + 0.5f) / n) / sc - 0.5f)) + by0;
+						const int ix = (int)fx, iy = (int)fy;
+						const int ix1 = kmin(ix + 1, bx1 - 1), iy1 = kmin(iy + 1, by1 - 1);
+						const float txf = fx - ix, tyf = fy - iy;
+						const UINT32 p[4] = { src.px[(size_t)iy * src.w + ix], src.px[(size_t)iy * src.w + ix1], src.px[(size_t)iy1 * src.w + ix], src.px[(size_t)iy1 * src.w + ix1] };
+						const float w[4] = { (1 - txf) * (1 - tyf), txf * (1 - tyf), (1 - txf) * tyf, txf * tyf };
+						for (int k = 0; k < 4; ++k) {
+							const float pa = (p[k] >> 24) / 255.0f * w[k];
+							a += pa; r += pa * ((p[k] >> 16) & 255); g += pa * ((p[k] >> 8) & 255); b += pa * (p[k] & 255);
+						}
+					}
+				const float inv = 1.0f / (n * n);
+				a *= inv;
+				if (a <= 0.002f) continue;
+				r *= inv / a; g *= inv / a; b *= inv / a;
+				dst.px[(size_t)ty * dst.w + tx] = ((UINT32)(a * 255.0f + 0.5f) << 24) | ((UINT32)kmin(255.0f, r + 0.5f) << 16) |
+					((UINT32)kmin(255.0f, g + 0.5f) << 8) | (UINT32)kmin(255.0f, b + 0.5f);
+			}
+		}
+	}
+
+	// Paints a controller copy. srcA: the original pixels of 40fbc4ad (all the button pictures come from there).
+	void paintPadVariant(Image& im, int v, const Image& srcA, const Shared* s) {
+		const float ax = srcA.w / 1024.0f, ay = srcA.h / 1024.0f;
+		if (v == V_A_PAD) {
+			for (int i = 0; i < 8; ++i) {
+				if (!padRemapped(s, i)) continue;
+				const int* t = PAD_RECT[i];
+				const int* f = PAD_RECT[s->pad[i]];
+				const int X0 = (int)(t[0] * ax), Y0 = (int)(t[1] * ay), X1 = (int)(t[2] * ax + 0.5f), Y1 = (int)(t[3] * ay + 0.5f);
+				int bx0, by0, bx1, by1;
+				float cx = (X0 + X1) * 0.5f, cy = (Y0 + Y1) * 0.5f;
+				if (contentBox(srcA, X0, Y0, X1, Y1, bx0, by0, bx1, by1)) { cx = (bx0 + bx1) * 0.5f; cy = (by0 + by1) * 0.5f; }
+				clearRect(im, X0, Y0, X1, Y1);
+				copyFit(im, srcA, (int)(f[0] * ax), (int)(f[1] * ay), (int)(f[2] * ax + 0.5f), (int)(f[3] * ay + 0.5f),
+					cx, cy, (float)(X1 - X0), (float)(Y1 - Y0), false);
+			}
+		}
+		else {
+			// small quick menu "LB <" / "> RB" (im is 43a2b23a at twice its size): the button is replaced, the arrow stays
+			const float sx = im.w / 512.0f, sy = im.h / 256.0f;
+			for (int k = 0; k < 2; ++k) {
+				const int i = k == 0 ? 4 : 5;
+				if (!padRemapped(s, i)) continue;
+				const int* f = PAD_RECT[s->pad[i]];
+				if (k == 0) clearKeepArrow(im, (int)(222 * sx), (int)(125 * sy), (int)(288 * sx + 0.5f), (int)(156 * sy + 0.5f), (int)(268 * sx), (int)(288 * sx + 0.5f));
+				else clearKeepArrow(im, (int)(222 * sx), (int)(154 * sy), (int)(290 * sx + 0.5f), (int)(187 * sy + 0.5f), (int)(222 * sx), (int)(237 * sx + 0.5f));
+				copyFit(im, srcA, (int)(f[0] * ax), (int)(f[1] * ay), (int)(f[2] * ax + 0.5f), (int)(f[3] * ay + 0.5f),
+					(k == 0 ? 247 : 259) * sx, (k == 0 ? 141 : 170) * sy, 44 * sx, 28 * sy, true);
+			}
+		}
+	}
+
+	// Paints one keyboard copy. Positions are those of the 1024 x 1024 / 512 x 256 originals (scaled for others).
+	void paintVariant(Image& im, int v, const INT32* cell) {
+		if (v == V_A_GAME || v == V_A_MENU) {
+			const float sx = im.w / 1024.0f, sy = im.h / 1024.0f;
+			// first row: Y X B A, D-pad, VIEW, RB RT LB LT, R L, (C), D-pad <>, D-pad ^v, MENU, R 4-way, L 4-way.
+			// Its icons end at y 51; the second row starts at y 52 (only below Y X B and below R 4-way).
+			replaceIcon(im, sx, sy, 0, 0, 56, 52, cell[SLOT_TWO_HAND], 50, 26);                                   // Y
+			replaceIcon(im, sx, sy, 56, 0, 112, 52, cell[SLOT_USE_ITEM], 50, 26);                                 // X
+			replaceIcon(im, sx, sy, 112, 0, 168, 52, v == V_A_MENU ? CELL_MOUSE_RIGHT : cell[SLOT_DASH], 50, 26);  // B (menus: right click goes back)
+			replaceIcon(im, sx, sy, 168, 0, 224, 56, cell[SLOT_INTERACT], 50, 26);                                // A
+			replaceIcon(im, sx, sy, 224, 0, 280, 56, CELL_ARROWS, 50, 26);                                        // D-pad
+			replaceIcon(im, sx, sy, 280, 0, 336, 56, cell[SLOT_GESTURES], 50, 26);                                // VIEW / SELECT
+			if (v == V_A_GAME) {
+				// RB RT LB LT: the tutorial messages in the game ("RB : Attack"); in menus they stay controller icons
+				replaceIcon(im, sx, sy, 334, 0, 402, 56, cell[SLOT_LIGHT_ATTACK], 50, 26);                        // RB / R1
+				replaceIcon(im, sx, sy, 402, 0, 452, 56, cell[SLOT_HEAVY_ATTACK], 50, 26);                        // RT / R2
+				replaceIcon(im, sx, sy, 452, 0, 518, 56, cell[SLOT_BLOCK], 50, 26);                               // LB / L1
+				replaceIcon(im, sx, sy, 518, 0, 574, 56, cell[SLOT_PARRY], 50, 26);                               // LT / L2
+			}
+			replaceIcon(im, sx, sy, 574, 0, 630, 68, cell[SLOT_LOCK_ON], 50, 26);                                 // R (right stick click, Switch: shadow below)
+			replaceIcon(im, sx, sy, 740, 0, 798, 56, CELL_ARROWS_LR, 50, 26);                                     // D-pad left / right
+			replaceIcon(im, sx, sy, 798, 0, 856, 56, CELL_ARROWS_UD, 50, 26);                                     // D-pad up / down
+			replaceIcon(im, sx, sy, 856, 0, 910, 56, cell[SLOT_MENU], 50, 26);                                    // MENU / START
+			// R with 4 directions: the mouse moves the camera in the game; in menus (e.g. "Rotate" in character
+			// creation) the mouse moves nothing, so there the controller icon stays
+			if (v == V_A_GAME) replaceIcon(im, sx, sy, 910, 0, 966, 52, CELL_MOUSE_MOVE, 50, 26);
+			// second row (y 52..104): D-pad down, right, left ... D-pad up
+			replaceIcon(im, sx, sy, 0, 52, 52, 104, CELL_DOWN, 48, 78);
+			replaceIcon(im, sx, sy, 52, 52, 104, 104, CELL_RIGHT, 48, 78);
+			replaceIcon(im, sx, sy, 104, 52, 160, 104, CELL_LEFT, 48, 78);
+			replaceIcon(im, sx, sy, 910, 52, 966, 104, CELL_UP, 48, 78);
+			// third row (y 104..158): the wide "VIEW" and "MENU" pictures
+			replaceWide(im, sx, sy, 0, 104, 222, 158, cell[SLOT_GESTURES], 52);
+			replaceWide(im, sx, sy, 222, 104, 412, 158, cell[SLOT_MENU], 52);
+		}
+		else {
+			const float sx = im.w / 512.0f, sy = im.h / 256.0f;
+			const int left = v == V_B_TABS ? cell[SLOT_MENU_LEFT] : CELL_LEFT;
+			const int right = v == V_B_TABS ? cell[SLOT_MENU_RIGHT] : CELL_RIGHT;
+			const float s = kmin(sx, sy);
+			const int is = (int)(28 * s + 0.5f);
+			// small "LB <": the button is replaced, the light arrow on its right stays
+			if (left >= 0) {
+				clearKeepArrow(im, (int)(222 * sx), (int)(125 * sy), (int)(288 * sx + 0.5f), (int)(156 * sy + 0.5f), (int)(268 * sx), (int)(288 * sx + 0.5f));
+				paintCell(im, (int)(247 * sx - is * 0.5f + 0.5f), (int)(141 * sy - is * 0.5f + 0.5f), is, left);
+			}
+			// small "> RB": the light arrow on its left stays
+			if (right >= 0) {
+				clearKeepArrow(im, (int)(222 * sx), (int)(154 * sy), (int)(290 * sx + 0.5f), (int)(187 * sy + 0.5f), (int)(222 * sx), (int)(237 * sx + 0.5f));
+				paintCell(im, (int)(259 * sx - is * 0.5f + 0.5f), (int)(170 * sy - is * 0.5f + 0.5f), is, right);
+			}
+		}
+	}
+
+	IDirect3DTexture9* buildVariant(IDirect3DDevice9* dev, int v) {
+		const bool pad = v == V_A_PAD || v == V_B_PAD;
+		const int which = (v == V_A_GAME || v == V_A_MENU || v == V_A_PAD) ? 0 : 1;
+		IDirect3DTexture9* orig = g_orig[which];
+		if (!orig || !g_shared || (!pad && !loadAtlas(dev))) return NULL;
+		if (g_src[which].px.empty() && !readPixels(dev, orig, g_src[which])) { SDLOG(0, "DDTMControllerMappings: could not read the pixels of prompt texture %c\n", 'A' + which); return NULL; }
+		// the controller copy of 43a2b23a takes its button pictures from 40fbc4ad
+		if (v == V_B_PAD && (!g_orig[0] || (g_src[0].px.empty() && !readPixels(dev, g_orig[0], g_src[0])))) return NULL;
+		// 43a2b23a is small (512 x 256) and the game shows it a little bigger than its pixels, so its keyboard copies
+		// are made at twice the size (the game picks pixels by position, so a bigger texture shows the same), and
+		// the key icons stay sharp.
+		Image im = which == 1 ? upscale2(g_src[which]) : g_src[which];
+		if (pad) paintPadVariant(im, v, g_src[0], g_shared);
+		else {
+			INT32 cells[16];
+			for (int i = 0; i < 16; ++i) cells[i] = g_shared->cell[i];
+			paintVariant(im, v, cells);
+		}
+
+		IDirect3DTexture9* tex = NULL;
+		const DWORD levels = which == 1 ? 1 : orig->GetLevelCount();
+		if (FAILED(D3DXCreateTexture(dev, im.w, im.h, levels, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex)) || !tex) { SDLOG(0, "DDTMControllerMappings: could not create copy %d\n", v); return NULL; }
+		D3DLOCKED_RECT lr;
+		if (FAILED(tex->LockRect(0, &lr, NULL, 0))) { tex->Release(); SDLOG(0, "DDTMControllerMappings: could not fill copy %d\n", v); return NULL; }
+		for (int y = 0; y < im.h; ++y) memcpy((BYTE*)lr.pBits + (size_t)y * lr.Pitch, &im.px[(size_t)y * im.w], im.w * 4);
+		tex->UnlockRect(0);
+		if (levels > 1) D3DXFilterTexture(tex, NULL, 0, D3DX_FILTER_BOX);
+		SDLOG(0, "DDTMControllerMappings: copy %d built (%d x %d, %u levels)\n", v, im.w, im.h, levels);
+		return tex;
+	}
+
+	// Release the copies of a texture that was loaded again (render thread, inside g_cs). The controller copy of
+	// 43a2b23a also uses the pictures of 40fbc4ad, so it goes with either.
+	void dropCopies(int which) {
+		static const int A[] = { V_A_GAME, V_A_MENU, V_A_PAD, V_B_PAD }, B[] = { V_B_TABS, V_B_ARROWS, V_B_PAD };
+		const int* list = which == 0 ? A : B;
+		const int n = which == 0 ? 4 : 3;
+		for (int k = 0; k < n; ++k) { const int v = list[k]; if (g_var[v]) { g_var[v]->Release(); g_var[v] = NULL; } g_varFailed[v] = false; }
+		std::vector<UINT32>().swap(g_src[which].px);
+		g_dirty[which] = false;
+	}
+
+	// ---- called by RSManager ----
+
+	// a prompt texture was created (any thread)
+	void onPromptCreated(UINT32 hash, IDirect3DTexture9* tex, D3DPOOL pool) {
+		const int which = hash == HASH_A ? 0 : 1;
+		D3DSURFACE_DESC d = {};
+		tex->GetLevelDesc(0, &d);
+		SDLOG(0, "DDTMControllerMappings: prompt texture %08x loaded: %p, %u x %u, format %d, pool %d, %u levels\n", hash, tex, d.Width, d.Height, (int)d.Format, (int)pool, tex->GetLevelCount());
+		EnterCriticalSection(&g_cs);
+		IDirect3DTexture9* old = g_orig[which];
+		const bool oldHeld = g_origHeld[which];
+		// a managed texture is kept alive by us, so its address can never be reused by another texture
+		g_origHeld[which] = pool == D3DPOOL_MANAGED;
+		if (g_origHeld[which]) tex->AddRef();
+		g_orig[which] = tex;
+		g_dirty[which] = true;
+		LeaveCriticalSection(&g_cs);
+		if (old && oldHeld) old->Release();
+	}
+
+	// SetTexture: the keyboard copy instead of a prompt texture while keyboard / mouse is used, the controller copy
+	// while the controller is used and a button is mapped differently (render thread)
+	IDirect3DBaseTexture9* substitute(IDirect3DDevice9* dev, IDirect3DBaseTexture9* t) {
+		const int which = t == g_orig[0] ? 0 : 1;
+		Shared* s = shared();
+		int v = -1;
+		if (s && s->ready) {
+			if (s->kbmActive) v = which == 0 ? (s->phase == 0 ? V_A_GAME : V_A_MENU) : (s->phase == 2 ? V_B_TABS : V_B_ARROWS);
+			else if (which == 0) { for (int i = 0; i < 8 && v < 0; ++i) if (padRemapped(s, i)) v = V_A_PAD; }
+			else if (padRemapped(s, 4) || padRemapped(s, 5)) v = V_B_PAD;
+		}
+		IDirect3DBaseTexture9* out = t;
+		EnterCriticalSection(&g_cs);
+		if (g_dirty[0]) dropCopies(0);
+		if (g_dirty[1]) dropCopies(1);
+		if (v >= 0 && (IDirect3DBaseTexture9*)g_orig[which] == t) {
+			if (!g_var[v] && !g_varFailed[v]) { g_var[v] = buildVariant(dev, v); g_varFailed[v] = !g_var[v]; }
+			if (g_var[v]) out = g_var[v];
+		}
+		LeaveCriticalSection(&g_cs);
+		return out;
+	}
+
+	inline bool isPrompt(IDirect3DBaseTexture9* t) { return t && (t == (IDirect3DBaseTexture9*)g_orig[0] || t == (IDirect3DBaseTexture9*)g_orig[1]); }
+
+	// a copy of 40fbc4ad is still the button texture (the HUD hide option hides it too)
+	bool isButtonsCopy(IDirect3DBaseTexture9* t) {
+		return t && (t == (IDirect3DBaseTexture9*)g_var[V_A_GAME] || t == (IDirect3DBaseTexture9*)g_var[V_A_MENU] ||
+			t == (IDirect3DBaseTexture9*)g_var[V_A_PAD]);
+	}
+
+	// The controller mapping comes from DDTMControllerFix.dll: then swapConfirmIcons / swapXYIcons are not used
+	// (the controller copy already shows the right buttons; both together would swap twice)
+	bool padMappingFromDdtm() { return g_state == 1 && g_shared && g_shared->version >= 2 && g_shared->ready; }
+}
+
 HRESULT RSManager::redirectSetTexture(DWORD Stage, IDirect3DBaseTexture9* pTexture) {
 	if (pTexture == NULL) return d3ddev->SetTexture(Stage, pTexture);
+	// DDTMControllerMappings: keyboard / mouse prompts (kbIcons above)
+	if (kbIcons::g_state == 1 && kbIcons::isPrompt(pTexture)) pTexture = kbIcons::substitute(d3ddev, pTexture);
 	//TexIntMap::iterator it = renderTexIndices.find((IDirect3DTexture9*)pTexture);
 	//if(it != renderTexIndices.end() && it->second == 2) {
 	//	IDirect3DSurface9* surf0;
@@ -2368,7 +2890,7 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 		IDirect3DBaseTexture9* t;
 		d3ddev->GetTexture(0, &t);
 		bool hide = isTextureText(t);
-		hide = hide || isTextureButtonsEffects(t);
+		hide = hide || isTextureButtonsEffects(t) || kbIcons::isButtonsCopy(t);
 		hide = hide || isTextureHudEffectIcons(t);
 		t->Release();
 		if (hide) return D3D_OK;
@@ -2556,7 +3078,8 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 			drawData = scaleUiVertices(textCopy, pVertexStreamZeroData, VertexStreamZeroStride, 0, primNv, subtitleScale(), 0.5f, 0.925f);
 		}
 	}
-	const bool swapAB = Settings::get().getSwapConfirmIcons(), swapXY = Settings::get().getSwapXYIcons();
+	const bool ddtmPad = kbIcons::padMappingFromDdtm();   // DDTMControllerMappings: the button mapping comes from DDTM
+	const bool swapAB = !ddtmPad && Settings::get().getSwapConfirmIcons(), swapXY = !ddtmPad && Settings::get().getSwapXYIcons();
 	if ((swapAB || swapXY) && VertexStreamZeroStride == 24 && primNv && primNv <= 65536 && drawData) {
 		IDirect3DBaseTexture9* bt = NULL;
 		d3ddev->GetTexture(0, &bt);
@@ -2734,6 +3257,17 @@ namespace {
 }
 
 HRESULT RSManager::redirectD3DXCreateTextureFromFileInMemoryEx(LPDIRECT3DDEVICE9 pDevice, LPCVOID pSrcData, UINT SrcDataSize, UINT Width, UINT Height, UINT MipLevels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, DWORD Filter, DWORD MipFilter, D3DCOLOR ColorKey, D3DXIMAGE_INFO* pSrcInfo, PALETTEENTRY* pPalette, LPDIRECT3DTEXTURE9* ppTexture) {
+	// DDTMControllerMappings: the two prompt textures are created as usual (the call below), then remembered (kbIcons)
+	if (!kbIcons::g_inPromptCreate && kbIcons::wanted()) {
+		const UINT32 h = SuperFastHash((char*)const_cast<void*>(pSrcData), SrcDataSize);
+		if (h == kbIcons::HASH_A || h == kbIcons::HASH_B) {
+			kbIcons::g_inPromptCreate = true;
+			const HRESULT hr = redirectD3DXCreateTextureFromFileInMemoryEx(pDevice, pSrcData, SrcDataSize, Width, Height, MipLevels, Usage, Format, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette, ppTexture);
+			kbIcons::g_inPromptCreate = false;
+			if (SUCCEEDED(hr) && ppTexture && *ppTexture) kbIcons::onPromptCreated(h, *ppTexture, Pool);
+			return hr;
+		}
+	}
 	const bool iconsOn = Settings::get().getControllerIcons().find("off") != 0;
 	const bool overrideOn = Settings::get().getEnableTextureOverride();
 	const UINT32 texHash = (iconsOn || overrideOn) ? SuperFastHash((char*)const_cast<void*>(pSrcData), SrcDataSize) : 0;

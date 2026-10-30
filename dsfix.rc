@@ -62,6 +62,7 @@ IDR_TEX_PS_40FBC4AD RCDATA "Resources\\playstation\\40fbc4ad.png"
 IDR_TEX_PS_43A2B23A RCDATA "Resources\\playstation\\43a2b23a.png"
 IDR_TEX_SWITCH_40FBC4AD RCDATA "Resources\\switch\\40fbc4ad.png"
 IDR_TEX_SWITCH_43A2B23A RCDATA "Resources\\switch\\43a2b23a.png"
+IDR_TEX_KEYBOARDMOUSE RCDATA "Resources\\KeyboardMouse.png"
 
 /////////////////////////////////////////////////////////////////////////////
 #endif    // not APSTUDIO_INVOKED

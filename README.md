@@ -77,6 +77,13 @@ To ensure maximum stability on modern machines, configure your environment using
     - **VRR / G-Sync Stutter Fix:** Bypasses the engine's hardcoded "Present" catch-up loop, eliminating erratic refresh-rate bouncing and micro-stutters on variable-refresh-rate monitors.
 
 * **Native 16:10 & Steam Deck Aspect Ratio Support:** Dark Souls PTDE natively forces 16:9 letterboxing (black bars) on taller displays, such as 16:10 monitors or the Steam Deck's 1280x800 screen. This fix automatically detects displays taller than 16:9 and removes the black bars by seamlessly expanding the vertical camera field-of-view (Vert+). The game now perfectly fills the entire screen without any image stretching or horizontal squashing. Standard 16:9 displays are left completely untouched.
+### Button icons that follow your controls (DDTMControllerMappings)
+Needs DDTMControllerFix.dll. Set `DDTMControllerMappings 1` in DSfix.ini.
+
+- **Keyboard and mouse:** while you play with keyboard and mouse, the in-game button prompts and the quick menu LB / RB icons show your own keys from DDTMControllerMappings.ini. Pick up the controller and the controller icons come back instantly.
+- **Controller:** if you remapped buttons in DDTMControllerMappings.ini (face buttons, LB / RB, LT / RT), the prompts show the real button you mapped (for example `A = R1` shows RB where the game shows A). With this on, `swapConfirmIcons` and `swapXYIcons` are not needed.
+- Works with every icon set (`controllerIcons`, tex_override or the game's own).
+- The key icons come from `KeyboardMouse.png`, built into DSfix. To change their look, replace it with your own 16 × 16 grid picture (for example 1024 × 1024) in the same order.
 ---
 
 ## Bugs and Issues Fixed

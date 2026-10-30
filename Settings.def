@@ -90,6 +90,7 @@ SETTING(float, SubtitleScale, "subtitleScale", 1.0f)
 // For Japanese-style controls (circle = confirm) set up in Steam Input, DS4Windows or another controller mapper.
 SETTING(bool, SwapConfirmIcons, "swapConfirmIcons", false)
 // swapXYIcons: shows the Y / triangle icon wherever the game shows X / square and the other way round.
+// Both are not used while DDTMControllerMappings 1 gets the button mapping from DDTMControllerFix.dll.
 SETTING(bool, SwapXYIcons, "swapXYIcons", false)
 // controllerIcons: button prompt and quick menu icons for your controller, built into DSfix.
 //   off         - as before: the game's icons, or your own files in tex_override (40fbc4ad / 43a2b23a)
@@ -99,6 +100,13 @@ SETTING(bool, SwapXYIcons, "swapXYIcons", false)
 //   xbox, playstation, switch - always that set
 // When a set is used, files with those two names in tex_override are ignored.
 SETTING(std::string, ControllerIcons, "controllerIcons", "off")
+// DDTMControllerMappings: only with DDTMControllerFix.dll (keyboard and mouse).
+// While you play with keyboard / mouse, the button prompts and the quick menu LB / RB icons show your keys from
+// DDTMControllerMappings.ini; when you use the controller again, the controller icons come back. With the controller,
+// the face buttons, LB / RB and LT / RT show the real button mapped to them in [Bindings] (for example A = R1 shows
+// RB / R1 where the game shows A); then swapConfirmIcons / swapXYIcons are not used.
+// 0 = off (nothing is checked or loaded). Without DDTMControllerFix.dll it stays off.
+SETTING(bool, DDTMControllerMappings, "DDTMControllerMappings", false)
 // weaponWearBars: a thin bar under each weapon slot of the HUD shows how much durability the weapon in that hand has left
 // (Dark Souls 3 style). Part of the bottom-left HUD: hudScaleBottomLeft and hudBottomLeftOpacity apply, also with
 // enableHudMod 0. 0 = off (as before)
