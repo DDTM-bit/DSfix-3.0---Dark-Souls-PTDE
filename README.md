@@ -108,7 +108,15 @@ Hold **D-pad Down** (350 ms) during play to jump straight to the Estus Flask in 
 With DDTM Controller Fix, holding its SWITCH_ITEM key works the same.
 `QuickSelectEstus 1` in DSfix.ini (default 0 = off, nothing is patched).
 ---
+* **Bonfire Covenant Switching**
+Rest at a bonfire and choose **Enter Covenant** (below Attune Magic). You can switch to any covenant you have joined in this playthrough.
+- Your current covenant is marked `*`. A broken covenant is marked `x`; picking it tells you why (for example, leader dead or hostile, Kaathe gone, or banished until absolution).
+- The leaders' own Yes/No question is shown. On Yes, the oath sound plays and the screen fades.
+- The result is the same as vanilla: the covenant you leave loses half of its offerings.
+- Oswald is not involved. The list resets in NG+.
+- Not available while a phantom is in your world.
 
+`BonfireCovenants 1` in DSfix.ini (default 0 = off, nothing is patched).
 ## Bugs and Issues Fixed
 
 ### Frame Pacing Conflict between Limiter and Present

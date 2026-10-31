@@ -585,6 +585,10 @@ bool covenantOfferActive() {
 //   4. Text lookup (0x00D175E0, every game text goes through it): our own text ids 15009901..15009919 - the covenant
 //      names (the status screen's own texts, every language) with their mark, and the reasons for broken covenants
 //      (DSfix's English text).
+//   5. Talk window update (0x00C88130, FrpgMenuDlgTalkMsgbox slot 16, every frame: +0x98 shown, +0x100 cursor row,
+//      +0x104 lines, +0x108 first row shown, +0xF8 columns). A list opened right after another one reuses the closing
+//      window, which keeps the old cursor and line count. So at the window's next frame after DSfix opened a list, it
+//      gets cursor 0, scroll 0 and the true line count (then the game's own scrollbar refresh, slot 0x94).
 // =====================================================================================================================
 #include <cstdio>
 #include <d3d9.h>
@@ -995,16 +999,27 @@ namespace bonfirecov {
     int g_pick = 0;
     bool g_switched = false;
 
+    // The talk window after DSfix opened a list (hook 5): cursor 0, scroll 0, this many lines
+    int g_windowLines = 0;                       // 0 = nothing asked
+    DWORD g_windowTime = 0;
+    int g_covenantLines = 0;
+    void requestWindow(int lines) {
+        g_windowLines = lines;
+        g_windowTime = GetTickCount();
+    }
+
     // The covenant list: our lines only, in game order (current "* ", broken "x ")
     void buildCovenantList() {
         const int current = currentCovenant();
         listClear();
+        g_covenantLines = 0;
         for (int c = 1; c <= 9; ++c) {
             if (!listed(c, current)) continue;
             const bool broken = c != current && !available(c);
             g_reason[c] = broken ? reasonFor(c) : 0;
             prepareName(c, c == current ? L"* " : (broken ? L"x " : L""));
             listAdd(kCovTextBase + (DWORD)c, (DWORD)(kCovIndexBase + c));
+            ++g_covenantLines;
         }
     }
     // The bonfire list again, exactly as its script built it
@@ -1031,6 +1046,7 @@ namespace bonfirecov {
 
     void stopSteps() {
         g_step = S_IDLE;
+        g_windowLines = 0;
         g_built = false;
         g_fadeStart = 0;
     }
@@ -1039,7 +1055,7 @@ namespace bonfirecov {
         switch (g_step) {
         case S_OPEN_LIST:
             if (!g_built) { buildCovenantList(); g_built = true; }
-            if (listOpen(g_stepEv)) { g_step = S_LIST; g_built = false; }
+            if (listOpen(g_stepEv)) { g_step = S_LIST; g_built = false; requestWindow(g_covenantLines); }
             break;
         case S_LIST: {
             const DWORD mm = rd32(kMenuMan);
@@ -1090,9 +1106,31 @@ namespace bonfirecov {
             if (listOpen(g_stepEv)) {
                 g_step = S_IDLE;
                 g_built = false;
+                requestWindow(g_lineCount);
             }
             break;
         }
+    }
+
+    // Hook 5: the talk window rebuilds its lines (it reset its cursor row itself)
+    // Hook 5: the talk window's own update, every frame (this = the window)
+    void __stdcall onTalkWindowUpdate(DWORD win) {
+        if (!g_windowLines || !win) return;
+        if (GetTickCount() - g_windowTime > 1000) { g_windowLines = 0; return; }   // not for this window any more
+        if (!rd8(win + 0x98)) return;                                    // a window that is not shown (closing)
+        const DWORD mm = rd32(kMenuMan);
+        if (!mm || rd32(mm + kMmTalkMenu) == 0) return;                  // the talk list is not open (yet)
+        const int lines = g_windowLines;
+        g_windowLines = 0;
+        __try {
+            const int columns = (int)*(const DWORD*)(win + 0xF8);
+            *(DWORD*)(win + 0x104) = (DWORD)(columns > 1 ? (lines + columns - 1) / columns : lines);
+            *(DWORD*)(win + 0x100) = 0;
+            *(DWORD*)(win + 0x108) = 0;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+        const DWORD refresh = rd32(rd32(win) + 0x94);                    // the game's scrollbar refresh
+        if (refresh) callEcx(refresh, win);
     }
 
     // Hook 2: what the bonfire script gets for "which line was picked?"
@@ -1189,16 +1227,19 @@ namespace bonfirecov {
     //  2. GetTalkListEntryResult: mov ecx,[0x013786D0] / mov edx,[ecx+0xB04] (0x00D49A26)
     //  3. ClearTalkListData:      call 0x00C2B140                          (0x00FCF811)
     //  4. text lookup:            push ebx / mov ebx,[esp+8]               (0x00D175E0)
+    //  5. talk window update:     push ebp / mov ebp,esp / and esp,-8      (0x00C88130, ecx = the talk window)
     const BYTE kExpAdd[5] = { 0xE8,0x69,0xC3,0xC5,0xFF };
     const BYTE kExpResult[12] = { 0x8B,0x0D,0xD0,0x86,0x37,0x01, 0x8B,0x91,0x04,0x0B,0x00,0x00 };
     const BYTE kExpClear[5] = { 0xE8,0x2A,0xB9,0xC5,0xFF };
     const BYTE kExpText[5] = { 0x53, 0x8B,0x5C,0x24,0x08 };
+    const BYTE kExpWindow[6] = { 0x55, 0x8B,0xEC, 0x83,0xE4,0xF8 };
     DWORD g_fnAdd = kFnTalkListAdd;
     DWORD g_fnClear = kFnTalkListClear;
     DWORD g_addCont = 0x00FCF7E7;
     DWORD g_resultCont = 0x00D49A32;
     DWORD g_clearCont = 0x00FCF816;
     DWORD g_textCont = 0x00D175E5;
+    DWORD g_windowCont = 0x00C88136;
     DWORD g_menuManAddress = kMenuMan;
 
     // The talk command handler's frame: [esp+0x18] the talk script, [esp+0x24] the line {text, index}
@@ -1249,6 +1290,20 @@ namespace bonfirecov {
             jmp dword ptr[g_clearCont]
         }
     }
+    __declspec(naked) void window_stub() {
+        __asm {
+            pushad
+            pushfd
+            push ecx                            // the talk window
+            call onTalkWindowUpdate
+            popfd
+            popad
+            push ebp                            // the instructions the jump replaced
+            mov ebp, esp
+            and esp, 0xFFFFFFF8
+            jmp dword ptr[g_windowCont]
+        }
+    }
     // edx = text id, [esp+4] the text table (the caller removes it). Our ids get our text, all others go on as before.
     __declspec(naked) void text_stub() {
         __asm {
@@ -1278,15 +1333,16 @@ bool installBonfireCovenants() {
     if (bonfirecov::g_installed) return true;
     if (!Settings::get().getBonfireCovenants()) return false;
 
-    const HookSite sites[4] = {
+    const HookSite sites[5] = {
         { "talk list add",    0x00FCF7E2, 5,  kExpAdd },
         { "talk list result", 0x00D49A26, 12, kExpResult },
         { "talk list clear",  0x00FCF811, 5,  kExpClear },
         { "text lookup",      0x00D175E0, 5,  kExpText },
+        { "talk window",      0x00C88130, 6,  kExpWindow },
     };
-    const void* stubs[4] = { (const void*)&add_stub, (const void*)&result_stub, (const void*)&clear_stub,
-                             (const void*)&text_stub };
-    for (int i = 0; i < 4; ++i) {
+    const void* stubs[5] = { (const void*)&add_stub, (const void*)&result_stub, (const void*)&clear_stub,
+                             (const void*)&text_stub, (const void*)&window_stub };
+    for (int i = 0; i < 5; ++i) {
         if (memcmp((const void*)sites[i].address, sites[i].expected, sites[i].length) != 0) {
             SDLOG(0, "BonfireCovenants: the code for '%s' at 0x%08X is not what this build should have, "
                      "BonfireCovenants stays off\n", sites[i].name, sites[i].address);
@@ -1294,7 +1350,7 @@ bool installBonfireCovenants() {
         }
     }
     bonfirecov::g_installed = true;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         if (!writeJump(sites[i].address, sites[i].length, stubs[i])) {
             SDLOG(0, "BonfireCovenants: could not write at 0x%08X, BonfireCovenants stays off\n", sites[i].address);
             return false;                       // an earlier hook stays; without our line in the list it does nothing
