@@ -260,6 +260,9 @@ bool weaponMaxDurability(uint32_t weaponId, uint32_t* maxDurability) {
 #include <cstdio>
 #include <cmath>
 
+// QuickSelectEstus (further down) is told about every pad read by the XInput hook below.
+namespace estus { void padSeen(DWORD idx, WORD buttons); }
+
 namespace wasort {
     // ---------------------------------------------------------------------------------------------------------------
     // Addresses in DARKSOULS.exe (Steam build, PE timestamp 0x557F2FD0)
@@ -312,6 +315,7 @@ namespace wasort {
 
     bool g_installed = false;
     bool g_refreshPatched = false;     // hook 1 is in place (WeaponsArmorSort or BottomlessBoxMarkers put it there)
+    bool g_xinputPatched = false;      // hook 5 is in place (WeaponsArmorSort or QuickSelectEstus put it there)
     bool g_markersInstalled = false;   // BottomlessBoxMarkers
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -614,7 +618,11 @@ namespace wasort {
     DWORD WINAPI sortXInputGetState(DWORD idx, PadState* s) {
         const XInputGetState_t real = *(XInputGetState_t*)kXInputGetStateImport; // read every time: others may hook it
         const DWORD r = real(idx, s);
-        if (r == ERROR_SUCCESS && s && idx < 4) padFilter(idx, s);
+        if (r == ERROR_SUCCESS && s && idx < 4) {
+            if (g_installed) padFilter(idx, s);
+            estus::padSeen(idx, s->buttons);       // what the game sees (after the sort's filter)
+        }
+        else estus::padSeen(idx, 0);               // no pad there (or unplugged): nothing held on it
         return r;
     }
 
@@ -1014,6 +1022,7 @@ bool installWeaponsArmorSort() {
     };
     for (int i = 0; i < 5; ++i) {
         if (i == 0 && g_refreshPatched) continue;   // already put there by BottomlessBoxMarkers
+        if (i == 4 && g_xinputPatched) continue;    // already put there by QuickSelectEstus
         if (memcmp((const void*)sites[i].address, sites[i].expected, sites[i].length) != 0) {
             SDLOG(0, "WeaponsArmorSort: the code for '%s' at 0x%08X is not what this build should have, sorting stays off\n",
                 sites[i].name, sites[i].address);
@@ -1022,6 +1031,7 @@ bool installWeaponsArmorSort() {
     }
     for (int i = 0; i < 5; ++i) {
         if (i == 0 && g_refreshPatched) continue;
+        if (i == 4 && g_xinputPatched) continue;
         if (!writeJump(sites[i].address, sites[i].length, sites[i].target)) {
             SDLOG(0, "WeaponsArmorSort: could not write at 0x%08X, sorting stays off\n", sites[i].address);
             return false;
@@ -1029,6 +1039,7 @@ bool installWeaponsArmorSort() {
     }
     g_installed = true;
     g_refreshPatched = true;
+    g_xinputPatched = true;
     HANDLE h = CreateThread(NULL, 0, loadThread, NULL, 0, NULL);
     if (h) CloseHandle(h);
     SDLOG(0, "WeaponsArmorSort: on (Weapons and Armor lists: RS + D-pad / LALT + arrows)\n");
@@ -1131,4 +1142,170 @@ int bottomlessBoxMarkerRows(unsigned char* flags, int max) {
         flags[rows] = (index >= 0 && index < entries && allInBox(player, rd32(eBegin + 4 * (DWORD)index))) ? 1 : 0;
     }
     return rows;
+}
+
+// =====================================================================================================================
+// QuickSelectEstus: during play, holding D-pad Down for 350 ms selects the Estus Flask in the quick-item slots. A tap
+// still switches to the next item at once, as the game does (so a hold first switches once, then jumps to the Estus).
+// The jump is the game's own: the selected item is set, the HUD plays its item change animation and the switch sound.
+// Keyboard with DDTMControllerFix: its SWITCH_ITEM key is D-pad Down for the game, so holding it works the same way.
+//
+// How the game switches (FrpgMenuDlgFeShortcut: one dialog per D-pad slot of the HUD, updated every frame):
+//   0x00C83470  the input step of a slot (argument: the dialog). For the quick-item slot (+0xF4 == 1) a D-pad Down
+//               press calls "select next" on EquipItemData, sets +0xF8 = 1 and plays the menu sound (0, 2).
+//               It acts only when IsShowMenu() & 0xFFFFFF7F == 0, MenuMan+0x2D0 == 0 and MenuMan+0x200 == 0.
+//   +0xF8 = 1   right after, the slot plays its change animation ("F20_item_change" for the quick-item slot).
+//   EquipItemData = player data + 0x310: +0xC five quick-item slots (inventory positions, -1 = empty),
+//               +0x20 the selected item (an inventory position).
+// The hook sits on the first instructions of 0x00C83470, so the jump is done before the game's own step of that frame.
+// The D-pad comes from the XInput hook of WeaponsArmorSort (hook 5), which this feature shares.
+// =====================================================================================================================
+namespace estus {
+    const DWORD kVtShortcut = 0x011C00F4;        // FrpgMenuDlgFeShortcut
+    const DWORD kShortcutSlot = 0xF4;            // which D-pad slot: 1 = quick item
+    const DWORD kShortcutChange = 0xF8;          // byte: 1 = play the slot's change animation
+    const DWORD kFnIsShowMenu = 0x00C2ABE0;      // returns the "a menu is open" mask
+    const DWORD kFnMenuSound = 0x00C267E0;       // stdcall (0, 2): the quick-item switch sound
+    const DWORD kItemData = 0x310;               // player data + 0x310: EquipItemData
+    const DWORD kItemSlots = 0x0C;               // five inventory positions, -1 = empty
+    const DWORD kItemSelected = 0x20;            // the selected inventory position
+    const DWORD kKindGoods = 0x40000000;
+    const DWORD kEstusFirst = 200, kEstusLast = 215;   // every Estus Flask, full or empty, +0 to +7
+    const DWORD kHoldMs = 350;                   // how long D-pad Down must be held
+    const DWORD kGapMs = 200;                    // the slot was not updated for this long: a menu or loading was in between
+    const WORD kPadDown = 0x0002;
+
+    // the first instructions of 0x00C83470: sub esp,0x14 / push ebx / push ebp
+    const BYTE kExpShortcut[5] = { 0x83,0xEC,0x14, 0x53, 0x55 };
+    DWORD g_shortcutCont = 0x00C83475;
+
+    bool g_installed = false;
+
+    // Pad side (XInput hook): which pads hold D-pad Down, and when it went down on the first of them.
+    volatile LONG g_downMask = 0;
+    volatile DWORD g_pressId = 0;                // +1 at every new press
+    volatile DWORD g_pressTime = 0;
+
+    void padSeen(DWORD idx, WORD buttons) {
+        if (!g_installed || idx >= 4) return;
+        const LONG bit = 1L << idx;
+        const LONG before = g_downMask;
+        const LONG after = (buttons & kPadDown) ? (before | bit) : (before & ~bit);
+        if (after == before) return;
+        if (!before) {
+            g_pressTime = GetTickCount();
+            g_pressId = g_pressId + 1;
+        }
+        g_downMask = after;
+    }
+
+    // Game side (the quick-item slot's input step, every frame)
+    DWORD g_seenPress = 0;
+    bool g_pressDone = true;                     // this press has jumped already, or can no longer
+    DWORD g_lastStep = 0;
+
+    // The same checks the game makes before its own switch.
+    bool canSwitch() {
+        const DWORD mm = wasort::rd32(wasort::kMenuMan);
+        if (!mm) return false;
+        typedef DWORD(__cdecl* IsShowMenu_t)();
+        if (((IsShowMenu_t)kFnIsShowMenu)() & 0xFFFFFF7F) return false;
+        return wasort::rd32(mm + 0x2D0) == 0 && wasort::rd32(mm + 0x200) == 0;
+    }
+
+    // The inventory position of the first quick-item slot that holds an Estus Flask, or -1.
+    int estusPosition(DWORD player) {
+        const DWORD items = player + kItemData;
+        for (DWORD k = 0; k < 5; ++k) {
+            const int pos = (int)wasort::rd32(items + kItemSlots + 4 * k);
+            if (pos < 0) continue;
+            const DWORD slot = wasort::inventorySlot(player, (DWORD)pos);
+            if (!slot) continue;
+            const DWORD id = wasort::rd32(slot + 4);
+            if (wasort::rd32(slot) == kKindGoods && id >= kEstusFirst && id <= kEstusLast) return pos;
+        }
+        return -1;
+    }
+
+    void selectEstus(DWORD dlg) {
+        const DWORD player = wasort::playerData();
+        if (!player) return;
+        const int pos = estusPosition(player);
+        if (pos < 0) return;                     // no Estus Flask in the quick-item slots
+        const DWORD selected = player + kItemData + kItemSelected;
+        if ((int)wasort::rd32(selected) == pos) return;   // already selected
+        __try {
+            *(DWORD*)selected = (DWORD)pos;
+            *(BYTE*)(dlg + kShortcutChange) = 1;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+        typedef void(__stdcall* MenuSound_t)(int, int);
+        ((MenuSound_t)kFnMenuSound)(0, 2);
+    }
+
+    void __stdcall onShortcutStep(DWORD dlg) {
+        if (!dlg || wasort::rd32(dlg) != kVtShortcut || wasort::rd32(dlg + kShortcutSlot) != 1) return;
+        const DWORD now = GetTickCount();
+        const bool gap = now - g_lastStep > kGapMs;
+        g_lastStep = now;
+        if (!g_downMask) return;
+        const DWORD press = g_pressId;
+        if (press != g_seenPress) {
+            g_seenPress = press;
+            g_pressDone = false;
+        }
+        if (g_pressDone) return;
+        if (gap || !canSwitch()) {
+            // a menu, a window or a loading screen during this press: it does nothing more
+            g_pressDone = true;
+            return;
+        }
+        if (now - g_pressTime < kHoldMs) return;
+        g_pressDone = true;
+        selectEstus(dlg);
+    }
+
+    __declspec(naked) void shortcut_stub() {
+        __asm {
+            pushad
+            pushfd
+            push dword ptr[esp + 0x28]          // the slot dialog (the function's argument)
+            call onShortcutStep
+            popfd
+            popad
+            sub esp, 0x14                       // the instructions the jump replaced
+            push ebx
+            push ebp
+            jmp dword ptr[g_shortcutCont]
+        }
+    }
+}
+
+bool installQuickSelectEstus() {
+    using namespace wasort;
+    if (estus::g_installed) return true;
+    if (!Settings::get().getQuickSelectEstus()) return false;
+    const DWORD shortcutSite = 0x00C83470;
+    const DWORD xinputSite = 0x00ABA542;
+    if (memcmp((const void*)shortcutSite, estus::kExpShortcut, sizeof(estus::kExpShortcut)) != 0 ||
+        (!g_xinputPatched && memcmp((const void*)xinputSite, kExpXInput, sizeof(kExpXInput)) != 0)) {
+        SDLOG(0, "QuickSelectEstus: the game code is not what this build should have, it stays off\n");
+        return false;
+    }
+    estus::g_installed = true;                  // the pad side works as soon as the XInput hook is live
+    if (!g_xinputPatched) {
+        if (!writeJump(xinputSite, sizeof(kExpXInput), (const void*)&sortXInputGetState)) {
+            estus::g_installed = false;
+            SDLOG(0, "QuickSelectEstus: could not write at 0x%08X, it stays off\n", xinputSite);
+            return false;
+        }
+        g_xinputPatched = true;
+    }
+    if (!writeJump(shortcutSite, sizeof(estus::kExpShortcut), (const void*)&estus::shortcut_stub)) {
+        estus::g_installed = false;             // the XInput hook stays, but does nothing for this feature
+        SDLOG(0, "QuickSelectEstus: could not write at 0x%08X, it stays off\n", shortcutSite);
+        return false;
+    }
+    SDLOG(0, "QuickSelectEstus: on (hold D-pad Down)\n");
+    return true;
 }

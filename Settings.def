@@ -118,6 +118,10 @@ SETTING(bool, WeaponsArmorSort, "WeaponsArmorSort", true)
 // BottomlessBoxMarkers: in the Bottomless Box list, a small chest picture in the top-right corner of an item's picture
 // when nothing of it is held and all of it is in the box. 0 = off (nothing is patched)
 SETTING(bool, BottomlessBoxMarkers, "BottomlessBoxMarkers", false)
+// QuickSelectEstus: during play, hold D-pad Down for 350 ms to select the Estus Flask in your quick-item slots (with the
+// game's own animation and sound). A tap still switches to the next item at once, so a hold switches once, then jumps to
+// the Estus. With DDTMControllerFix, holding its SWITCH_ITEM key works the same. 0 = off (nothing is patched)
+SETTING(bool, QuickSelectEstus, "QuickSelectEstus", false)
 // bulkItemUse: the master switch for using several of the same item at once. With it off nothing below it happens
 // and not one byte of the game is changed. With it on, using a listed item in the pause Inventory menu asks how many
 // to use and uses them all with a single animation. The quick-item button during play always behaves as before, and

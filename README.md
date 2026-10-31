@@ -39,7 +39,7 @@ To ensure maximum stability on modern machines, configure your environment using
 * **Disable Item Auto-Equip**: Consumables you pick up are no longer put into your quick item slots automatically. The Estus Flask works as before. This is an optional setting.
 * **Multiple Item Use:** Using a soul item or a Humanity in the pause Inventory menu asks how many to use, then uses them all with a single animation — the convenience Dark Souls Remastered added, brought to the Prepare to Die Edition. Two groups, each with its own switch: the ten ordinary soul items (Soul of a Lost Undead up to Soul of a Great Hero), and Humanity with Twin Humanities. Everything else keeps its normal behaviour, so Boss Souls and Fire Keeper Souls still ask their own Yes/No question, and the quick item button during play always uses a single item with no question. The number offered is never more than you own and never so many that the reward would be lost at the game’s limits (999,999,999 souls, 99 humanity), and owning only one uses it straight away. The picker reads correctly in all ten of the game’s languages and follows your menu scaling. This is an optional setting.
 * **Multiple Covenant Offerings:** `covenantOfferings` (off by default) turns the "Offer ...?" question at a covenant altar or leader into the game's own number picker, so many Sunlight Medals, Dragon Scales, Eyes of Death, Souvenirs of Reprisal, or many Humanity, can be handed over in one step instead of answering Yes once per item. Six covenants take offerings and all six are covered: Warriors of Sunlight, Darkwraith, Path of the Dragon, Gravelord Servant, Blade of the Darkmoon and Chaos Servant. Forest Hunter ranks up by killing invaders rather than by offerings, and Way of White and Princess's Guard have no ranks. The picker never offers enough to reach the next covenant rank, so the offering that ranks you up is always the game's own unchanged single question and its reward arrives exactly as it always did; below rank 1 the picker stops at 9, between the first two ranks at 29, between the next two at 79, and after the last rank it goes up to 100. The number offered is never more than you hold, the game's own question is kept word for word so it reads correctly in all ten languages, and the window follows the `menuScale` setting. The items taken and the devotion gained are written in the same single step, so the two can never disagree, and if anything does not add up the offering is simply left as a normal single one. Before anything is patched, both places in the game's code are compared against the bytes this build should have, and if either differs nothing is changed and the feature stays off. The addresses and the technique come from the Dark Souls Overhaul team's research (metal-crow and Sean Pesce, "Multi-Tribute"); the implementation here is DSfix 3.0's own code.
-* **Durability Bars for weapons: **Shows a thin Dark Souls 3 style bar under each weapon slot. The dark red part shrinks as the weapon loses durability, and the dark background stays. An empty hand has no bar. While two-handing, the bar fades together with the other hand's weapon icon. If a bow or crossbow is equipped, the arrow/bolt box and its count move down so they stay below the bar. The bars are part of the bottom-left HUD, so every scaling option apply to them.
+* **Durability Bars for weapons:**Shows a thin Dark Souls 3 style bar under each weapon slot. The dark red part shrinks as the weapon loses durability, and the dark background stays. An empty hand has no bar. While two-handing, the bar fades together with the other hand's weapon icon. If a bow or crossbow is equipped, the arrow/bolt box and its count move down so they stay below the bar. The bars are part of the bottom-left HUD, so every scaling option apply to them.
 * **Sun/Moon & Water Issue Fixed:** Now they render perfectly at their intended screen-space locations. For resolution 1440p or 4K, DoF Override Resolution must not be 0 otherwise the water stays at vanilla quality.
 * **60 FPS Bonfire Fix and Smart Protection:** Automatically detects and neutralizes the infamous bonfire animation softlock while dynamically disabling SSAO while resting to prevent dark halo artifacts around your character.
 * **High-DPI & Display Scaling Fix:** Stripped out the 150% DPI stretching. On Windows 10/11 with 1440p or 4K monitors set to desktop scaling, the game misinterprets dimensions causing blurry bilinear upscaling and mouse-capture offset bugs. With DSfix 3.0, it will never artificially scale the game window.
@@ -49,8 +49,8 @@ To ensure maximum stability on modern machines, configure your environment using
 * **Controller button icons.** button prompts and quick menu, built into DSfix. It detects the controller connected at game start (PlayStation, Switch Pro or Xbox). Can be set to OFF to use the game's default icons, or files in tex_override. 
 * **VRAM Optimization:** Post-processing effects (AA, SSAO, DoF) now utilize a shared buffer pool, reducing VRAM usage and improving frame pacing.
 * **Text:** Includes high visual quality of the in-game fonts
-* **Controller button prompt swap: **Swaps the controller button icons the game displays, for players who have swapped the buttons themselves in a controller mapper (for example Japanese-style controls, where circle confirms)
-* **Sharpening: **brings back the fine texture detail that anti-aliasing softens. It uses contrast-adaptive sharpening (AMD FidelityFX CAS), which sharpens flat detail more than edges that are already sharp, so it doesn’t create bright halos.It only affects the 3D image: the HUD, menus and text are never sharpened.
+* **Controller button prompt swap:**Swaps the controller button icons the game displays, for players who have swapped the buttons themselves in a controller mapper (for example Japanese-style controls, where circle confirms)
+* **Sharpening:**brings back the fine texture detail that anti-aliasing softens. It uses contrast-adaptive sharpening (AMD FidelityFX CAS), which sharpens flat detail more than edges that are already sharp, so it doesn’t create bright halos.It only affects the 3D image: the HUD, menus and text are never sharpened.
 * **High-FPS Fixes:**
   - **Core Physics & Movement**
     - **Slope Gravity & Friction:** Sliding down slopes and embankments no longer happens at light-speed.
@@ -77,16 +77,16 @@ To ensure maximum stability on modern machines, configure your environment using
     - **VRR / G-Sync Stutter Fix:** Bypasses the engine's hardcoded "Present" catch-up loop, eliminating erratic refresh-rate bouncing and micro-stutters on variable-refresh-rate monitors.
 
 * **Native 16:10 & Steam Deck Aspect Ratio Support:** Dark Souls PTDE natively forces 16:9 letterboxing (black bars) on taller displays, such as 16:10 monitors or the Steam Deck's 1280x800 screen. This fix automatically detects displays taller than 16:9 and removes the black bars by seamlessly expanding the vertical camera field-of-view (Vert+). The game now perfectly fills the entire screen without any image stretching or horizontal squashing. Standard 16:9 displays are left completely untouched.
-### Button icons that follow your controls (DDTMControllerMappings)
-Needs DDTMControllerFix.dll. Set `DDTMControllerMappings 1` in DSfix.ini.
 
+* **Keyboard + Mouse + Controller in the same time** - DDTMControllerFix.dll icon switch: Advanced mapping and support for controllers and Keyboard + Mouse. Play with the controller together with keyboard + mouse. Smooth 1:1 mouse camera, custom cursor, and key bindings (combos of two keys) in the `[Keyboard]` / `[Mouse]` sections of `DDTMControllerMappings.ini`. The game's own keyboard settings are not used.
+* **Button icons that follow your controls (DDTMControllerMappings)**
+Needs DDTMControllerFix.dll. Set `DDTMControllerMappings 1` in DSfix.ini.
 - **Keyboard and mouse:** while you play with keyboard and mouse, the in-game button prompts and the quick menu LB / RB icons show your own keys from DDTMControllerMappings.ini. Pick up the controller and the controller icons come back instantly.
 - **Controller:** if you remapped buttons in DDTMControllerMappings.ini (face buttons, LB / RB, LT / RT), the prompts show the real button you mapped (for example `A = R1` shows RB where the game shows A). With this on, `swapConfirmIcons` and `swapXYIcons` are not needed.
 - Works with every icon set (`controllerIcons`, tex_override or the game's own).
 - The key icons come from `KeyboardMouse.png`, built into DSfix. To change their look, replace it with your own 16 × 16 grid picture (for example 1024 × 1024) in the same order.
 ---
-
-### Weapons & Armor Sort
+* **Weapons & Armor Sort**
 Sort the Weapons and Armor lists in the Inventory, the Equipment item list and the Bottomless Box.
 
 - **Controller:** hold **RS**, press **D-pad ←/→** to choose what to sort by and **D-pad ↑/↓** for Desc/Asc, then release **RS** to sort.
@@ -95,14 +95,19 @@ Sort the Weapons and Armor lists in the Inventory, the Equipment item list and t
 - A prompt in the menu shows the current choice. It works with the HUD on or off.
 - Your choice is saved in `%LOCALAPPDATA%\NBGI\DarkSouls\DSfixSort.ini`.
 - On by default. Turn it off with `WeaponsArmorSort 0` in DSfix.ini.
-
-
-### Bottomless Box Markers
+---
+* **Bottomless Box Markers**
 In the Bottomless Box list, a small chest icon in the top-right corner of an item's picture shows that **all of it is in the box** (Held 0).
 
 - Works in all box tabs and in both list views.
 - Uses the game's own chest icon, so texture mods change it too.
 - Off by default. Turn it on with `BottomlessBoxMarkers 1` in DSfix.ini.
+---
+* **Quick-Select Estus**
+Hold **D-pad Down** (350 ms) during play to jump straight to the Estus Flask in your quick-item slots, with the game's own animation and sound. A tap still switches to the next item as before.
+With DDTM Controller Fix, holding its SWITCH_ITEM key works the same.
+`QuickSelectEstus 1` in DSfix.ini (default 0 = off, nothing is patched).
+---
 
 ## Bugs and Issues Fixed
 

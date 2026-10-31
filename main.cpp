@@ -372,6 +372,9 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
         // BottomlessBoxMarkers: a chest picture on the Bottomless Box rows that are all in the box
         if (Settings::get().getBottomlessBoxMarkers()) installBottomlessBoxMarkers();
 
+        // QuickSelectEstus: hold D-pad Down during play to select the Estus Flask
+        if (Settings::get().getQuickSelectEstus()) installQuickSelectEstus();
+
         // quickSave: a key saves the current character and copies it to QuickSave\QS_DRAKS0005
         if (Settings::get().getQuickSave()) quickSaveInit();
 

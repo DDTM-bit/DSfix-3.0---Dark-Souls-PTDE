@@ -39,3 +39,7 @@ bool bottomlessBoxMarkersActive();
 // The rows of the box list on screen now, from the top: flags[k] = 1 when that row gets the marker. Returns how many rows
 // were filled (0 = the box list is not on screen).
 int bottomlessBoxMarkerRows(unsigned char* flags, int max);
+
+// QuickSelectEstus: during play, holding D-pad Down (350 ms) selects the Estus Flask in the quick-item slots, with the
+// game's own animation and sound. A tap switches as before. Nothing is patched when the setting is off.
+bool installQuickSelectEstus();
