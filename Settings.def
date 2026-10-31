@@ -122,6 +122,10 @@ SETTING(bool, BottomlessBoxMarkers, "BottomlessBoxMarkers", false)
 // game's own animation and sound). A tap still switches to the next item at once, so a hold switches once, then jumps to
 // the Estus. With DDTMControllerFix, holding its SWITCH_ITEM key works the same. 0 = off (nothing is patched)
 SETTING(bool, QuickSelectEstus, "QuickSelectEstus", false)
+// BonfireCovenants: the bonfire list gets "Enter Covenant" (after Attune Magic): switch to a covenant you already joined
+// in this playthrough, with the leaders' own Yes/No question and their vanilla result (the devotion of the covenant you
+// leave is halved). Broken covenants (leader dead or hostile, banished, ...) are not offered. 0 = off (nothing is patched)
+SETTING(bool, BonfireCovenants, "BonfireCovenants", false)
 // bulkItemUse: the master switch for using several of the same item at once. With it off nothing below it happens
 // and not one byte of the game is changed. With it on, using a listed item in the pause Inventory menu asks how many
 // to use and uses them all with a single animation. The quick-item button during play always behaves as before, and

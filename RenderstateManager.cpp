@@ -26,6 +26,7 @@
 #include "TitleMark.h"
 #include "QuickSave.h"
 #include "GameParams.h"
+#include "CovenantOffer.h"
 
 // WeaponsArmorSort prompt: defined further down (before redirectSetTexture), used earlier by Present and releaseResources
 namespace sortPrompt {
@@ -1253,6 +1254,7 @@ void RSManager::releaseResources() {
 	SDLOG(0, "RenderstateManager releasing resources\n");
 	titleMarkRelease();
 	quickSaveRelease();
+	bonfireCovenantsRelease();
 	sortPrompt::release();
 	boxMarkers::release();
 	if (g_hudBufOwn) {
@@ -1439,6 +1441,8 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 	g_screenCovered = false;
 
 
+	// BonfireCovenants: the short fade after Yes (only while it runs)
+	bonfireCovenantsDraw(d3ddev);
 	// "DSfix 3.0" in the corner of the title screen (only while the title screen shows)
 	titleMarkDraw(d3ddev);
 	// quickSave: its key, the save in progress and its "Quick Saved" message

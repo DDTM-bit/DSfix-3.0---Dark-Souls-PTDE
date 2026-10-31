@@ -366,6 +366,9 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
         // covenantOfferings: offer several items, or several humanity, to a covenant at once
         if (Settings::get().getCovenantOfferings()) installCovenantOffer();
 
+        // BonfireCovenants: "Enter Covenant" at bonfires, to switch to a covenant you already joined
+        if (Settings::get().getBonfireCovenants()) installBonfireCovenants();
+
         // WeaponsArmorSort: sort the Weapons / Armor lists (Inventory, Equipment, Bottomless Box) by a row value
         if (Settings::get().getWeaponsArmorSort()) installWeaponsArmorSort();
 
