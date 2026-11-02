@@ -1890,8 +1890,8 @@ namespace kbIcons {
 	const float kKeyWidthRoom = 1.20f;
 	// WeaponsArmorSort: the cell (1024 space) of the menu keyboard copy where L ALT is painted for the sort prompt
 	const float kSortAltCell[4] = { 900.0f, 900.0f, 956.0f, 952.0f };
-	// keyboard copies (game / menus, quick menu / other windows) and controller copies (DDTMControllerMappings.ini [Bindings])
-	enum { V_A_GAME, V_A_MENU, V_B_TABS, V_B_ARROWS, V_A_PAD, V_B_PAD, V_COUNT };
+	// keyboard copies (game / menus, quick menu / other windows / game) and controller copies (DDTMControllerMappings.ini [Bindings])
+	enum { V_A_GAME, V_A_MENU, V_B_TABS, V_B_ARROWS, V_A_PAD, V_B_PAD, V_B_GAME, V_COUNT };
 
 	struct Image { std::vector<UINT32> px; int w = 0, h = 0; };
 	template<class T> inline T kmin(T a, T b) { return a < b ? a : b; }
@@ -1986,6 +1986,40 @@ namespace kbIcons {
 		t->Release();
 		SDLOG(0, "DDTMControllerMappings: KeyboardMouse.png: %d x %d (cells %d x %d)\n", g_atlas.w, g_atlas.h, g_atlas.w / 16, g_atlas.h / 16);
 		return !g_atlas.px.empty();
+	}
+
+	// Resources\QuickMenuTemplate.png (built into the DLL): the 512 x 256 layout of 43a2b23a with the button
+	// pictures removed and only the small "<" / ">" arrows left. The copies of 43a2b23a take the button areas from
+	// here (TPL_* below), so the arrows are always in the same place, whatever icon texture is loaded (custom
+	// textures may draw the buttons as text touching the arrows, or move the arrows). The item pictures stay those
+	// of the loaded texture. Without the template the copies are made as before (clearKeepArrow).
+	Image g_tpl;
+	bool g_tplTried = false;
+	// the two button areas in the 512 x 256 layout: "LB <" / "> RB" and "LT <" / "> RT"
+	const int TPL_LBRB[4] = { 218, 124, 296, 189 }, TPL_LTRT[4] = { 218, 189, 296, 256 };
+
+	bool loadTemplate(IDirect3DDevice9* dev) {
+		if (g_tplTried) return !g_tpl.px.empty();
+		g_tplTried = true;
+		HRSRC r = FindResource(g_hModule, MAKEINTRESOURCE(IDR_TEX_QUICKMENUTEMPLATE), RT_RCDATA);
+		HGLOBAL hg = r ? LoadResource(g_hModule, r) : NULL;
+		const void* data = hg ? LockResource(hg) : NULL;
+		const DWORD size = r ? SizeofResource(g_hModule, r) : 0;
+		if (!data || !size) { SDLOG(0, "DDTMControllerMappings: QuickMenuTemplate.png is missing from the DLL\n"); return false; }
+		IDirect3DTexture9* t = NULL;
+		if (FAILED(TrueD3DXCreateTextureFromFileInMemoryEx(dev, data, size, D3DX_DEFAULT_NONPOW2, D3DX_DEFAULT_NONPOW2, 1, 0, D3DFMT_A8R8G8B8,
+			D3DPOOL_SCRATCH, D3DX_FILTER_NONE, D3DX_FILTER_NONE, 0, NULL, NULL, &t)) || !t) { SDLOG(0, "DDTMControllerMappings: QuickMenuTemplate.png could not be read\n"); return false; }
+		D3DSURFACE_DESC d;
+		D3DLOCKED_RECT lr;
+		if (SUCCEEDED(t->GetLevelDesc(0, &d)) && d.Width >= 64 && d.Height >= 32 && SUCCEEDED(t->LockRect(0, &lr, NULL, D3DLOCK_READONLY))) {
+			g_tpl.w = d.Width; g_tpl.h = d.Height;
+			g_tpl.px.resize((size_t)d.Width * d.Height);
+			for (UINT y = 0; y < d.Height; ++y) memcpy(&g_tpl.px[(size_t)y * d.Width], (BYTE*)lr.pBits + (size_t)y * lr.Pitch, d.Width * 4);
+			t->UnlockRect(0);
+		}
+		t->Release();
+		SDLOG(0, "DDTMControllerMappings: QuickMenuTemplate.png: %d x %d\n", g_tpl.w, g_tpl.h);
+		return !g_tpl.px.empty();
 	}
 
 	// level 0 of a texture as A8R8G8B8 pixels (D3DX converts any format, compressed ones included)
@@ -2128,6 +2162,39 @@ namespace kbIcons {
 		for (int y = 0; y < h; ++y)
 			for (int x = 0; x < w; ++x)
 				if (!keep[label[(size_t)y * w + x]]) im.px[(size_t)(y0 + y) * im.w + x0 + x] = 0;
+	}
+
+	// Replaces a rectangle (512 x 256 layout, r = x0 y0 x1 y1) of a copy of 43a2b23a with the same rectangle of the
+	// template (bilinear, premultiplied alpha, so it matches the rest of the copy at any size).
+	void pasteTemplate(Image& im, const int* r) {
+		if (g_tpl.px.empty()) return;
+		const float sx = im.w / 512.0f, sy = im.h / 256.0f;
+		const int X0 = kmax(0, (int)(r[0] * sx)), Y0 = kmax(0, (int)(r[1] * sy));
+		const int X1 = kmin(im.w, (int)(r[2] * sx + 0.5f)), Y1 = kmin(im.h, (int)(r[3] * sy + 0.5f));
+		const float kx = (float)g_tpl.w / im.w, ky = (float)g_tpl.h / im.h;
+		for (int y = Y0; y < Y1; ++y) {
+			const float fy = kmin((float)(g_tpl.h - 1), kmax(0.0f, (y + 0.5f) * ky - 0.5f));
+			const int ty0 = (int)fy, ty1 = kmin(ty0 + 1, g_tpl.h - 1);
+			const float wy = fy - ty0;
+			for (int x = X0; x < X1; ++x) {
+				const float fx = kmin((float)(g_tpl.w - 1), kmax(0.0f, (x + 0.5f) * kx - 0.5f));
+				const int tx0 = (int)fx, tx1 = kmin(tx0 + 1, g_tpl.w - 1);
+				const float wx = fx - tx0;
+				const UINT32 p[4] = { g_tpl.px[(size_t)ty0 * g_tpl.w + tx0], g_tpl.px[(size_t)ty0 * g_tpl.w + tx1],
+					g_tpl.px[(size_t)ty1 * g_tpl.w + tx0], g_tpl.px[(size_t)ty1 * g_tpl.w + tx1] };
+				const float w[4] = { (1 - wx) * (1 - wy), wx * (1 - wy), (1 - wx) * wy, wx * wy };
+				float a = 0, rr = 0, g = 0, b = 0;
+				for (int i = 0; i < 4; ++i) {
+					const float pa = (p[i] >> 24) / 255.0f * w[i];
+					a += pa; rr += pa * ((p[i] >> 16) & 255); g += pa * ((p[i] >> 8) & 255); b += pa * (p[i] & 255);
+				}
+				UINT32 o = 0;
+				if (a > 0.002f)
+					o = ((UINT32)(a * 255.0f + 0.5f) << 24) | ((UINT32)kmin(255.0f, rr / a + 0.5f) << 16) |
+						((UINT32)kmin(255.0f, g / a + 0.5f) << 8) | (UINT32)kmin(255.0f, b / a + 0.5f);
+				im.px[(size_t)y * im.w + x] = o;
+			}
+		}
 	}
 
 	// bounding box of the visible pixels inside a rectangle; false if it is empty
@@ -2276,8 +2343,18 @@ namespace kbIcons {
 		else {
 			// small quick menu "LB <" / "> RB" (im is 43a2b23a at twice its size): the button is replaced, the arrow stays
 			const float sx = im.w / 512.0f, sy = im.h / 256.0f;
+			// with the template: its "LB <" / "> RB" area (arrows only), then both buttons from 40fbc4ad
+			// (the remapped one shows the real button, the other one its own picture)
+			const bool tpl = !g_tpl.px.empty();
+			if (tpl) pasteTemplate(im, TPL_LBRB);
 			for (int k = 0; k < 2; ++k) {
 				const int i = k == 0 ? 4 : 5;
+				if (tpl) {
+					const int* f = PAD_RECT[padRemapped(s, i) ? s->pad[i] : i];
+					copyFit(im, srcA, (int)(f[0] * ax), (int)(f[1] * ay), (int)(f[2] * ax + 0.5f), (int)(f[3] * ay + 0.5f),
+						(k == 0 ? 247 : 259) * sx, (k == 0 ? 141 : 170) * sy, 44 * sx, 28 * sy, true);
+					continue;
+				}
 				if (!padRemapped(s, i)) continue;
 				const int* f = PAD_RECT[s->pad[i]];
 				if (k == 0) clearKeepArrow(im, (int)(222 * sx), (int)(125 * sy), (int)(288 * sx + 0.5f), (int)(156 * sy + 0.5f), (int)(268 * sx), (int)(288 * sx + 0.5f));
@@ -2289,7 +2366,8 @@ namespace kbIcons {
 	}
 
 	// Paints one keyboard copy. Positions are those of the 1024 x 1024 / 512 x 256 originals (scaled for others).
-	void paintVariant(Image& im, int v, const INT32* cell) {
+	// srcA: the original pixels of 40fbc4ad, or NULL (only used for a tab button without a single key)
+	void paintVariant(Image& im, int v, const INT32* cell, const Image* srcA) {
 		if (v == V_A_GAME || v == V_A_MENU) {
 			const float sx = im.w / 1024.0f, sy = im.h / 1024.0f;
 			// first row: Y X B A, D-pad, VIEW, RB RT LB LT, R L, (C), D-pad <>, D-pad ^v, MENU, R 4-way, L 4-way.
@@ -2333,6 +2411,31 @@ namespace kbIcons {
 			const int right = v == V_B_TABS ? cell[SLOT_MENU_RIGHT] : CELL_RIGHT;
 			const float s = kmin(sx, sy);
 			const int is = (int)(28 * s + 0.5f);
+			if (!g_tpl.px.empty()) {
+				// with the template: the button areas come from it (arrows only), the keys go where the buttons were
+				if (left >= 0 || right >= 0) {
+					pasteTemplate(im, TPL_LBRB);
+					for (int k = 0; k < 2; ++k) {
+						const int c = k == 0 ? left : right;
+						const float cx = (k == 0 ? 251 : 259) * sx, cy = (k == 0 ? 141 : 170) * sy;
+						if (c >= 0) paintCell(im, (int)(cx - is * 0.5f + 0.5f), (int)(cy - is * 0.5f + 0.5f), is, c);
+						else if (srcA && !srcA->px.empty()) {   // no single key: the controller button, as before
+							const float ax = srcA->w / 1024.0f, ay = srcA->h / 1024.0f;
+							const int* f = PAD_RECT[k == 0 ? 4 : 5];
+							copyFit(im, *srcA, (int)(f[0] * ax), (int)(f[1] * ay), (int)(f[2] * ax + 0.5f), (int)(f[3] * ay + 0.5f), cx, cy, 44 * sx, 28 * sy, true);
+						}
+					}
+				}
+				// quick menu and game (bow aim): "LT <" / "> RT" both show the right mouse button (narrower than a key:
+				// placed with the same gap to its arrow as the keys above)
+				if (v == V_B_TABS || v == V_B_GAME) {
+					pasteTemplate(im, TPL_LTRT);
+					paintCell(im, (int)(253 * sx - is * 0.5f + 0.5f), (int)(208 * sy - is * 0.5f + 0.5f), is, CELL_MOUSE_RIGHT);
+					paintCell(im, (int)(255 * sx - is * 0.5f + 0.5f), (int)(237 * sy - is * 0.5f + 0.5f), is, CELL_MOUSE_RIGHT);
+				}
+				return;
+			}
+			// without the template (as before)
 			// small "LB <": the button is replaced, the light arrow on its right stays
 			if (left >= 0) {
 				clearKeepArrow(im, (int)(222 * sx), (int)(125 * sy), (int)(288 * sx + 0.5f), (int)(156 * sy + 0.5f), (int)(268 * sx), (int)(288 * sx + 0.5f));
@@ -2354,6 +2457,13 @@ namespace kbIcons {
 		if (g_src[which].px.empty() && !readPixels(dev, orig, g_src[which])) { SDLOG(0, "DDTMControllerMappings: could not read the pixels of prompt texture %c\n", 'A' + which); return NULL; }
 		// the controller copy of 43a2b23a takes its button pictures from 40fbc4ad
 		if (v == V_B_PAD && (!g_orig[0] || (g_src[0].px.empty() && !readPixels(dev, g_orig[0], g_src[0])))) return NULL;
+		// the copies of 43a2b23a take their button areas from QuickMenuTemplate.png (see loadTemplate)
+		if (which == 1) {
+			loadTemplate(dev);
+			// keyboard: a tab button without a single key shows the controller button from 40fbc4ad
+			if (!pad && v == V_B_TABS && (g_shared->cell[SLOT_MENU_LEFT] < 0 || g_shared->cell[SLOT_MENU_RIGHT] < 0) && g_orig[0] && g_src[0].px.empty())
+				readPixels(dev, g_orig[0], g_src[0]);
+		}
 		// 43a2b23a is small (512 x 256) and the game shows it a little bigger than its pixels, so its keyboard copies
 		// are made at twice the size (the game picks pixels by position, so a bigger texture shows the same), and
 		// the key icons stay sharp.
@@ -2370,7 +2480,7 @@ namespace kbIcons {
 		else {
 			INT32 cells[16];
 			for (int i = 0; i < 16; ++i) cells[i] = g_shared->cell[i];
-			paintVariant(im, v, cells);
+			paintVariant(im, v, cells, g_src[0].px.empty() ? NULL : &g_src[0]);
 		}
 
 		IDirect3DTexture9* tex = NULL;
@@ -2404,9 +2514,9 @@ namespace kbIcons {
 	// Release the copies of a texture that was loaded again (render thread, inside g_cs). The controller copy of
 	// 43a2b23a also uses the pictures of 40fbc4ad, so it goes with either.
 	void dropCopies(int which) {
-		static const int A[] = { V_A_GAME, V_A_MENU, V_A_PAD, V_B_PAD }, B[] = { V_B_TABS, V_B_ARROWS, V_B_PAD };
+		static const int A[] = { V_A_GAME, V_A_MENU, V_A_PAD, V_B_PAD }, B[] = { V_B_TABS, V_B_ARROWS, V_B_PAD, V_B_GAME };
 		const int* list = which == 0 ? A : B;
-		const int n = which == 0 ? 4 : 3;
+		const int n = 4;
 		for (int k = 0; k < n; ++k) { const int v = list[k]; if (g_var[v]) { g_var[v]->Release(); g_var[v] = NULL; } g_varFailed[v] = false; }
 		std::vector<UINT32>().swap(g_src[which].px);
 		g_dirty[which] = false;
@@ -2439,7 +2549,7 @@ namespace kbIcons {
 		Shared* s = shared();
 		int v = -1;
 		if (s && s->ready) {
-			if (s->kbmActive) v = which == 0 ? (s->phase == 0 ? V_A_GAME : V_A_MENU) : (s->phase == 2 ? V_B_TABS : V_B_ARROWS);
+			if (s->kbmActive) v = which == 0 ? (s->phase == 0 ? V_A_GAME : V_A_MENU) : (s->phase == 2 ? V_B_TABS : (s->phase == 0 ? V_B_GAME : V_B_ARROWS));
 			else if (which == 0) { for (int i = 0; i < 8 && v < 0; ++i) if (padRemapped(s, i)) v = V_A_PAD; }
 			else if (padRemapped(s, 4) || padRemapped(s, 5)) v = V_B_PAD;
 		}
