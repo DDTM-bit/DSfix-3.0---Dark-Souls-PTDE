@@ -1793,7 +1793,6 @@ HRESULT RSManager::redirectSetRenderTarget(DWORD RenderTargetIndex, IDirect3DSur
 			if (isHudTargetSize(desc)) {
 				// HUD stuff
 				if (hud && doHud && rddp == 9 && !g_hudWindowSeen) {
-					SDLOG(0, "Starting HUD rendering\n");
 					hddp = 0;
 					onHudRT = true;
 					g_hudScalePhase = true;
