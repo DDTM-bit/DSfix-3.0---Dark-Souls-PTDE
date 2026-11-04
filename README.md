@@ -75,7 +75,7 @@ To ensure maximum stability on modern machines, configure your environment using
 	- **Soul Counter:** The souls counter no longer rolls up too fast at high FPS.
   - **Engine Stability**
     - **VRR / G-Sync Stutter Fix:** Bypasses the engine's hardcoded "Present" catch-up loop, eliminating erratic refresh-rate bouncing and micro-stutters on variable-refresh-rate monitors.
-
+  - **Swamp Poison Build-up (Blighttown):** Above 30 FPS, the poison bar filled up to a third faster while standing in the Blighttown swamp. The swamp adds its poison in steps that the game counts in whole frames, so at high frame rates the steps came more often. DSfix now keeps each step at 0.1 s, as at 30 FPS. The poison damage, the bar going down outside the swamp, and lava are unchanged (they were already correct).
 * **Native 16:10 & Steam Deck Aspect Ratio Support:** Dark Souls PTDE natively forces 16:9 letterboxing (black bars) on taller displays, such as 16:10 monitors or the Steam Deck's 1280x800 screen. This fix automatically detects displays taller than 16:9 and removes the black bars by seamlessly expanding the vertical camera field-of-view (Vert+). The game now perfectly fills the entire screen without any image stretching or horizontal squashing. Standard 16:9 displays are left completely untouched.
 
 * **Keyboard + Mouse + Controller in the same time** - DDTMControllerFix.dll icon switch: Advanced mapping and support for controllers and Keyboard + Mouse. Play with the controller together with keyboard + mouse. Smooth 1:1 mouse camera, custom cursor, and key bindings (combos of two keys) in the `[Keyboard]` / `[Mouse]` sections of `DDTMControllerMappings.ini`. The game's own keyboard settings are not used.

@@ -141,6 +141,8 @@ void _stdcall updateFramerate(unsigned int cmd) {
 		// Foot placement and root motion use the same step; each does nothing unless it was installed (FPS limit above 30).
 		updateFootPlacementFix(writtenStep);
 		updateRootMotionFix(writtenStep);
+		// Blighttown swamp poison: does nothing unless it was installed (FPS limit above 30).
+		updateSwampPoisonFix(writtenStep);
 	}
 }
 
@@ -247,6 +249,9 @@ void applyFPSPatch() {
 	else SDLOG(0, "SoulCounterFix: FPS limit is 30, nothing patched\n");
 	installLadderSnapFix();
 	installStaminaFix();
+	// Blighttown swamp poison builds up at the 30 FPS speed: always on above 30 FPS (no setting).
+	if (Settings::get().getCurrentFPSLimit() > 30) installSwampPoisonFix();
+	else SDLOG(0, "SwampPoisonFix: FPS limit is 30, nothing changed\n");
 	installCameraFix();
 	installTurnFix();
 	installSfxFix();
