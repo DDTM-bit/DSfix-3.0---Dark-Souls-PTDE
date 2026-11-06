@@ -143,14 +143,18 @@ namespace {
     }
 }
 
-bool installUIFix() {
+bool installUIFix(bool loadingSwirl) {
     DWORD oldProtect;
     bool swirlOk = false, gaugeOk = false;
 
-    // 1. Patch Loading Swirl (0x00C383FD): exact `mov eax, 1`
+    // 1. Patch Loading Swirl (0x00C383FD): exact `mov eax, 1`. Only above 30 FPS: at 30 the game's one step per draw
+    //    is already right, and the own clock would give 0 or 2 steps now and then because of the frame time jitter.
     const DWORD kSwirlSite = 0x00C383FD;
     static const BYTE kSwirlExpect[5] = { 0xB8, 0x01, 0x00, 0x00, 0x00 };
-    if (memcmp((const void*)kSwirlSite, kSwirlExpect, sizeof(kSwirlExpect)) == 0) {
+    if (!loadingSwirl) {
+        // not needed: the game's own swirl
+    }
+    else if (memcmp((const void*)kSwirlSite, kSwirlExpect, sizeof(kSwirlExpect)) == 0) {
         if (VirtualProtect((LPVOID)kSwirlSite, 5, PAGE_EXECUTE_READWRITE, &oldProtect)) {
             *(BYTE*)kSwirlSite = 0xE8; // call
             *(DWORD*)(kSwirlSite + 1) = (DWORD)swirl_stub - (kSwirlSite + 5);
@@ -185,8 +189,9 @@ bool installUIFix() {
     }
     else SDLOG(0, "UIFix: gauge follower at 0x%08X does not match this build, gauge not patched.\n", kGaugeFollow);
 
-    SDLOG(0, "UIFix: loading swirl %s, HUD gauge follower %s.\n", swirlOk ? "patched" : "SKIPPED", gaugeOk ? "patched" : "SKIPPED");
-    return swirlOk && gaugeOk;
+    SDLOG(0, "UIFix: loading swirl %s, HUD gauge follower %s.\n",
+        !loadingSwirl ? "not needed (FPS limit is 30)" : swirlOk ? "patched" : "SKIPPED", gaugeOk ? "patched" : "SKIPPED");
+    return (swirlOk || !loadingSwirl) && gaugeOk;
 }
 
 

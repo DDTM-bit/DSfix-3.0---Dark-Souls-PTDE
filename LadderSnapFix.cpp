@@ -121,6 +121,14 @@ extern "C" float __cdecl snap_factor(const void* body, float proxy_y, float star
         float factor = dt * 30.0f;
         if (factor > 1.0f) factor = 1.0f;
 
+        // A 30 FPS step (or longer) at the start of an episode: the game's own snap, not counted, so frames at 30 FPS
+        // (toggle30FPSLimit) behave exactly as in the game. Once a high-frame-rate frame has snapped, the cap applies.
+        if (factor >= 1.0f && slot->applied <= 0.0f) {
+            const float b4v = *(const float*)((const uint8_t*)body + 0xB4);
+            ground_reach_step(body, dt, proxy_y, start_y, b4v);
+            return 1.0f;
+        }
+
         const float kCap = 0.3f;
         const float kStep = 0.3f;
         const float remaining = kCap - slot->applied;

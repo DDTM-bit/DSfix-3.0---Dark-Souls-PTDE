@@ -247,16 +247,21 @@ void applyFPSPatch() {
 	// Soul counter rolls up at the 30 FPS speed: always on above 30 FPS (no setting).
 	if (Settings::get().getCurrentFPSLimit() > 30) installSoulCounterFix();
 	else SDLOG(0, "SoulCounterFix: FPS limit is 30, nothing patched\n");
-	installLadderSnapFix();
+	// Ladder and ledge snap: only needed above 30 FPS (at 30 the game applies its snap once per frame, as intended).
+	if (Settings::get().getCurrentFPSLimit() > 30) installLadderSnapFix();
+	else SDLOG(0, "LadderSnapFix: FPS limit is 30, nothing patched\n");
 	installStaminaFix();
 	// Blighttown swamp poison builds up at the 30 FPS speed: always on above 30 FPS (no setting).
 	if (Settings::get().getCurrentFPSLimit() > 30) installSwampPoisonFix();
 	else SDLOG(0, "SwampPoisonFix: FPS limit is 30, nothing changed\n");
 	installCameraFix();
 	installTurnFix();
-	installSfxFix();
+	// Effect spawn intervals: only needed above 30 FPS (at 30 a frame is already 1/30 s long).
+	if (Settings::get().getCurrentFPSLimit() > 30) installSfxFix();
+	else SDLOG(0, "SfxFix: FPS limit is 30, nothing patched\n");
 	installGhostFix();
-	installUIFix();
+	// HUD gauges always; the loading screen swirl only above 30 FPS (at 30 the game's one step per frame is right).
+	installUIFix(Settings::get().getCurrentFPSLimit() > 30);
 	installAspectFix();
 	installScriptFix();
 	
