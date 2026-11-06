@@ -25,6 +25,7 @@
 #include "BulkItemUse.h"
 #include "CovenantOffer.h"
 #include "QuickSave.h"
+#include "CameraFix.h"
 #include <cstdint>
 #include <mutex>
 #include "RenderstateManager.h"
@@ -377,6 +378,9 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
 
         // QuickSelectEstus: hold D-pad Down during play to select the Estus Flask
         if (Settings::get().getQuickSelectEstus()) installQuickSelectEstus();
+
+        // cameraDistance: the free camera closer or farther (1.0 = vanilla: nothing patched)
+        installCameraDistance();
 
         // quickSave: a key saves the current character and copies it to QuickSave\QS_DRAKS0005
         if (Settings::get().getQuickSave()) quickSaveInit();

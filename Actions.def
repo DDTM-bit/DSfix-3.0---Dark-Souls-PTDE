@@ -25,6 +25,10 @@ ACTION(toggleHUDChanges, RSManager::get().toggleChangeHud())
 
 ACTION(toggle30FPSLimit, Settings::get().toggle30FPSLimit())
 
+// Camera Actions
+
+ACTION(toggleCameraDistance, ::toggleCameraDistance()) // cameraDistance <-> vanilla distance
+
 // Development Actions
 
 ACTION(reloadVSSAOEffect, RSManager::get().reloadVssao())

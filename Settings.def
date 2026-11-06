@@ -126,6 +126,13 @@ SETTING(bool, QuickSelectEstus, "QuickSelectEstus", false)
 // in this playthrough, with the leaders' own Yes/No question and their vanilla result (the devotion of the covenant you
 // leave is halved). Broken covenants (leader dead or hostile, banished, ...) are not offered. 0 = off (nothing is patched)
 SETTING(bool, BonfireCovenants, "BonfireCovenants", false)
+// cameraDistance: the camera's distance from your character while playing, as a multiplier of the game's own distance.
+// 1.0 = vanilla (nothing is patched), below 1.0 closer, above 1.0 farther (0.5 to 2.0). The toggleCameraDistance key
+// (DSfixKeys.ini) switches between this value and vanilla.
+SETTING(float, CameraDistance, "cameraDistance", 1.0f)
+// cameraDistanceLockOn: 0 = the lock-on camera keeps the vanilla distance (it moves in when you lock on and back out
+// when you let go), 1 = the lock-on camera uses cameraDistance too. Nothing happens with cameraDistance 1.0
+SETTING(bool, CameraDistanceLockOn, "cameraDistanceLockOn", false)
 // bulkItemUse: the master switch for using several of the same item at once. With it off nothing below it happens
 // and not one byte of the game is changed. With it on, using a listed item in the pause Inventory menu asks how many
 // to use and uses them all with a single animation. The quick-item button during play always behaves as before, and

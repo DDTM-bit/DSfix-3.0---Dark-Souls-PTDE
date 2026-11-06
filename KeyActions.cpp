@@ -11,6 +11,7 @@ using namespace std;
 #include "WindowManager.h"
 #include "Settings.h"
 #include "RenderstateManager.h"
+#include "CameraFix.h"
 
 void requestHudDump(); // defined in RenderstateManager.cpp
 void toggleSharpenPass(); // defined in RenderstateManager.cpp
