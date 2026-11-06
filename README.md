@@ -65,7 +65,7 @@ To ensure maximum stability on modern machines, configure your environment using
     - **Camera Smoothing & Panning:** Makes all 16 camera blend weights framerate-independent. Switching lock-on targets smoothly pans the camera instead of instantly snapping, and the mouse/stick "look-at boost" fades out correctly in real-time.
     - **Smooth Cutscenes at High-FPS:** Tested at max 144fps. The cutscene camera no longer jerks.
   - **Multiplayer & Phantoms**
-    - **Flawless Ghost Replays:** Implements a fixed-point translation scaler so bloodstains, wandering ghosts, and network phantoms move at the exact correct speed. Perfectly syncs their walking/running animations to the game's internal 10-frame update clock, completely eliminating phantom skipping, skating, and fast-forwarding.
+    - **Flawless Ghost Replays:** bloodstains, wandering ghosts and online phantoms move, turn and play back at the correct speed at high FPS, instead of fast-forwarding. Other players now show the right walk, run or sprint animation instead of walking while they run.
   - **Visuals, Audio & UI**
     - **Particle Effect Spawning:** Clamps engine emitter intervals to 1/30s as they load into memory, preventing sparks, bonfire smoke, and magic effects from becoming blindingly dense and opaque at 120 FPS.
     - **Ragdolls & 3D Audio:** Normalizes frame-velocity multipliers so ragdolls maintain proper physical weight upon death, and moving sound sources (FMOD Doppler effect) do not drop in pitch.

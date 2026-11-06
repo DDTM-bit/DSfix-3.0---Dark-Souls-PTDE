@@ -288,6 +288,7 @@ namespace wasort {
 
     // Parameter rows
     const DWORD kWepWeight = 0x0C, kWepDurability = 0xBC, kWepAttack = 0xC4;      // attack: 4 x u16 (P M F L)
+    const DWORD kWepCategory = 0xE2;                                              // byte: 13 / 14 = arrows / bolts
     const DWORD kProWeight = 0x20, kProDurability = 0xAA, kProDefense = 0xB2;     // defense: 4 x u16 (P M F L)
 
     // Inventory (player data + 0x1B8): +0x110 slots, +0x118 split, +0x120 / +0x124 the two blocks, 28 bytes a slot:
@@ -302,11 +303,14 @@ namespace wasort {
     //  3. list takes input:   fld dword ptr [esp+8] / push ecx              (only reached while the list has focus)
     //  4. keyboard read:      cmp eax,0x8007001E                            (right after the game reads the keys)
     //  5. XInput:             jmp dword ptr [XInputGetState]                (every pad read of the game goes here)
+    //  6. Change Order:       call 0xC089A0                                 (Inventory: the move of "Change order")
     const BYTE kExpRefresh[9] = { 0x80,0xBE,0x45,0x01,0x00,0x00,0x01, 0x75,0x2A };
     const BYTE kExpCollect[9] = { 0xC6,0x86,0x45,0x01,0x00,0x00,0x00, 0xFF,0xD0 };
     const BYTE kExpTick[5] = { 0xD9,0x44,0x24,0x08, 0x51 };
     const BYTE kExpKeyboard[5] = { 0x3D,0x1E,0x00,0x07,0x80 };
     const BYTE kExpXInput[6] = { 0xFF,0x25,0xE8,0xC3,0x0C,0x01 };
+    const BYTE kExpChangeOrder[5] = { 0xE8,0x9B,0x0C,0xFA,0xFF };   // at 0x00C67D00: call 0x00C089A0
+    DWORD g_moveFn = 0x00C089A0;       // the game's move: shifts the order numbers between two rows of the list
     DWORD g_refreshCont = 0x00CA098E;  // after the compare: needs collecting
     DWORD g_refreshSkip = 0x00CA09B8;  // where the original jne went
     DWORD g_collectCont = 0x00CA09B8;
@@ -788,6 +792,7 @@ namespace wasort {
         const DWORD rates = look[4];
         int maxDurability = 0;
         float weight = 0.0f;
+        bool stackable = false;   // arrows and bolts (weapon category 13 / 14), as the game's test at 0xEA70E0
         __try {
             for (int k = 0; k < 4; ++k) {
                 const DWORD base = row ? *(const WORD*)(row + (wantKind == 1 ? kWepAttack : kProDefense) + 2 * k) : 0;
@@ -800,6 +805,10 @@ namespace wasort {
             if (row) {
                 weight = *(const float*)(row + (wantKind == 1 ? kWepWeight : kProWeight));
                 maxDurability = *(const WORD*)(row + (wantKind == 1 ? kWepDurability : kProDurability));
+                if (wantKind == 1) {
+                    const BYTE category = *(const BYTE*)(row + kWepCategory);
+                    stackable = category == 13 || category == 14;
+                }
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
@@ -808,7 +817,12 @@ namespace wasort {
         it->durability = durability >= 0 ? durability : maxDurability;
         it->weight10 = (int)floor((double)weight * 10.0 + 0.5);
         it->upgrade = (int)(id % 100);
-        it->storage = !wantStorage ? 0 : (boxOnly ? (int)(raw[2] & 0xFFFF) : boxCount(player, kind, id));
+        // Storage as the box screen prints it (0xC612E0): a box row shows its own count; a held row shows the box's count
+        // only for stackable items. A held weapon or armor piece is its own row with Storage 0, even when a copy with the
+        // same id is in the box.
+        if (!wantStorage) it->storage = 0;
+        else if (boxOnly) it->storage = (int)(raw[2] & 0xFFFF);
+        else it->storage = stackable ? boxCount(player, kind, id) : 0;
         it->name = row ? gameName(wantKind == 1 ? kFnWeaponName : kFnArmorName, look) : L"";
         return true;
     }
@@ -993,13 +1007,49 @@ namespace wasort {
         }
     }
 
-    struct Site { const char* name; DWORD address; DWORD length; const BYTE* expected; const void* target; };
+    // ---------------------------------------------------------------------------------------------------------------
+    // Change Order (hook 6). The Inventory's "Change order" (0xC6A5BC -> 0xC67CE0) calls the game's move with the two
+    // positions as shown in the list; the move gives the shifted rows each other's order numbers (inventory slot +0xC)
+    // and the list is rebuilt in that order. That is only right while the list shows the game's order (DESC, or ASC
+    // which is the same order reversed). Sorted by a value, the rows between the two positions are not neighbours in
+    // the game's order: nothing seemed to move and the hidden order got mixed up. So the move is skipped then.
+    // ---------------------------------------------------------------------------------------------------------------
+    volatile bool g_changeOrderAllowed = true;
 
-    bool writeJump(DWORD address, DWORD length, const void* target) {
+    void __stdcall changeOrderCheck(DWORD list) {
+        bool allow = true;
+        if (windowOf(list) == W_INVENTORY) {
+            const int kind = cachedKind(list);
+            if (kind) allow = (shownChoice(kind, W_INVENTORY) == 0);
+        }
+        g_changeOrderAllowed = allow;
+    }
+
+    // Replaces the call to the move: eax = inventory, ecx = target position, esi = the list; on the stack the entries,
+    // the order and the source position (the move removes them: ret 12).
+    __declspec(naked) void changeorder_stub() {
+        __asm {
+            pushad
+            pushfd
+            push esi                            // the list
+            call changeOrderCheck
+            popfd
+            popad
+            cmp byte ptr[g_changeOrderAllowed], 0
+            je skip
+            jmp dword ptr[g_moveFn]             // the game's move, with the same arguments and return address
+        skip:
+            ret 12                              // as the move would: its three arguments removed
+        }
+    }
+
+    struct Site { const char* name; DWORD address; DWORD length; const BYTE* expected; const void* target; BYTE opcode; };
+
+    bool writeJump(DWORD address, DWORD length, const void* target, BYTE opcode = 0xE9) {
         DWORD oldProtect;
         if (!VirtualProtect((LPVOID)address, length, PAGE_EXECUTE_READWRITE, &oldProtect)) return false;
         BYTE* p = (BYTE*)address;
-        p[0] = 0xE9;
+        p[0] = opcode;                          // 0xE9 jmp, 0xE8 call
         *(DWORD*)(p + 1) = (DWORD)target - (address + 5);
         for (DWORD i = 5; i < length; ++i) p[i] = 0x90;
         VirtualProtect((LPVOID)address, length, oldProtect, &oldProtect);
@@ -1013,14 +1063,16 @@ bool installWeaponsArmorSort() {
     if (g_installed) return true;
     if (!Settings::get().getWeaponsArmorSort()) return false;
 
-    const Site sites[5] = {
-        { "rebuild start",  0x00CA0985, 9, kExpRefresh,  (const void*)&refresh_stub },
-        { "collect step",   0x00CA09AF, 9, kExpCollect,  (const void*)&collect_stub },
-        { "list input",     0x00C8AFAA, 5, kExpTick,     (const void*)&tick_stub },
-        { "keyboard read",  0x006447C8, 5, kExpKeyboard, (const void*)&keyboard_stub },
-        { "XInput",         0x00ABA542, 6, kExpXInput,   (const void*)&sortXInputGetState },
+    const int kSites = 6;
+    const Site sites[kSites] = {
+        { "rebuild start",  0x00CA0985, 9, kExpRefresh,     (const void*)&refresh_stub,       0xE9 },
+        { "collect step",   0x00CA09AF, 9, kExpCollect,     (const void*)&collect_stub,       0xE9 },
+        { "list input",     0x00C8AFAA, 5, kExpTick,        (const void*)&tick_stub,          0xE9 },
+        { "keyboard read",  0x006447C8, 5, kExpKeyboard,    (const void*)&keyboard_stub,      0xE9 },
+        { "XInput",         0x00ABA542, 6, kExpXInput,      (const void*)&sortXInputGetState, 0xE9 },
+        { "change order",   0x00C67D00, 5, kExpChangeOrder, (const void*)&changeorder_stub,   0xE8 },
     };
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < kSites; ++i) {
         if (i == 0 && g_refreshPatched) continue;   // already put there by BottomlessBoxMarkers
         if (i == 4 && g_xinputPatched) continue;    // already put there by QuickSelectEstus
         if (memcmp((const void*)sites[i].address, sites[i].expected, sites[i].length) != 0) {
@@ -1029,10 +1081,10 @@ bool installWeaponsArmorSort() {
             return false;
         }
     }
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < kSites; ++i) {
         if (i == 0 && g_refreshPatched) continue;
         if (i == 4 && g_xinputPatched) continue;
-        if (!writeJump(sites[i].address, sites[i].length, sites[i].target)) {
+        if (!writeJump(sites[i].address, sites[i].length, sites[i].target, sites[i].opcode)) {
             SDLOG(0, "WeaponsArmorSort: could not write at 0x%08X, sorting stays off\n", sites[i].address);
             return false;
         }
