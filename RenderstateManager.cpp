@@ -38,6 +38,11 @@ namespace boxMarkers {
 	void newFrame();
 	void release();
 }
+// Menu cursor drawn by DSfix (defined right after kbIcons)
+namespace swCursor {
+	void draw(IDirect3DDevice9* dev);
+	void release();
+}
 #include "Effect.h"
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
@@ -1255,6 +1260,7 @@ void RSManager::releaseResources() {
 	titleMarkRelease();
 	quickSaveRelease();
 	bonfireCovenantsRelease();
+	swCursor::release();
 	sortPrompt::release();
 	boxMarkers::release();
 	if (g_hudBufOwn) {
@@ -1447,6 +1453,8 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 	titleMarkDraw(d3ddev);
 	// quickSave: its key, the save in progress and its "Quick Saved" message
 	quickSaveFrame(d3ddev);
+	// the menu cursor of DDTMControllerFix.dll (version 3), drawn last so it is on top of everything
+	swCursor::draw(d3ddev);
 
 	// Pace the frame BEFORE submitting to the D3D presentation queue
 	frameTimeManagement();
@@ -1872,6 +1880,9 @@ namespace kbIcons {
 		INT32 cell[16];            // KeyboardMouse.png cell of each prompt below, -1 = no single key (the controller icon stays)
 		INT32 pad[8];              // version 2+: for game buttons A B X Y LB RB LT RT, the real button that triggers it
 		                           // (same order: 0 A/south 1 B/east 2 X/west 3 Y/north 4 LB 5 RB 6 LT 7 RT), -1 = other / none
+		volatile INT32 cursorVisible;    // version 3+: 1 = DDTM's mouse cursor should show now (menus)
+		volatile UINT32 hostCursorTick;  // version 3+: written by DSfix, GetTickCount() of its last frame that can draw the
+		                                 // cursor (never 0); while it is fresh DDTM hides the Windows cursor
 	};
 	enum { SLOT_TWO_HAND, SLOT_USE_ITEM, SLOT_DASH, SLOT_INTERACT, SLOT_GESTURES, SLOT_LOCK_ON, SLOT_MENU, SLOT_MENU_LEFT, SLOT_MENU_RIGHT,
 		SLOT_LIGHT_ATTACK, SLOT_HEAVY_ATTACK, SLOT_BLOCK, SLOT_PARRY };
@@ -2625,6 +2636,207 @@ namespace kbIcons {
 	// The controller mapping comes from DDTMControllerFix.dll: then swapConfirmIcons / swapXYIcons are not used
 	// (the controller copy already shows the right buttons; both together would swap twice)
 	bool padMappingFromDdtm() { return g_state == 1 && g_shared && g_shared->version >= 2 && g_shared->ready; }
+}
+
+// ---- Menu cursor drawn by DSfix ----
+// DDTMControllerFix.dll (shared block version 3) shows a mouse cursor in menus. Windows draws such a cursor on its own
+// hardware layer, which the graphics driver colours differently from the game picture (it looked brighter than the
+// picture, and its soft edges harder). So DSfix draws it here instead, as the last thing of each frame: exactly the
+// game's colours, smooth edges, and it shows in screenshots and recordings. DDTM keeps deciding when the cursor shows
+// (cursorVisible) and hides the Windows cursor while DSfix's heartbeat (hostCursorTick, written every frame) is fresh.
+// Without DDTM, or with a DDTM older than version 3, nothing here runs and nothing changes.
+// The picture is Resources\Cursor.png (built in, one square master, 64 x 64), shown at 64 x window height / 2160 (at
+// most its own size), the same size and click point as DDTM's Windows cursor. It is scaled down (area average,
+// premultiplied alpha) only when the window or back buffer size changes. Clicks are not touched: the game keeps reading
+// the real mouse position; only the picture is drawn here, with the finger tip on that position.
+namespace swCursor {
+	kbIcons::Image g_master;
+	bool g_masterTried = false;
+	int g_hotX = 0, g_hotY = 0;                       // click point in the master (top-left-most visible pixel)
+	IDirect3DTexture9* g_tex = NULL;                  // the cursor at its size on screen (premultiplied alpha)
+	IDirect3DStateBlock9* g_sb = NULL;
+	int g_forClientW = -1, g_forClientH = -1, g_forBbW = -1, g_forBbH = -1;
+	int g_texW = 0, g_texH = 0;
+	float g_hotBbX = 0.0f, g_hotBbY = 0.0f;           // click point in the texture, back buffer pixels
+	bool g_broken = false;                            // the picture could not be made: DDTM keeps its Windows cursor
+	bool g_loggedOn = false;
+
+	bool loadMaster(IDirect3DDevice9* dev) {
+		if (g_masterTried) return !g_master.px.empty();
+		g_masterTried = true;
+		HRSRC r = FindResource(g_hModule, MAKEINTRESOURCE(IDR_TEX_CURSOR), RT_RCDATA);
+		HGLOBAL hg = r ? LoadResource(g_hModule, r) : NULL;
+		const void* data = hg ? LockResource(hg) : NULL;
+		const DWORD size = r ? SizeofResource(g_hModule, r) : 0;
+		if (!data || !size) { SDLOG(0, "Cursor: Cursor.png is missing from the DLL, DDTM keeps its Windows cursor\n"); return false; }
+		IDirect3DTexture9* t = NULL;
+		if (FAILED(TrueD3DXCreateTextureFromFileInMemoryEx(dev, data, size, D3DX_DEFAULT_NONPOW2, D3DX_DEFAULT_NONPOW2, 1, 0, D3DFMT_A8R8G8B8,
+			D3DPOOL_SCRATCH, D3DX_FILTER_NONE, D3DX_FILTER_NONE, 0, NULL, NULL, &t)) || !t) {
+			SDLOG(0, "Cursor: Cursor.png could not be read, DDTM keeps its Windows cursor\n");
+			return false;
+		}
+		D3DSURFACE_DESC d;
+		D3DLOCKED_RECT lr;
+		if (SUCCEEDED(t->GetLevelDesc(0, &d)) && d.Width >= 8 && d.Height >= 8 && d.Width <= 512 && d.Height <= 512 &&
+			SUCCEEDED(t->LockRect(0, &lr, NULL, D3DLOCK_READONLY))) {
+			g_master.w = d.Width; g_master.h = d.Height;
+			g_master.px.resize((size_t)d.Width * d.Height);
+			for (UINT y = 0; y < d.Height; ++y) memcpy(&g_master.px[(size_t)y * d.Width], (BYTE*)lr.pBits + (size_t)y * lr.Pitch, d.Width * 4);
+			t->UnlockRect(0);
+		}
+		t->Release();
+		if (g_master.px.empty()) { SDLOG(0, "Cursor: Cursor.png has an unusable size, DDTM keeps its Windows cursor\n"); return false; }
+		// the click point: the top-left-most visible pixel (the finger tip), as DDTM finds it
+		int best = 0x7FFFFFFF;
+		for (int y = 0; y < g_master.h; ++y)
+			for (int x = 0; x < g_master.w; ++x)
+				if ((g_master.px[(size_t)y * g_master.w + x] >> 24) >= 128 && x + y < best) { best = x + y; g_hotX = x; g_hotY = y; }
+		return true;
+	}
+
+	void release() {
+		SAFERELEASE(g_tex);
+		SAFERELEASE(g_sb);
+		g_forClientW = g_forClientH = g_forBbW = g_forBbH = -1;
+	}
+
+	// The cursor's size for this window and back buffer (only called when one of them changed)
+	bool rebuild(IDirect3DDevice9* dev, int cw, int ch, int bbW, int bbH) {
+		SAFERELEASE(g_tex);
+		g_forClientW = cw; g_forClientH = ch; g_forBbW = bbW; g_forBbH = bbH;
+		const int big = kbIcons::kmax(g_master.w, g_master.h);
+		int size = (int)floor(64.0 * ch / 2160.0 + 0.5);      // the same formula as DDTM (KbmCursor.cs)
+		if (size > big) size = big;
+		if (size < 16) size = 16;
+		const int w = kbIcons::kmax(1, (int)floor((double)g_master.w * size / big + 0.5));
+		const int h = kbIcons::kmax(1, (int)floor((double)g_master.h * size / big + 0.5));
+		const int hx = kbIcons::kmin(w - 1, (int)floor((double)g_hotX * w / g_master.w + 0.5));
+		const int hy = kbIcons::kmin(h - 1, (int)floor((double)g_hotY * h / g_master.h + 0.5));
+		// in back buffer pixels (the back buffer is stretched to the window; normally both are the same size)
+		const double sx = (double)bbW / cw, sy = (double)bbH / ch;
+		g_texW = kbIcons::kmax(1, (int)floor(w * sx + 0.5));
+		g_texH = kbIcons::kmax(1, (int)floor(h * sy + 0.5));
+		g_hotBbX = (float)(hx * sx);
+		g_hotBbY = (float)(hy * sy);
+		const kbIcons::Image im = (g_texW == g_master.w && g_texH == g_master.h) ? g_master : kbIcons::resizeTo(g_master, g_texW, g_texH);
+		if (FAILED(dev->CreateTexture(g_texW, g_texH, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &g_tex, NULL)) || !g_tex) {
+			g_tex = NULL;
+			g_broken = true;
+			SDLOG(0, "Cursor: the cursor texture could not be made, DDTM keeps its Windows cursor\n");
+			return false;
+		}
+		D3DLOCKED_RECT lr;
+		if (FAILED(g_tex->LockRect(0, &lr, NULL, 0))) { SAFERELEASE(g_tex); g_broken = true; return false; }
+		for (int y = 0; y < g_texH; ++y) {
+			UINT32* row = (UINT32*)((BYTE*)lr.pBits + (size_t)y * lr.Pitch);
+			for (int x = 0; x < g_texW; ++x) {
+				const UINT32 p = im.px[(size_t)y * g_texW + x];
+				const UINT32 a = p >> 24;                   // premultiplied: drawn with ONE / INVSRCALPHA
+				const UINT32 r = (((p >> 16) & 255) * a + 127) / 255, g = (((p >> 8) & 255) * a + 127) / 255, b = ((p & 255) * a + 127) / 255;
+				row[x] = (a << 24) | (r << 16) | (g << 8) | b;
+			}
+		}
+		g_tex->UnlockRect(0);
+		SDLOG(0, "Cursor: window %d x %d: cursor %d px (%d x %d in the back buffer), click point %d,%d\n", cw, ch, size, g_texW, g_texH, hx, hy);
+		return true;
+	}
+
+	void draw(IDirect3DDevice9* dev) {
+		if (!dev || g_broken) return;
+		kbIcons::Shared* s = kbIcons::shared();
+		if (!s || s->version < 3) return;              // no DDTM, or an older one: its Windows cursor as before
+		if (!loadMaster(dev)) { g_broken = true; return; }
+		D3DDEVICE_CREATION_PARAMETERS cp;
+		HWND hwnd = SUCCEEDED(dev->GetCreationParameters(&cp)) ? cp.hFocusWindow : NULL;
+		RECT rc;
+		if (!hwnd || !::GetClientRect(hwnd, &rc) || rc.right <= 0 || rc.bottom <= 0) return;
+		IDirect3DSurface9* bb = NULL;
+		if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) return;
+		D3DSURFACE_DESC bd;
+		bb->GetDesc(&bd);
+		if (!g_tex || rc.right != g_forClientW || rc.bottom != g_forClientH || (int)bd.Width != g_forBbW || (int)bd.Height != g_forBbH) {
+			if (!rebuild(dev, rc.right, rc.bottom, bd.Width, bd.Height)) { bb->Release(); return; }
+		}
+		if (!g_loggedOn) {
+			g_loggedOn = true;
+			SDLOG(0, "Cursor: drawn by DSfix (DDTMControllerFix.dll shared block %d), Cursor.png %d x %d, click point %d,%d\n",
+				s->version, g_master.w, g_master.h, g_hotX, g_hotY);
+		}
+		const DWORD tick = GetTickCount();
+		s->hostCursorTick = tick ? tick : 1;              // heartbeat (never 0): DDTM hides its Windows cursor while this is fresh
+
+		POINT pt;
+		if (!s->cursorVisible || ::GetForegroundWindow() != hwnd || !::GetCursorPos(&pt) || !::ScreenToClient(hwnd, &pt) ||
+			pt.x < 0 || pt.y < 0 || pt.x >= rc.right || pt.y >= rc.bottom) {
+			bb->Release();
+			return;
+		}
+		if (!g_sb && FAILED(dev->CreateStateBlock(D3DSBT_ALL, &g_sb))) g_sb = NULL;
+		if (!g_sb) { bb->Release(); return; }
+
+		// top-left corner on a whole back buffer pixel, so the cursor is drawn 1:1 (point sampling)
+		const float x0 = floorf(pt.x * (float)bd.Width / rc.right - g_hotBbX + 0.5f) - 0.5f;
+		const float y0 = floorf(pt.y * (float)bd.Height / rc.bottom - g_hotBbY + 0.5f) - 0.5f;
+		struct V { float x, y, z, rhw, u, v; };
+		const V v[4] = {
+			{ x0, y0, 0.0f, 1.0f, 0.0f, 0.0f }, { x0 + g_texW, y0, 0.0f, 1.0f, 1.0f, 0.0f },
+			{ x0, y0 + g_texH, 0.0f, 1.0f, 0.0f, 1.0f }, { x0 + g_texW, y0 + g_texH, 0.0f, 1.0f, 1.0f, 1.0f } };
+
+		// everything the game set is put back afterwards: the state block (states, textures, shaders, viewport ...)
+		// and, by hand, the render target and the depth buffer
+		g_sb->Capture();
+		IDirect3DSurface9* oldRT = NULL;
+		IDirect3DSurface9* oldDS = NULL;
+		dev->GetRenderTarget(0, &oldRT);
+		dev->GetDepthStencilSurface(&oldDS);
+		dev->SetRenderTarget(0, bb);
+		dev->SetDepthStencilSurface(NULL);
+		D3DVIEWPORT9 vp = { 0, 0, bd.Width, bd.Height, 0.0f, 1.0f };
+		dev->SetViewport(&vp);
+		dev->SetVertexShader(NULL);
+		dev->SetPixelShader(NULL);
+		dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+		dev->SetRenderState(D3DRS_ZENABLE, FALSE);
+		dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+		dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+		dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+		dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+		dev->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
+		dev->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+		dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);
+		dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+		dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+		dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+		dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+		dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+		dev->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+		dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
+		dev->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
+		dev->SetTexture(0, g_tex);
+		dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+		dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+		dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+		dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+		dev->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+		dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+		dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+		dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+		dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+		dev->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+		dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+		dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+		dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+		dev->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
+		if (SUCCEEDED(dev->BeginScene())) {
+			dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(V));
+			dev->EndScene();
+		}
+		if (oldRT) { dev->SetRenderTarget(0, oldRT); oldRT->Release(); }
+		dev->SetDepthStencilSurface(oldDS);
+		if (oldDS) oldDS->Release();
+		g_sb->Apply();                                     // after the render target (setting it resets the viewport)
+		bb->Release();
+	}
 }
 
 // ---- WeaponsArmorSort prompt (the sorting itself is in GameParams.cpp) ----
