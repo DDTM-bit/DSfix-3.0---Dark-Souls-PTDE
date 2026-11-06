@@ -320,6 +320,8 @@ namespace wasort {
     bool g_installed = false;
     bool g_refreshPatched = false;     // hook 1 is in place (WeaponsArmorSort or BottomlessBoxMarkers put it there)
     bool g_xinputPatched = false;      // hook 5 is in place (WeaponsArmorSort or QuickSelectEstus put it there)
+    bool g_tickPatched = false;        // hook 3 is in place (WeaponsArmorSort or the item list wheel put it there)
+    void(__stdcall* g_wheelTick)(DWORD list) = NULL;   // the item list wheel (end of this file), when it is on
     bool g_markersInstalled = false;   // BottomlessBoxMarkers
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -979,12 +981,18 @@ namespace wasort {
         }
     }
 
+    // hook 3: every frame a list dialog takes input (shown, no window on top of it)
+    void __stdcall listTick(DWORD list) {
+        if (g_installed) sortOnListTick(list);
+        if (g_wheelTick) g_wheelTick(list);
+    }
+
     __declspec(naked) void tick_stub() {
         __asm {
             pushad
             pushfd
             push esi                            // the list
-            call sortOnListTick
+            call listTick
             popfd
             popad
             fld dword ptr[esp + 8]              // the instructions the jump replaced
@@ -1074,6 +1082,7 @@ bool installWeaponsArmorSort() {
     };
     for (int i = 0; i < kSites; ++i) {
         if (i == 0 && g_refreshPatched) continue;   // already put there by BottomlessBoxMarkers
+        if (i == 2 && g_tickPatched) continue;      // already put there by the item list wheel
         if (i == 4 && g_xinputPatched) continue;    // already put there by QuickSelectEstus
         if (memcmp((const void*)sites[i].address, sites[i].expected, sites[i].length) != 0) {
             SDLOG(0, "WeaponsArmorSort: the code for '%s' at 0x%08X is not what this build should have, sorting stays off\n",
@@ -1083,6 +1092,7 @@ bool installWeaponsArmorSort() {
     }
     for (int i = 0; i < kSites; ++i) {
         if (i == 0 && g_refreshPatched) continue;
+        if (i == 2 && g_tickPatched) continue;
         if (i == 4 && g_xinputPatched) continue;
         if (!writeJump(sites[i].address, sites[i].length, sites[i].target, sites[i].opcode)) {
             SDLOG(0, "WeaponsArmorSort: could not write at 0x%08X, sorting stays off\n", sites[i].address);
@@ -1091,6 +1101,7 @@ bool installWeaponsArmorSort() {
     }
     g_installed = true;
     g_refreshPatched = true;
+    g_tickPatched = true;
     g_xinputPatched = true;
     HANDLE h = CreateThread(NULL, 0, loadThread, NULL, 0, NULL);
     if (h) CloseHandle(h);
@@ -1359,5 +1370,193 @@ bool installQuickSelectEstus() {
         return false;
     }
     SDLOG(0, "QuickSelectEstus: on (hold D-pad Down)\n");
+    return true;
+}
+
+// =====================================================================================================================
+// Item list wheel (with DDTMControllerFix, no setting): in the item lists the mouse wheel scrolls the list. One notch down
+// selects the first item below the visible rows (the list scrolls one row and that item is the bottom row); one notch up
+// the first item above them. When there is none, nothing happens. Every notch counts, also fast ones.
+// Lists: Inventory, Bottomless Box, Equipment "select item", shop (buy), sell, repair, upgrade - every
+// FrpgMenuDlgEquipListCommon list. Everywhere else the wheel is the game's own.
+//
+// How the game does it (and why it felt like a D-pad that needs insisting): the window procedure (0xF6FD80) stores the
+// delta of each WM_MOUSEWHEEL in FrpgMouseManImp +0x30 ([0x137CF84]), overwriting it (two notches in one frame are one),
+// and every frame (0xF70520) clears it when it equals the previous frame's value (+0x34), so the second of two quick
+// notches is lost. The menus then turn it into up / down steps.
+//   1. hook at 0x00F6FD9A (the store): while one of the lists above has focus, the delta is added up here instead and the
+//      game gets nothing (no double moves); otherwise the game's store, as before.
+//   2. hook 3 of WeaponsArmorSort (0x00C8AFAA, the list input step, reached only while the list is shown and no window is
+//      on top of it): the notches are used there. List fields (FrpgMenuDlgEquipListCommon): +0xF4 visible rows, +0x100
+//      cursor row on screen, +0x104 rows in the list, +0x108 first row on screen. A notch down puts the cursor on the
+//      bottom row, then calls the game's own "one row down, no wrap" (0xC8AC30, esi = list, push wrap, push up; ret 8),
+//      which scrolls one row and runs the list's own updates (rows, item info, scroll bar), as for the D-pad.
+// Installed when DDTMControllerFix is set up (dinput8dllWrapper names it, or DDTMControllerFix.dll is in the game folder);
+// it only acts once the DLL is really loaded (its export DDTM_GetSharedState is found). Otherwise nothing changes.
+// =====================================================================================================================
+namespace listwheel {
+    const DWORD kWheelSite = 0x00F6FD9A;         // shr eax,10h / cwde / mov [ecx+30h],eax ; then xor eax,eax / ret
+    const BYTE kExpWheel[7] = { 0xC1, 0xE8, 0x10, 0x98, 0x89, 0x41, 0x30 };
+    DWORD g_wheelCont = 0x00F6FDA1;
+    DWORD g_moveFn = 0x00C8AC30;
+    const DWORD kListVtables[7] = {
+        0x011C4DEC,   // FrpgMenuDlgInventory
+        0x011C6644,   // FrpgMenuDlgRepository (Bottomless Box)
+        0x011B995C,   // FrpgMenuDlgEquipList ("select item to equip")
+        0x011C87CC,   // FrpgMenuDlgBasicShop
+        0x011C9164,   // FrpgMenuDlgSellShop
+        0x011C8984,   // FrpgMenuDlgFixShop (repair)
+        0x011C8F5C,   // FrpgMenuDlgEquipCustomShop (upgrade)
+    };
+    const DWORD kFocusMs = 150;                  // no list input step for this long: no list has focus
+    bool g_installed = false;
+    volatile LONG g_acc = 0;                     // wheel delta not used yet (+120 per notch up)
+    volatile DWORD g_focusTime = 0;
+    volatile bool g_consume = false;             // set by onWheel for the stub
+    int g_rest = 0;                              // part of a notch (high resolution wheels)
+
+    // DDTMControllerFix.dll is loaded (looked up a few times, then the answer is kept)
+    int g_ddtm = 0;                              // 0 not known yet, 1 yes, 2 no
+    DWORD g_nextLook = 0;
+    int g_looks = 0;
+    bool ddtmLoaded() {
+        if (g_ddtm) return g_ddtm == 1;
+        const DWORD now = GetTickCount();
+        if ((int)(now - g_nextLook) < 0) return false;
+        g_nextLook = now + 2000;
+        std::string names[3] = { Settings::get().getDinput8dllWrapper(), "DDTMControllerFix.dll", "dinput8.dll" };
+        for (int i = 0; i < 3; ++i) {
+            if (names[i].empty() || names[i].find("none") == 0) continue;
+            HMODULE m = GetModuleHandleA(names[i].c_str());
+            if (m && (GetProcAddress(m, "DDTM_GetSharedState") || GetProcAddress(m, "_DDTM_GetSharedState@0"))) {
+                g_ddtm = 1;
+                SDLOG(0, "Item list wheel: DDTMControllerFix.dll found, the wheel scrolls the item lists\n");
+                return true;
+            }
+        }
+        if (++g_looks >= 10) { g_ddtm = 2; SDLOG(0, "Item list wheel: DDTMControllerFix.dll is not loaded, the wheel stays the game's\n"); }
+        return false;
+    }
+
+    bool isItemList(DWORD list) {
+        const DWORD vt = wasort::rd32(list);
+        for (int i = 0; i < 7; ++i) if (vt == kListVtables[i]) return true;
+        return false;
+    }
+
+    // window thread, for every WM_MOUSEWHEEL: keep the notch for the list, or leave it to the game
+    void __stdcall onWheel(int delta) {
+        if (g_ddtm == 1 && GetTickCount() - g_focusTime < kFocusMs) {
+            InterlockedExchangeAdd(&g_acc, delta);
+            g_consume = true;
+        }
+        else {
+            g_consume = false;
+        }
+    }
+
+    __declspec(naked) void wheel_stub() {
+        __asm {
+            shr eax, 0x10                       // the replaced instructions: eax = the wheel delta
+            cwde
+            pushad
+            pushfd
+            push eax
+            call onWheel
+            popfd
+            popad
+            cmp byte ptr[g_consume], 0
+            jne kept
+            mov dword ptr[ecx + 0x30], eax      // the game's own store
+        kept:
+            jmp dword ptr[g_wheelCont]          // xor eax, eax / ret
+        }
+    }
+
+    // the game's "one row up / down" of a list (esi = list; it removes its two arguments)
+    __declspec(naked) void __stdcall callMove(DWORD list, DWORD up, DWORD wrap) {
+        __asm {
+            push esi
+            mov esi, dword ptr[esp + 8]         // list
+            push dword ptr[esp + 0x10]          // wrap
+            push dword ptr[esp + 0x10]          // up (one push further down now)
+            call dword ptr[g_moveFn]
+            pop esi
+            ret 12
+        }
+    }
+
+    // One notch: the first item below (or above) the visible rows. Returns false when there is none.
+    bool step(DWORD list, bool up) {
+        int vis = 0, total = 0, cur = 0, top = 0;
+        __try {
+            vis = *(const int*)(list + 0xF4);
+            total = *(const int*)(list + 0x104);
+            cur = *(const int*)(list + 0x100);
+            top = *(const int*)(list + 0x108);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+        if (vis <= 0 || total <= 0 || cur < 0 || cur >= vis || top < 0) return false;
+        if (up) {
+            if (top <= 0) return false;                // nothing hidden above
+            *(int*)(list + 0x100) = 0;                 // from the top row, one up scrolls the list
+            callMove(list, 1, 0);
+        }
+        else {
+            if (top + vis >= total) return false;      // nothing hidden below
+            *(int*)(list + 0x100) = vis - 1;           // from the bottom row, one down scrolls the list
+            callMove(list, 0, 0);
+        }
+        return true;
+    }
+
+    // hook 3, every frame a list takes input
+    void __stdcall tick(DWORD list) {
+        if (!ddtmLoaded() || !isItemList(list)) return;
+        g_focusTime = GetTickCount();
+        int a = (int)InterlockedExchange(&g_acc, 0);
+        if (a == 0) return;
+        a += g_rest;
+        int notches = a / 120;                         // + up, - down
+        g_rest = a - notches * 120;
+        if (notches > 16) notches = 16;
+        if (notches < -16) notches = -16;
+        for (int i = 0; i < (notches > 0 ? notches : -notches); ++i)
+            if (!step(list, notches > 0)) { g_rest = 0; break; }   // the end of the list: nothing more to do
+    }
+}
+
+bool installListWheelScroll() {
+    using namespace wasort;
+    if (listwheel::g_installed) return true;
+    // only when DDTMControllerFix is set up
+    const std::string wrapper = Settings::get().getDinput8dllWrapper();
+    std::string lower = wrapper;
+    for (size_t i = 0; i < lower.size(); ++i) lower[i] = (char)tolower((unsigned char)lower[i]);
+    const bool named = lower.find("ddtm") != std::string::npos;
+    const bool file = GetFileAttributesA(GetDirectoryFile("DDTMControllerFix.dll")) != INVALID_FILE_ATTRIBUTES;
+    if (!named && !file) return false;
+    const DWORD tickSite = 0x00C8AFAA;
+    if (memcmp((const void*)listwheel::kWheelSite, listwheel::kExpWheel, sizeof(listwheel::kExpWheel)) != 0 ||
+        (!g_tickPatched && memcmp((const void*)tickSite, kExpTick, sizeof(kExpTick)) != 0)) {
+        SDLOG(0, "Item list wheel: the game code is not what this build should have, the wheel stays the game's\n");
+        return false;
+    }
+    g_wheelTick = &listwheel::tick;              // before the hooks: hook 3 may already be live (WeaponsArmorSort)
+    if (!g_tickPatched) {
+        if (!writeJump(tickSite, sizeof(kExpTick), (const void*)&tick_stub)) {
+            g_wheelTick = NULL;
+            SDLOG(0, "Item list wheel: could not write at 0x%08X, the wheel stays the game's\n", tickSite);
+            return false;
+        }
+        g_tickPatched = true;
+    }
+    if (!writeJump(listwheel::kWheelSite, sizeof(listwheel::kExpWheel), (const void*)&listwheel::wheel_stub)) {
+        g_wheelTick = NULL;                      // hook 3 stays, but does nothing for this feature
+        SDLOG(0, "Item list wheel: could not write at 0x%08X, the wheel stays the game's\n", listwheel::kWheelSite);
+        return false;
+    }
+    listwheel::g_installed = true;
+    SDLOG(0, "Item list wheel: on (the wheel scrolls the item lists, with DDTMControllerFix)\n");
     return true;
 }

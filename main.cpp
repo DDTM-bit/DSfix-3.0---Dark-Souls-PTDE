@@ -379,6 +379,9 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
         // QuickSelectEstus: hold D-pad Down during play to select the Estus Flask
         if (Settings::get().getQuickSelectEstus()) installQuickSelectEstus();
 
+        // Item list wheel: with DDTMControllerFix the mouse wheel scrolls the item lists (no setting)
+        installListWheelScroll();
+
         // cameraDistance: the free camera closer or farther (1.0 = vanilla: nothing patched)
         installCameraDistance();
 

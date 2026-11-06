@@ -43,3 +43,8 @@ int bottomlessBoxMarkerRows(unsigned char* flags, int max);
 // QuickSelectEstus: during play, holding D-pad Down (350 ms) selects the Estus Flask in the quick-item slots, with the
 // game's own animation and sound. A tap switches as before. Nothing is patched when the setting is off.
 bool installQuickSelectEstus();
+
+// Item list wheel (no setting, with DDTMControllerFix): in the item lists (Inventory, Bottomless Box, Equipment, shops)
+// a wheel notch selects the first item below / above the visible rows, so the list scrolls row by row. Installed only
+// when DDTMControllerFix is set up; it acts only once that DLL is loaded. Elsewhere the wheel is the game's own.
+bool installListWheelScroll();
