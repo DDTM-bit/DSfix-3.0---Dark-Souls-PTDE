@@ -65,6 +65,7 @@ IDR_TEX_SWITCH_43A2B23A RCDATA "Resources\\switch\\43a2b23a.png"
 IDR_TEX_KEYBOARDMOUSE RCDATA "Resources\\KeyboardMouse.png"
 IDR_TEX_QUICKMENUTEMPLATE RCDATA "Resources\\QuickMenuTemplate.png"
 IDR_TEX_CURSOR RCDATA "Resources\\Cursor.png"
+IDR_TEX_BONFIRE RCDATA "Resources\\Bonfire.png"
 
 /////////////////////////////////////////////////////////////////////////////
 #endif    // not APSTUDIO_INVOKED

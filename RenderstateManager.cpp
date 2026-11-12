@@ -28,6 +28,13 @@
 #include "GameParams.h"
 #include "CovenantOffer.h"
 
+// gameMap: the in-game map (GameMap.h, included further down after swCursor, whose shared block it reads)
+namespace gameMap {
+	void frameTick(IDirect3DDevice9* dev);
+	void release();
+	float hudBottomLeftFactor();
+}
+
 // WeaponsArmorSort prompt: defined further down (before redirectSetTexture), used earlier by Present and releaseResources
 namespace sortPrompt {
 	void newFrame();
@@ -233,11 +240,32 @@ namespace {
 	float hudGroupOpacity(HudGroup g) {
 		float o = 1.0f;
 		if (g == HG_TL) o = Settings::get().getHudTopLeftOpacity();
-		else if (g == HG_BL) o = Settings::get().getHudBottomLeftOpacity();
+		else if (g == HG_BL) o = Settings::get().getHudBottomLeftOpacity() * gameMap::hudBottomLeftFactor(); // 0 while the map shows
 		else if (g == HG_BR) o = Settings::get().getHudBottomRightOpacity();
 		if (o < 0.0f) o = 0.0f;
 		if (o > 1.0f) o = 1.0f;
 		return o;
+	}
+
+	// gameMap without the HUD mod (enableHudMod 0, or its changes toggled off): DSfix does not follow the HUD corners
+	// then, so while the map shows, a UI draw that lies in the bottom-left HUD zone fades with the map (the same zone
+	// test the HUD mod uses). Nothing is checked while the map is hidden.
+	float mapBottomLeftOpacity(bool hudModActive, UINT stride, const void* data, UINT first, UINT count) {
+		if (hudModActive) return 1.0f;                      // the HUD mod does it (hudGroupOpacity)
+		const float f = gameMap::hudBottomLeftFactor();
+		if (f >= 0.999f || !data || count == 0) return 1.0f;
+		HudGroup g = HG_NONE;
+		if (stride == 12) {
+			bool valid = false;
+			g = classifyHudQuad((const INT16*)data, stride, first, count, &valid);
+			if (!valid) g = HG_NONE;                       // not UI coordinates
+		}
+		else if (stride == 24) {
+			float x0, y0, x1, y1;
+			if (textBox(data, stride, count, x0, y0, x1, y1))
+				g = zoneFor((x0 + x1) * 0.5f / 1280.0f, (y0 + y1) * 0.5f / 720.0f, (x1 - x0) / 1280.0f, (y1 - y0) / 720.0f);
+		}
+		return g == HG_BL ? f : 1.0f;
 	}
 
 	// Draws that go straight to the frame (not through the HUD buffer) do not get the per-corner opacity when the buffer
@@ -1261,6 +1289,7 @@ void RSManager::releaseResources() {
 	quickSaveRelease();
 	bonfireCovenantsRelease();
 	swCursor::release();
+	gameMap::release();
 	sortPrompt::release();
 	boxMarkers::release();
 	if (g_hudBufOwn) {
@@ -1453,6 +1482,8 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 	titleMarkDraw(d3ddev);
 	// quickSave: its key, the save in progress and its "Quick Saved" message
 	quickSaveFrame(d3ddev);
+	// gameMap: records the explored ground; draws the map while the gesture window is open (gameMap 1)
+	gameMap::frameTick(d3ddev);
 	// the menu cursor of DDTMControllerFix.dll (version 3), drawn last so it is on top of everything
 	swCursor::draw(d3ddev);
 
@@ -2839,6 +2870,11 @@ namespace swCursor {
 	}
 }
 
+// ---- gameMap: the in-game map (the whole feature is in GameMap.h) ----
+#include "GameMap.h"
+// for Hud.cpp: the bottom-left HUD opacity is multiplied by this (0 while the map shows)
+float gameMapHudBottomLeftFactor() { return gameMap::hudBottomLeftFactor(); }
+
 // ---- WeaponsArmorSort prompt (the sorting itself is in GameParams.cpp) ----
 // LOOK OF THE PROMPT - everything that decides how it looks is in this block. Sizes are in the game's UI pixels
 // (1280 x 720), so the prompt follows menuScale and every resolution exactly like the game's own prompts.
@@ -3905,7 +3941,8 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 	HRESULT hr;
 	{
 		// draws that bypass the HUD buffer get their corner's opacity here (buffered ones get it when the buffer is composited)
-		const float op = (!onHudRT && hudGrp != HG_NONE && VertexStreamZeroStride == 12) ? hudGroupOpacity(hudGrp) : 1.0f;
+		float op = (!onHudRT && hudGrp != HG_NONE && VertexStreamZeroStride == 12) ? hudGroupOpacity(hudGrp) : 1.0f;
+		if (winK < 0 && VertexStreamZeroStride == 12) op *= mapBottomLeftOpacity(hud && doHud, VertexStreamZeroStride, srcData, MinIndex, NumVertices);
 		std::vector<BYTE> vcopy;
 		const void* vdata = applyVertexOpacity(vcopy, srcData, VertexStreamZeroStride, MinIndex, NumVertices, 4, op, d3ddev);
 		AlphaRefGuard arg(d3ddev, op);
@@ -3923,7 +3960,8 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		d3ddev->GetTexture(0, &dbt);
 		const bool frameTex = dbt && isTextureHudHealthbar(dbt);
 		if (dbt) dbt->Release();
-		const float dbOp = (!onHudRT && hudGrp != HG_NONE) ? hudGroupOpacity(hudGrp) : 1.0f;
+		float dbOp = (!onHudRT && hudGrp != HG_NONE) ? hudGroupOpacity(hudGrp) : 1.0f;
+		dbOp *= mapBottomLeftOpacity(hud && doHud, VertexStreamZeroStride, pVertexStreamZeroData, MinIndex, NumVertices); // gameMap, HUD mod off
 		weaponWearBarsOnHudQuad(d3ddev, db, frameTex, vertexAlpha, dbOp, onHudRT);
 	}
 	if (scChanged) d3ddev->SetScissorRect(&savedSc);
@@ -4149,6 +4187,7 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 	{
 		// text drawn directly onto the frame gets its corner's opacity through the vertex colour
 		float op = (!onHudRT && hudGrp != HG_NONE && primNv) ? hudGroupOpacity(hudGrp) : 1.0f;
+		if (winK < 0 && primNv) op *= mapBottomLeftOpacity(hud && doHud, VertexStreamZeroStride, drawData, 0, primNv);
 		UINT colOff = 0;
 		if (op < 0.999f) {
 			if (VertexStreamZeroStride == 24) colOff = textColorOffset(drawData);

@@ -48,3 +48,9 @@ bool installQuickSelectEstus();
 // a wheel notch selects the first item below / above the visible rows, so the list scrolls row by row. Installed only
 // when DDTMControllerFix is set up; it acts only once that DLL is loaded. Elsewhere the wheel is the game's own.
 bool installListWheelScroll();
+
+// gameMap (DSfix.ini gameMap): the in-game map with the gesture window. All of it is in GameMap.h (included by
+// RenderstateManager.cpp); installGameMap is called from main.cpp. Nothing is patched when the setting is off.
+bool installGameMap();
+// for gameMap: puts its controller and mouse wheel callbacks on the shared XInput and wheel hooks (installs them if needed)
+bool installGameMapInput(void(__stdcall* pad)(unsigned long idx, void* state), bool(__stdcall* wheel)(int delta));

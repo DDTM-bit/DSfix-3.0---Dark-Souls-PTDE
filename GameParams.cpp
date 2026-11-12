@@ -322,6 +322,7 @@ namespace wasort {
     bool g_xinputPatched = false;      // hook 5 is in place (WeaponsArmorSort or QuickSelectEstus put it there)
     bool g_tickPatched = false;        // hook 3 is in place (WeaponsArmorSort or the item list wheel put it there)
     void(__stdcall* g_wheelTick)(DWORD list) = NULL;   // the item list wheel (end of this file), when it is on
+    void(__stdcall* g_mapPad)(unsigned long idx, void* state) = NULL;   // gameMap (GameMap.h): sees every pad read first
     bool g_markersInstalled = false;   // BottomlessBoxMarkers
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -625,6 +626,7 @@ namespace wasort {
         const XInputGetState_t real = *(XInputGetState_t*)kXInputGetStateImport; // read every time: others may hook it
         const DWORD r = real(idx, s);
         if (r == ERROR_SUCCESS && s && idx < 4) {
+            if (g_mapPad) g_mapPad(idx, s);        // gameMap: while the map shows it takes RS, R3, LB / RB, LT / RT
             if (g_installed) padFilter(idx, s);
             estus::padSeen(idx, s->buttons);       // what the game sees (after the sort's filter)
         }
@@ -1413,6 +1415,8 @@ namespace listwheel {
     volatile LONG g_acc = 0;                     // wheel delta not used yet (+120 per notch up)
     volatile DWORD g_focusTime = 0;
     volatile bool g_consume = false;             // set by onWheel for the stub
+    bool g_sitePatched = false;                  // the wheel hook is in place (the item list wheel or gameMap put it there)
+    bool(__stdcall* g_mapWheel)(int delta) = NULL;   // gameMap: true = the notch is for the map (mouse over it)
     int g_rest = 0;                              // part of a notch (high resolution wheels)
 
     // DDTMControllerFix.dll is loaded (looked up a few times, then the answer is kept)
@@ -1446,7 +1450,10 @@ namespace listwheel {
 
     // window thread, for every WM_MOUSEWHEEL: keep the notch for the list, or leave it to the game
     void __stdcall onWheel(int delta) {
-        if (g_ddtm == 1 && GetTickCount() - g_focusTime < kFocusMs) {
+        if (g_mapWheel && g_mapWheel(delta)) {
+            g_consume = true;
+        }
+        else if (g_ddtm == 1 && GetTickCount() - g_focusTime < kFocusMs) {
             InterlockedExchangeAdd(&g_acc, delta);
             g_consume = true;
         }
@@ -1537,7 +1544,7 @@ bool installListWheelScroll() {
     const bool file = GetFileAttributesA(GetDirectoryFile("DDTMControllerFix.dll")) != INVALID_FILE_ATTRIBUTES;
     if (!named && !file) return false;
     const DWORD tickSite = 0x00C8AFAA;
-    if (memcmp((const void*)listwheel::kWheelSite, listwheel::kExpWheel, sizeof(listwheel::kExpWheel)) != 0 ||
+    if ((!listwheel::g_sitePatched && memcmp((const void*)listwheel::kWheelSite, listwheel::kExpWheel, sizeof(listwheel::kExpWheel)) != 0) ||
         (!g_tickPatched && memcmp((const void*)tickSite, kExpTick, sizeof(kExpTick)) != 0)) {
         SDLOG(0, "Item list wheel: the game code is not what this build should have, the wheel stays the game's\n");
         return false;
@@ -1551,12 +1558,47 @@ bool installListWheelScroll() {
         }
         g_tickPatched = true;
     }
-    if (!writeJump(listwheel::kWheelSite, sizeof(listwheel::kExpWheel), (const void*)&listwheel::wheel_stub)) {
-        g_wheelTick = NULL;                      // hook 3 stays, but does nothing for this feature
-        SDLOG(0, "Item list wheel: could not write at 0x%08X, the wheel stays the game's\n", listwheel::kWheelSite);
-        return false;
+    if (!listwheel::g_sitePatched) {
+        if (!writeJump(listwheel::kWheelSite, sizeof(listwheel::kExpWheel), (const void*)&listwheel::wheel_stub)) {
+            g_wheelTick = NULL;                  // hook 3 stays, but does nothing for this feature
+            SDLOG(0, "Item list wheel: could not write at 0x%08X, the wheel stays the game's\n", listwheel::kWheelSite);
+            return false;
+        }
+        listwheel::g_sitePatched = true;
     }
     listwheel::g_installed = true;
     SDLOG(0, "Item list wheel: on (the wheel scrolls the item lists, with DDTMControllerFix)\n");
+    return true;
+}
+
+// gameMap (GameMap.h): its controller and wheel input go through the shared hooks above - XInput (hook 5) and the
+// window's WM_MOUSEWHEEL store (the item list wheel's hook). Both are checked first; one wrong byte and nothing is patched.
+bool installGameMapInput(void(__stdcall* pad)(unsigned long idx, void* state), bool(__stdcall* wheel)(int delta)) {
+    using namespace wasort;
+    const DWORD xinputSite = 0x00ABA542;
+    if ((!g_xinputPatched && memcmp((const void*)xinputSite, kExpXInput, sizeof(kExpXInput)) != 0) ||
+        (!listwheel::g_sitePatched && memcmp((const void*)listwheel::kWheelSite, listwheel::kExpWheel, sizeof(listwheel::kExpWheel)) != 0)) {
+        SDLOG(0, "gameMap: the game code is not what this build should have, the map has no controls\n");
+        return false;
+    }
+    g_mapPad = pad;
+    listwheel::g_mapWheel = wheel;
+    if (!g_xinputPatched) {
+        if (!writeJump(xinputSite, sizeof(kExpXInput), (const void*)&sortXInputGetState)) {
+            g_mapPad = NULL;
+            listwheel::g_mapWheel = NULL;
+            SDLOG(0, "gameMap: could not write at 0x%08X, the map has no controls\n", xinputSite);
+            return false;
+        }
+        g_xinputPatched = true;
+    }
+    if (!listwheel::g_sitePatched) {
+        if (!writeJump(listwheel::kWheelSite, sizeof(listwheel::kExpWheel), (const void*)&listwheel::wheel_stub)) {
+            listwheel::g_mapWheel = NULL;        // the pad works, the wheel stays the game's
+            SDLOG(0, "gameMap: could not write at 0x%08X, the mouse wheel does not zoom the map\n", listwheel::kWheelSite);
+            return true;
+        }
+        listwheel::g_sitePatched = true;
+    }
     return true;
 }

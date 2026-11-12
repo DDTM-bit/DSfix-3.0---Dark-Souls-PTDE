@@ -133,6 +133,13 @@ SETTING(float, CameraDistance, "cameraDistance", 1.0f)
 // cameraDistanceLockOn: 0 = the lock-on camera keeps the vanilla distance (it moves in when you lock on and back out
 // when you let go), 1 = the lock-on camera uses cameraDistance too. Nothing happens with cameraDistance 1.0
 SETTING(bool, CameraDistanceLockOn, "cameraDistanceLockOn", false)
+// gameMap: a map of the places your character walked. While you play, open the gesture window (Back) and the map shows
+// next to it, a little see-through (the game is not paused; the bottom-left HUD fades out meanwhile). Area page or
+// world page, your lit bonfires, your soul remains (green; an arrow on the edge when it is outside the map) and the
+// direction you face. Controls: RS move, LT / RT zoom, LB / RB area, R3 area / world page; mouse drag move, wheel zoom,
+// comma / period area, M area / world page. The explored ground is kept per character in DSfixMap.dat next to the save
+// file. No fast travel. 0 = off (nothing is recorded, written, drawn or patched)
+SETTING(bool, GameMap, "gameMap", false)
 // bulkItemUse: the master switch for using several of the same item at once. With it off nothing below it happens
 // and not one byte of the game is changed. With it on, using a listed item in the pause Inventory menu asks how many
 // to use and uses them all with a single animation. The quick-item button during play always behaves as before, and

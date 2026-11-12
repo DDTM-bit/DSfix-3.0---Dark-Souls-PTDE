@@ -9,6 +9,9 @@ using namespace std;
 
 #include "Settings.h"
 
+// gameMap (RenderstateManager.cpp): 1, or 0 while the in-game map shows (the bottom-left HUD fades out)
+float gameMapHudBottomLeftFactor();
+
 HUD::HUD(IDirect3DDevice9 *device, int width, int height) 
 	: Effect(device), width(width), height(height) {
 
@@ -99,7 +102,7 @@ void HUD::go(IDirect3DTexture9* input, IDirect3DSurface9* dst) {
 	effect->EndPass();
 
 	// lower left (Items/Weapons)
-	effect->SetFloat(opacityHandle, Settings::get().getHudBottomLeftOpacity());
+	effect->SetFloat(opacityHandle, Settings::get().getHudBottomLeftOpacity() * gameMapHudBottomLeftFactor());
 	effect->BeginPass(0);
 	device->SetSamplerState(0, D3DSAMP_MINFILTER, scaleBL == 1.0f ? D3DTEXF_POINT : D3DTEXF_LINEAR);
 	device->SetSamplerState(0, D3DSAMP_MAGFILTER, scaleBL == 1.0f ? D3DTEXF_POINT : D3DTEXF_LINEAR);

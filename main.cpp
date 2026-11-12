@@ -385,6 +385,9 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
         // cameraDistance: the free camera closer or farther (1.0 = vanilla: nothing patched)
         installCameraDistance();
 
+        // gameMap: the in-game map with the gesture window (0 = nothing at all)
+        if (Settings::get().getGameMap()) installGameMap();
+
         // quickSave: a key saves the current character and copies it to QuickSave\QS_DRAKS0005
         if (Settings::get().getQuickSave()) quickSaveInit();
 

@@ -352,6 +352,7 @@
     <ClInclude Include="Effect.h" />
     <ClInclude Include="FootPlacementFix.h" />
     <ClInclude Include="FXAA.h" />
+    <ClInclude Include="GameMap.h" />
     <ClInclude Include="GameParams.h" />
     <ClInclude Include="GAUSS.h" />
     <ClInclude Include="GhostFix.h" />
