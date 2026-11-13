@@ -10,21 +10,11 @@
 #include "Detouring.h"
 #include "RenderstateManager.h"
 #include "memory.h"
-#include "PhysicsFixes.h"
-#include "FootPlacementFix.h"
 #include "RootMotionFix.h"
 #include "SlopeSlideFix.h"
 #include "CutsceneCameraSmooth.h"
 #include "SoulCounterFix.h"
-#include "LadderSnapFix.h"
 #include "StaminaFix.h"
-#include "CameraFix.h"
-#include "TurnFix.h"
-#include "SfxFix.h"
-#include "GhostFix.h"
-#include "UIFix.h"
-#include "AspectFix.h"
-#include "ScriptFix.h"
 
 extern bool g_Force30FPS;
 
@@ -40,6 +30,9 @@ static DWORD ImageBase = NULL;
 double lastRenderTime;
 static LARGE_INTEGER timerFreq;
 static LARGE_INTEGER counterAtStart;
+
+// The step the engine got this frame (FPS.h). Only written by the frame-step hook, which exists only with unlockFPS 1.
+float g_engineStep = 1.0f / 30.0f;
 
 // Hook Parameters
 //-----------------------------------
@@ -134,12 +127,13 @@ void _stdcall updateFramerate(unsigned int cmd) {
 		// Update step-time using the actual elapsed render time without artificial snapping
 		const float writtenStep = updateAnimationStepTime((float)deltaTime, (float)minFPS, (float)maxFPS);
 
-		// DSfix 3.0: physics, ghosts and the ladder fix use exactly the step the engine just received,
-		// so they cannot drift from game time on hitches, frame-limit jitter or pause. During pause the step is ~0,
-		// which updatePhysicsDeltas clamps to its 1 ms minimum (all per-frame factors are then ~neutral).
-		updatePhysicsDeltas(writtenStep);
-		// Foot placement and root motion use the same step; each does nothing unless it was installed (FPS limit above 30).
-		updateFootPlacementFix(writtenStep);
+		// DSfix 3.0: the high-FPS fixes use exactly the step the engine just received, so they cannot drift from game
+		// time on hitches, frame-limit jitter or pause (during pause the step is ~0: kept at 1 ms).
+		float step = writtenStep;
+		if (step < 0.001f) step = 0.001f;
+		if (step > 0.125f) step = 0.125f;
+		g_engineStep = step;
+		// Root motion: does nothing unless it was installed (FPS limit above 30).
 		updateRootMotionFix(writtenStep);
 		// Blighttown swamp poison: does nothing unless it was installed (FPS limit above 30).
 		updateSwampPoisonFix(writtenStep);
@@ -231,39 +225,21 @@ void applyFPSPatch() {
 
 	// Binary patches
 	//--------------------------------------------------------------
-	installPhysicsFixes();
-	// Foot placement on stairs and slopes: always on above 30 FPS (no setting). At 30 it would change nothing.
-	if (Settings::get().getCurrentFPSLimit() > 30) installFootPlacementFix();
-	else SDLOG(0, "FootPlacementFix: FPS limit is 30, nothing patched\n");
-	// Animation root motion (slope slides, steering): always on above 30 FPS (no setting).
-	if (Settings::get().getCurrentFPSLimit() > 30) installRootMotionFix();
-	else SDLOG(0, "RootMotionFix: FPS limit is 30, nothing patched\n");
-	// Slope slides start reliably (slide contact kept for 1/30 s): always on above 30 FPS (no setting).
-	if (Settings::get().getCurrentFPSLimit() > 30) installSlopeSlideFix();
-	else SDLOG(0, "SlopeSlideFix: FPS limit is 30, nothing patched\n");
-	// Cutscene camera moves on every frame (blended between its 1/30 s keys): always on above 30 FPS (no setting).
-	if (Settings::get().getCurrentFPSLimit() > 30) installCutsceneCameraSmooth();
-	else SDLOG(0, "CutsceneCameraSmooth: FPS limit is 30, nothing patched\n");
-	// Soul counter rolls up at the 30 FPS speed: always on above 30 FPS (no setting).
-	if (Settings::get().getCurrentFPSLimit() > 30) installSoulCounterFix();
-	else SDLOG(0, "SoulCounterFix: FPS limit is 30, nothing patched\n");
-	// Ladder and ledge snap: only needed above 30 FPS (at 30 the game applies its snap once per frame, as intended).
-	if (Settings::get().getCurrentFPSLimit() > 30) installLadderSnapFix();
-	else SDLOG(0, "LadderSnapFix: FPS limit is 30, nothing patched\n");
-	installStaminaFix();
-	// Blighttown swamp poison builds up at the 30 FPS speed: always on above 30 FPS (no setting).
-	if (Settings::get().getCurrentFPSLimit() > 30) installSwampPoisonFix();
-	else SDLOG(0, "SwampPoisonFix: FPS limit is 30, nothing changed\n");
-	installCameraFix();
-	installTurnFix();
-	// Effect spawn intervals: only needed above 30 FPS (at 30 a frame is already 1/30 s long).
-	if (Settings::get().getCurrentFPSLimit() > 30) installSfxFix();
-	else SDLOG(0, "SfxFix: FPS limit is 30, nothing patched\n");
-	installGhostFix();
-	// HUD gauges always; the loading screen swirl only above 30 FPS (at 30 the game's one step per frame is right).
-	installUIFix(Settings::get().getCurrentFPSLimit() > 30);
-	installAspectFix();
-	installScriptFix();
+	// The high-FPS fixes below exist only with unlockFPS 1 (this function is not called with unlockFPS 0) and only
+	// above 30 FPS (at 30 the game behaves as intended). No setting.
+	if (Settings::get().getCurrentFPSLimit() > 30) {
+		// Animation root motion (steering on steep slopes)
+		installRootMotionFix();
+		// Steep slope slides start reliably (slide contact kept for 1/30 s)
+		installSlopeSlideFix();
+		// Cutscene camera moves on every frame (blended between its 1/30 s keys)
+		installCutsceneCameraSmooth();
+		// Soul counter rolls up at the 30 FPS speed
+		installSoulCounterFix();
+		// Blighttown swamp poison builds up at the 30 FPS speed
+		installSwampPoisonFix();
+	}
+	else SDLOG(0, "High-FPS fixes: FPS limit is 30, nothing patched\n");
 	
 	DWORD address;
 	DWORD data;
@@ -276,25 +252,6 @@ void applyFPSPatch() {
 	// Detour call to getDrawThreadMsgCommand
 	address = convertAddress(ADDR_GETCMD);
 	DetourApply((BYTE*)address, (BYTE*)getDrawThreadMsgCommand, 5, CALLOP);
-
-	// --- NEW: Disable Present Catch-up Loop (VRR stutter fix) ---
-	DWORD kRepeatJump = 0x00BACE90;
-	BYTE* jumpSite = (BYTE*)kRepeatJump;
-	if (jumpSite[0] == 0x7E && jumpSite[1] == 0x36) { // Check for 'jle 0xbacec8'
-		DWORD oldProtect;
-		if (VirtualProtect(jumpSite, 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-			jumpSite[0] = 0xEB; // Change 'jle' to 'jmp' to skip the loop
-			VirtualProtect(jumpSite, 1, oldProtect, &oldProtect);
-			FlushInstructionCache(GetCurrentProcess(), jumpSite, 1);
-			SDLOG(0, "FPS: Present catch-up loop disabled.\n");
-		}
-	}
-	else if (jumpSite[0] == 0xEB && jumpSite[1] == 0x36) {
-		SDLOG(0, "FPS: Present catch-up loop was already disabled.\n");
-	}
-	else {
-		SDLOG(0, "FPS: catch-up loop jump at 0x%08X is %02X %02X, not the expected 7E 36 - not patched.\n", kRepeatJump, jumpSite[0], jumpSite[1]);
-	}
 
 	SDLOG(0, "FPS unlocked\n");
 }

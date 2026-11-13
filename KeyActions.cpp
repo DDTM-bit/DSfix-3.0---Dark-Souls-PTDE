@@ -108,6 +108,8 @@ namespace {
 
 	// Returns the reason the toggle is blocked, or NULL when it may run.
 	const char* toggle30FPSBlockedReason() {
+		// unlockFPS 0: DSfix does not touch the frame rate, so the key does nothing (and reads nothing from the game)
+		if (!Settings::get().getUnlockFPS()) return "unlockFPS 0";
 		if (!toggle30FPSAddressesOk()) return NULL;
 		DWORD v = 0, player = 0, chrCam = 0, gameData = 0;
 		if (!readDword(0x0137D644, v) || !readDword(v + 0x3C, player) || player == 0) return "no player (title or loading screen)";

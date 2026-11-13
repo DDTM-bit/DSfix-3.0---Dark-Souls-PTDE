@@ -10,7 +10,7 @@ This is the modernized overhaul for Dark Souls: Prepare to Die Edition, engineer
 * **DirectX End-User Runtimes (June 2010):** This is absolutely mandatory. While Windows 11 natively supports DirectX 9, Microsoft stopped bundling the specific legacy D3D helper libraries (like `d3dx9_43.dll` and `d3dcompiler_43.dll`) with the OS. DSfix 3.0 relies heavily on these exact libraries to compile and render its advanced shaders (SMAA, FXAA, SSAO, and Depth of Field). Without this package, the game will instantly crash with a missing file error.
 * **Visual C++ Redistributable (x86):** You must install the 32-bit (x86) versions of the Visual C++ redistributables. The original Dark Souls PTDE executable relies on the older Visual C++ 2010 Redistributable, while modern community tools (and heavily modernized DLLs) often expect the Visual C++ 2015–2022 Redistributable. Ensure both are installed to prevent `MSVCR100.dll / VCRUNTIME140.dll was not found` application launch errors.
 * **Disabled In-Game Rendering Effects:** Before launching with DSfix 3.0, you must ensure that the game's native Anti-Aliasing and Motion Blur settings are turned completely OFF in the game menu or `DarkSouls.ini` configuration file. Leaving the vanilla AA enabled can cause a rendering conflict with DSfix.
-* **Fullscreen:** In the game menu, set Fullscreen to OFF. Then, open DSfix.ini or DSfix GUI and set 'borderlessFullscreen' to 1
+* **Fullscreen:** In the game menu, set Fullscreen to ON. Then, open DSfix GUI and set borderlessFullscreen 0, Vsync ON and set you monitor Refresh Rate Hz.
 ---
 
 ## Base Installation
@@ -23,10 +23,10 @@ Extract the contents of the DSfix 3.0 archive into your Dark Souls executable di
 To ensure maximum stability on modern machines, configure your environment using these proven guidelines:
 
 * **Native Resolution Mapping:** Ensure your in-game resolution is set to match your desktop monitor and the rendering resolution in dsfix so the image is sharp and on all screen size. You can try to set your resolution in game menu or in: `%LOCALAPPDATA%\NBGI\DarkSouls\DarkSouls.ini`.
-* **Unlock FPS Enabled:** Always keep the `unlockFPS` enabled in `DSFix.ini` even when `FPSlimit` is 30FPS. With `unlockFPS` disabled, DSfix skips its frame-timing code entirely and the game uses its original, unpatched engine logic.
+* **Frame rate (`unlockFPS`):** choose one of two ways.
+  * `unlockFPS 1`: DSfix unlocks the frame rate up to `FPSlimit` and, above 30 FPS, applies its own high-FPS fixes (see below). Other high-FPS bugs of the game are not fixed by DSfix. `FPSlimit 30` gives the original game speed and behaviour.
+  * `unlockFPS 0`: DSfix does not change the frame rate or timing at all. Use this when another mod unlocks the frame rate and fixes the high-FPS bugs. All other DSfix 3.0 features keep working.
 * **Texture Prefetching:** If you don't use textures that are more than 2GB in the dsfix\tex_override folder you can set the option `enableTexturePrefetch` to `1` in `DSfix.ini` for a faster texture load at startup. Dark Souls PTDE is a 32-bit executable, meaning the entire game will hard-crash if it tries to use more than 4GB of total RAM. If you use a massive 4K texture pack (like Mulderland's Enhancement Pack) and enable prefetching, DSfix will attempt to load gigabytes of `.png` files into RAM all at once.
-* **Bypass the 60Hz Crash:** In the game menu, set Fullscreen to OFF. Then, open `DSfix.ini` and set `borderlessFullscreen 1`. This solves the engine limitation where the game hard-crashes when selecting "New Game" or "PC Settings" if your monitor's refresh rate is above 60Hz.
-
 ---
 
 ## Modernized Features and Fixes of DSfix 3.0
@@ -62,7 +62,7 @@ Open the gesture window (Back) while you play and a map appears next to it, a li
 
 * **Camera Distance: Set how far the camera is from your character while you play: closer than vanilla (down to 0.5×) or farther (up to 2×). By default, the lock-on camera keeps the vanilla distance and moves in smoothly when you lock on. Set cameraDistanceLockOn 1 to keep your distance during lock-on too. A key in DSfixKeys.ini (toggleCameraDistance) switches between your distance and vanilla at any time, with a smooth move. Wall collision works as before, and cutscenes and bow aiming are not changed. At cameraDistance 1.0 the feature is off and nothing is patched.
 * **Sun/Moon & Water Issue Fixed:** Now they render perfectly at their intended screen-space locations. For resolution 1440p or 4K, DoF Override Resolution must not be 0 otherwise the water stays at vanilla quality.
-* **60 FPS Bonfire Fix and Smart Protection:** Automatically detects and neutralizes the infamous bonfire animation softlock while dynamically disabling SSAO while resting to prevent dark halo artifacts around your character.
+* **Bonfire Softlock Fix and Smart Protection:** With `unlockFPS 1`, automatically detects and neutralizes the bonfire animation softlock (the character stays seated with no menu after reversing hollowing at a high frame rate). With any setting, SSAO is disabled while resting to prevent dark halo artifacts around your character.
 * **High-DPI & Display Scaling Fix:** Stripped out the 150% DPI stretching. On Windows 10/11 with 1440p or 4K monitors set to desktop scaling, the game misinterprets dimensions causing blurry bilinear upscaling and mouse-capture offset bugs. With DSfix 3.0, it will never artificially scale the game window.
 * **High-Precision Frame Pacing:** Replaced the broken framerate pacing with a modern solution.
 * **Alt+Tab Memory Leak Plugged:** In vanilla DSfix 2.4, the mod forgot to delete custom FXAA, SSAO, and DoF buffers during a Device Lost event, silently eating VRAM until the game crashed. This is now fixed, the engine is vastly more resilient to buffer collisions.
@@ -72,32 +72,11 @@ Open the gesture window (Back) while you play and a map appears next to it, a li
 * **Text:** Includes high visual quality of the in-game fonts
 * **Controller button prompt swap:**Swaps the controller button icons the game displays, for players who have swapped the buttons themselves in a controller mapper (for example Japanese-style controls, where circle confirms)
 * **Sharpening:**brings back the fine texture detail that anti-aliasing softens. It uses contrast-adaptive sharpening (AMD FidelityFX CAS), which sharpens flat detail more than edges that are already sharp, so it doesn’t create bright halos.It only affects the 3D image: the HUD, menus and text are never sharpened.
-* **High-FPS Fixes:**
-  - **Core Physics & Movement**
-    - **Slope Gravity & Friction:** Sliding down slopes and embankments no longer happens at light-speed.
-    - **Stairs and Slopes (Foot Placement):** The legs and hips no longer bounce on stairs and slopes above 30 FPS. The game's foot placement corrected the body a fixed amount every frame, so at 144 FPS it reacted almost five times faster than at 30 FPS and the camera shook while running on stairs. Its three settings now follow the real frame time, so they behave as at 30 FPS. The small tremble of the feet when walking down stairs is the game's own and happens at 30 FPS too.
-	- **Airborne Damping:** Normalizes jump distance and walk-off momentum to match the native 30 FPS console release.
-    - **Sliding Down Steep Slopes:** While steering, the game restarts the steering animation every frame, and the engine cut that animation's movement to about a tenth at 144 FPS. The engine's limit now follows the frame time, so the hero steers at the same speed as at 30 FPS. Walking, rolling, sprinting and combat are unchanged.At the top of a steep slide, the hero sometimes did a "walking in the air" stumble before sliding above 30 FPS, also when attacking at the edge. The game checks every frame whether the hero is touching the slide surface, and at high frame rates that check could miss for a single frame. The game then stopped the slide. A touch now counts for one 30 FPS frame (1/30 s), which is what the game sees at 30 FPS, so the slide starts straight away.
-	- **Ladder & Ledge Snap:** Prevents the player from falling through the floor at the bottom of ladders, and stops the engine from aggressively gluing the character to curved lips or stairs.
-    - **Sprint Graze Check:** Fixes the engine bug where running near walls or complex geometry artificially slows the player down at high framerates.
-  - **Combat & Camera**
-    - **Accurate Stamina Drain:** Keeps the leftover time of each sprint tick instead of discarding it, guaranteeing a strict 10-point-per-second drain at any frame rate, so stamina no longer lasts artificially long at frame rates that don’t divide evenly into the tick.
-    - **Lock-On Body Tracking:** Normalizes the bone rotation speeds for the torso, head, and hips. Enemies will no longer instantly snap their upper bodies to track you, and your own aiming remains smooth.
-    - **Camera Smoothing & Panning:** Makes all 16 camera blend weights framerate-independent. Switching lock-on targets smoothly pans the camera instead of instantly snapping, and the mouse/stick "look-at boost" fades out correctly in real-time.
-    - **Smooth Cutscenes at High-FPS:** Tested at max 144fps. The cutscene camera no longer jerks.
-  - **Multiplayer & Phantoms**
-    - **Flawless Ghost Replays:** bloodstains, wandering ghosts and online phantoms move, turn and play back at the correct speed at high FPS, instead of fast-forwarding. Other players now show the right walk, run or sprint animation instead of walking while they run.
-  - **Visuals, Audio & UI**
-    - **Particle Effect Spawning:** Clamps engine emitter intervals to 1/30s as they load into memory, preventing sparks, bonfire smoke, and magic effects from becoming blindingly dense and opaque at 120 FPS.
-    - **Ragdolls & 3D Audio:** Normalizes frame-velocity multipliers so ragdolls maintain proper physical weight upon death, and moving sound sources (FMOD Doppler effect) do not drop in pitch.
-    - **Timers & Fades:** Corrects the duration of weapon buff glows, dropped item pulses, and ragdoll blend-in animations.
-    - **Menu Input Repeat:** Locks the D-Pad and menu navigation delay to the engine's default timing so players do not accidentally skip past items in their inventory.
-    - **HUD Animations:** Health, stamina, and boss bars smoothly fill and deplete rather than instantly snapping to new values. The loading screen bonfire swirl rotates at the correct cinematic speed.
-	- **Soul Counter:** The souls counter no longer rolls up too fast at high FPS.
-  - **Engine Stability**
-    - **VRR / G-Sync Stutter Fix:** Bypasses the engine's hardcoded "Present" catch-up loop, eliminating erratic refresh-rate bouncing and micro-stutters on variable-refresh-rate monitors.
+* **High-FPS Fixes** (only with `unlockFPS 1` and an FPS limit above 30; with `unlockFPS 0` none of them exists, so another FPS mod can do its own work):
+  - **Sliding Down Steep Slopes:** While steering, the game restarts the steering animation every frame, and the engine cut that animation's movement to about a tenth at 144 FPS. The engine's limit now follows the frame time, so the hero steers at the same speed as at 30 FPS. Walking, rolling, sprinting and combat are unchanged. At the top of a steep slide, the hero sometimes did a "walking in the air" stumble before sliding above 30 FPS, also when attacking at the edge. The game checks every frame whether the hero is touching the slide surface, and at high frame rates that check could miss for a single frame. A touch now counts for one 30 FPS frame (1/30 s), which is what the game sees at 30 FPS, so the slide starts straight away.
+  - **Smooth Cutscenes:** the in-engine cutscene camera no longer jerks at high FPS (tested up to 144 FPS).
+  - **Soul Counter:** the souls counter no longer rolls up too fast at high FPS.
   - **Swamp Poison Build-up (Blighttown):** Above 30 FPS, the poison bar filled up to a third faster while standing in the Blighttown swamp. The swamp adds its poison in steps that the game counts in whole frames, so at high frame rates the steps came more often. DSfix now keeps each step at 0.1 s, as at 30 FPS. The poison damage, the bar going down outside the swamp, and lava are unchanged (they were already correct).
-* **Native 16:10 & Steam Deck Aspect Ratio Support:** Dark Souls PTDE natively forces 16:9 letterboxing (black bars) on taller displays, such as 16:10 monitors or the Steam Deck's 1280x800 screen. This fix automatically detects displays taller than 16:9 and removes the black bars by seamlessly expanding the vertical camera field-of-view (Vert+). The game now perfectly fills the entire screen without any image stretching or horizontal squashing. Standard 16:9 displays are left completely untouched.
 
 * **Keyboard + Mouse + Controller in the same time** - DDTMControllerFix.dll icon switch: Advanced mapping and support for controllers and Keyboard + Mouse. Play with the controller together with keyboard + mouse. Smooth 1:1 mouse camera, custom cursor, and key bindings (combos of two keys) in the `[Keyboard]` / `[Mouse]` sections of `DDTMControllerMappings.ini`. The game's own keyboard settings are not used.
 * **True-Colour Menu Cursor (with DDTM Controller Fix):** The keyboard/mouse menu cursor is now drawn by DSfix inside the game picture, instead of as a Windows hardware cursor. Graphics drivers often show hardware cursors with different colours or brightness; drawn by DSfix, the cursor looks exactly like its picture on every PC, and it shows up in screenshots and recordings. It is made from one 64×64 picture and scaled to your resolution (32 px at 1080p, 43 px at 1440p, 64 px at 4K). Clicks, menus and HUD scaling are not affected. Without DSfix, DDTM Controller Fix shows its own Windows cursor, made from the same picture.
@@ -183,55 +162,32 @@ Rest at a bonfire and choose **Enter Covenant** (below Attune Magic). You can sw
 ### Override Language not keeping the change, sometimes the user needed to play with compatibility mode.
 * **Applied Solution:** Language override no longer modifies the Windows registry or requires compatibility mode. It is applied inside the game process only
 
-### Script Memory Fix
-* **Applied Solution:** Keeps the enemy AI scripts cleaning up their memory as often as they do at 30 FPS. At high frame rates, unused script data used to build up much faster, and in crowded areas the game could run out of memory and close itself without warning.
-
-### Online Player Movement
-* **Applied Solution:** Other players' characters (summons and invaders) now walk, run and sprint according to their real speed. Above 30 FPS, a running player used to be shown walking.
-
-### 16:10 and Taller Screens
-* **Applied Solution:** On 16:10 (and 4:3) resolutions, the game's camera now uses the real shape of your screen, so you see more of the world above and below, with the same width as on 16:9. The world, effects, lock-on marker and enemy health bars all line up, with nothing cut off at the edges. 16:9 screens are not affected.
-
-### Skip Intro
-* **Applied Solution:** `skipIntro` now takes you straight to the title screen, skipping the start-up autosave notice and the Bandai Namco, FromSoftware and Havok logos. It no longer speeds up the game's clock to do this, so it has no effect on timing or performance during play. The flaming autosave icon still appears in game as usual.
-
 ### Bonfire Softlock Fix (improved)
-* **Applied Solution:** The bonfire softlock check now verifies the game's memory before reading it. It works exactly as before, but no longer triggers hidden errors during loading screens or when joining another player's world.
+* **Applied Solution:** The bonfire softlock check now verifies the game's memory before reading it. It no longer triggers hidden errors during loading screens or when joining another player's world. The stand-up fix runs only with `unlockFPS 1`.
 ---
 
 ## Credits
-* **[Durante/PeterTh](https://github.com/PeterTh/dsfix):** Huge thanks for the foundational work on original DSFix 2.4
-* **[Hal47](https://github.com/Hal47/dsfix):** Credit for the Sun and Moon rendering fixes.
-* **Bonfire softlock fix:** The Idea is from [Sean Pesce](https://github.com/SeanPesce/FPSFix-Plus).
-* **Dark Souls Overhaul team (metal-crow & Sean Pesce)** – memory research (equipment and parameter table layouts, durability addresses, and the item-use and covenant-offering addresses) used for the item auto-equip, weapon durability bar, multiple item use and multiple covenant offerings features. All of it is DSfix 3.0's own code. https://github.com/metal-crow/Dark-Souls-1-Overhaul
-* **AMD FidelityFX CAS:** the sharpening uses AMD's Contrast Adaptive Sharpening (MIT license, see Third-Party Licenses). https://github.com/GPUOpen-Effects/FidelityFX-CAS
+
+DSfix 3.0 is a modified version of DSfix by Durante (Peter Thoman), released under the GNU GPL v3 (see `LICENSE.txt`).
+Source code: <your GitHub link>
+
+* **[Durante / PeterTh](https://github.com/PeterTh/dsfix):** the original DSfix 2.4, the foundation of DSfix 3.0.
+* **Nwks (Clement Barnier):** the original DSfix FPS unlock.
+* **backfoggen:** [High-Res UI and Subtitle fonts](https://www.nexusmods.com/darksouls/mods/21), built into DSfix 3.0 with credit.
+* **[Hal47](https://github.com/Hal47/dsfix):** the Sun and Moon rendering fixes.
+* **Bonfire softlock fix:** logic from [Sean Pesce's FPSFix+](https://github.com/SeanPesce/FPSFix-Plus), based on [NullBy7e's FPSFix](https://github.com/NullBy7e/FPSFix).
+* **Dark Souls Overhaul team (metal-crow & Sean Pesce):** memory research (equipment and parameter table layouts, durability addresses, and the item-use and covenant-offering addresses) used for the item auto-equip, weapon durability bar, multiple item use and multiple covenant offerings features. All of it is DSfix 3.0's own code. https://github.com/metal-crow/Dark-Souls-1-Overhaul
+* **AMD FidelityFX CAS:** the sharpening (MIT license). https://github.com/GPUOpen-Effects/FidelityFX-CAS
+* **SMAA:** Uses SMAA. Copyright (C) 2011 by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez.
+* **NVIDIA FXAA 3.11** by Timothy Lottes.
+* **SSAO effects:** Tomerk (OBGE VSSAO, HBAO), Asmodean (VSSAO2), Durante.
+* **SuperFastHash** by Paul Hsieh. **Microsoft Detours** (MIT).
+* **DDTM Controller Fix** uses SDL2, SDL2-CS and MinHook.
+* Controller and keyboard icons, the menu cursor and the map pictures: made by DDTM.
 
 ## Third-Party Licenses
 
-DSfix 3.0 contains code adapted from the following project, used under its license:
-
-### AMD FidelityFX CAS (Contrast Adaptive Sharpening)
-Source: https://github.com/GPUOpen-Effects/FidelityFX-CAS
-Used for the sharpening (`sharpenStrength`).
-
-MIT License
-
-Copyright (c) 2020 Advanced Micro Devices, Inc. All rights reserved.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
+The full license texts are in the archive:
+* `LICENSE.txt`: GNU GPL v3 (DSfix 3.0)
+* `DSfix_THIRD_PARTY_LICENSES.txt`: AMD FidelityFX CAS, SMAA, NVIDIA FXAA, SuperFastHash, Microsoft Detours, High-Res UI and Subtitle fonts
+* `DDTMControllerFix_THIRD_PARTY_LICENSES.txt`: SDL2, SDL2-CS, MinHook

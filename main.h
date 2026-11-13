@@ -27,12 +27,12 @@
 
 #define WITHOUT_GFWL_LIB
 
-//#ifndef RELEASE_VER
+#ifndef RELEASE_VER
 #include "Settings.h" // SDLOG reads the log level; needed by every file that uses SDLOG when RELEASE_VER is not defined
 #define SDLOG(_level, _str, ...) if(Settings::get().getLogLevel() > _level) { sdlog(_str, __VA_ARGS__); }
-//#else
-//#define SDLOG(_level, _str, ...) {}
-//#endif
+#else
+#define SDLOG(_level, _str, ...) {}
+#endif
 #define SAFERELEASE(_p) { if(_p) { (_p)->Release(); (_p) = NULL; } }
 #define SAFEDELETE(_p) { if(_p) { delete (_p); (_p) = NULL; } }
 
@@ -50,6 +50,8 @@ void __cdecl sdlogtime();
 void __cdecl sdlog(const char * fmt, ...);
 void errorExit(LPTSTR lpszFunction);
 void InitializeDSfix();
+
+extern bool timingIntroMode;
 
 typedef IDirect3D9 *(APIENTRY *tDirect3DCreate9)(UINT);
 extern tDirect3DCreate9 oDirect3DCreate9;

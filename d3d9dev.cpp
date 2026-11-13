@@ -12,7 +12,6 @@
 #include "Settings.h"
 #include "KeyActions.h"
 #include "SaveManager.h"
-#include "AspectFix.h"
 #include "d3d9query.h"
 
 void applyDisplayOverrides(IDirect3D9* d3d, UINT adapter, D3DPRESENT_PARAMETERS* pp); // RenderstateManager.cpp
@@ -33,9 +32,7 @@ HRESULT APIENTRY hkIDirect3DDevice9::Present(CONST RECT *pSourceRect, CONST RECT
 	KeyActions::get().processIO();
 	WindowManager::get().applyCursorCapture();
 	SaveManager::get().tick();
-	// 16:10 / Steam Deck: a letterboxed Present destination is opened up to the whole window
-	const RECT* dst = isAspectActive() ? correctPresentRect(m_pD3Ddev, hDestWindowOverride, pDestRect) : pDestRect;
-	return RSManager::get().redirectPresent(pSourceRect, dst, hDestWindowOverride, pDirtyRegion);
+	return RSManager::get().redirectPresent(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
 }
 
 HRESULT APIENTRY hkIDirect3DDevice9::SetVertexShaderConstantF(UINT StartRegister, CONST float* pConstantData, UINT Vector4fCount) {
@@ -88,18 +85,8 @@ HRESULT APIENTRY hkIDirect3DDevice9::SetVertexShader(IDirect3DVertexShader9* pvS
 HRESULT APIENTRY hkIDirect3DDevice9::SetViewport(CONST D3DVIEWPORT9 *pViewport) {
 	Settings::get().init();
 	SDLOG(6, "SetViewport X / Y - W x H : %4lu / %4lu  -  %4lu x %4lu\n", pViewport->X, pViewport->Y, pViewport->Width, pViewport->Height);
-
-	D3DVIEWPORT9 vp = *pViewport;
-	if (isAspectActive()) {
-		// Screens taller than 16:9 (16:10, 4:3): the game letterboxes its 16:9 picture. Expand that letterbox
-		// viewport to the whole render target (Vert+). The 2D UI is put back into the 16:9 area at draw time
-		// (see RSManager::redirectDraw*PrimitiveUP), so it is not stretched.
-		correctViewport(&vp, m_pD3Ddev);
-		noteViewport(*pViewport, vp);
-	}
-
-	RSManager::get().setViewport(*pViewport); // scissor checks keep comparing against the game's own viewport
-	return m_pD3Ddev->SetViewport(&vp); 
+	RSManager::get().setViewport(*pViewport);
+	return m_pD3Ddev->SetViewport(pViewport); 
 	//D3DVIEWPORT9 copy;
 	//memcpy(&copy, pViewport, sizeof(D3DVIEWPORT9));
 	//if(copy.Height == Settings::get().getRenderHeight() && copy.Width == Settings::get().getRenderWidth()) {
@@ -464,11 +451,7 @@ HRESULT APIENTRY hkIDirect3DDevice9::GetVertexShaderConstantI(UINT StartRegister
 }
 
 HRESULT APIENTRY hkIDirect3DDevice9::GetViewport(D3DVIEWPORT9 *pViewport) {
-	HRESULT hr = m_pD3Ddev->GetViewport(pViewport);
-	// the game gets back exactly what it set, not our expanded viewport
-	D3DVIEWPORT9 game;
-	if (SUCCEEDED(hr) && pViewport && isAspectActive() && getGameViewport(*pViewport, &game)) *pViewport = game;
-	return hr;
+	return m_pD3Ddev->GetViewport(pViewport);
 }
 
 HRESULT APIENTRY hkIDirect3DDevice9::LightEnable(DWORD LightIndex, BOOL bEnable) {
@@ -721,14 +704,7 @@ BOOL APIENTRY hkIDirect3DDevice9::ShowCursor(BOOL bShow) {
 
 HRESULT APIENTRY hkIDirect3DDevice9::StretchRect(IDirect3DSurface9* pSourceSurface, CONST RECT* pSourceRect, IDirect3DSurface9* pDestSurface, CONST RECT* pDestRect, D3DTEXTUREFILTERTYPE Filter) {
 	SDLOG(5, "StretchRect src -> dest, sR -> dR : %p -> %p,  %s -> %s\n", pSourceSurface, pDestSurface, RectToString(pSourceRect), RectToString(pDestRect));
-
-	RECT correctedDst;
-	CONST RECT* dstUse = pDestRect;
-	if (isAspectActive() && pDestRect && pDestSurface) {
-		dstUse = correctStretchRect(pDestSurface, pDestRect, &correctedDst);
-	}
-
-	return RSManager::get().redirectStretchRect(pSourceSurface, pSourceRect, pDestSurface, dstUse, Filter);
+	return RSManager::get().redirectStretchRect(pSourceSurface, pSourceRect, pDestSurface, pDestRect, Filter);
 }
 
 HRESULT APIENTRY hkIDirect3DDevice9::TestCooperativeLevel() {

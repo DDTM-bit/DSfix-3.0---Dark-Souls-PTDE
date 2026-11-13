@@ -240,7 +240,6 @@
     </ResourceCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="AspectFix.cpp" />
     <ClCompile Include="BulkItemUse.cpp" />
     <ClCompile Include="CameraFix.cpp" />
     <ClCompile Include="CovenantOffer.cpp" />
@@ -264,16 +263,12 @@
     <ClCompile Include="Detouring.cpp" />
     <ClCompile Include="dinputWrapper.cpp" />
     <ClCompile Include="Effect.cpp" />
-    <ClCompile Include="FootPlacementFix.cpp" />
     <ClCompile Include="FPS.cpp" />
     <ClCompile Include="FXAA.cpp" />
     <ClCompile Include="GameParams.cpp" />
     <ClCompile Include="GAUSS.cpp" />
-    <ClCompile Include="GhostFix.cpp" />
     <ClCompile Include="Hud.cpp" />
-    <ClCompile Include="IntroSkip.cpp" />
     <ClCompile Include="KeyActions.cpp" />
-    <ClCompile Include="LadderSnapFix.cpp" />
     <ClCompile Include="main.cpp">
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Disabled</Optimization>
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Disabled</Optimization>
@@ -317,28 +312,22 @@
       <PreprocessorDefinitions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">WIN32;NDEBUG;_WINDOWS;_MBCS;_USRDLL</PreprocessorDefinitions>
     </ClCompile>
     <ClCompile Include="memory.cpp" />
-    <ClCompile Include="PhysicsFixes.cpp" />
     <ClCompile Include="QuickSave.cpp" />
     <ClCompile Include="RenderstateManager.cpp" />
     <ClCompile Include="RootMotionFix.cpp" />
     <ClCompile Include="SaveManager.cpp" />
-    <ClCompile Include="ScriptFix.cpp" />
     <ClCompile Include="Settings.cpp" />
-    <ClCompile Include="SfxFix.cpp" />
     <ClCompile Include="SlopeSlideFix.cpp" />
     <ClCompile Include="SMAA.cpp" />
     <ClCompile Include="SoulCounterFix.cpp" />
     <ClCompile Include="SSAO.cpp" />
     <ClCompile Include="StaminaFix.cpp" />
     <ClCompile Include="TitleMark.cpp" />
-    <ClCompile Include="TurnFix.cpp" />
-    <ClCompile Include="UIFix.cpp" />
     <ClCompile Include="WeaponWearBars.cpp" />
     <ClCompile Include="WindowManager.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AreaTex.h" />
-    <ClInclude Include="AspectFix.h" />
     <ClInclude Include="BulkItemUse.h" />
     <ClInclude Include="CameraFix.h" />
     <ClInclude Include="CovenantOffer.h" />
@@ -350,26 +339,19 @@
     <ClInclude Include="dinput.h" />
     <ClInclude Include="dinputWrapper.h" />
     <ClInclude Include="Effect.h" />
-    <ClInclude Include="FootPlacementFix.h" />
     <ClInclude Include="FXAA.h" />
     <ClInclude Include="GameMap.h" />
     <ClInclude Include="GameParams.h" />
     <ClInclude Include="GAUSS.h" />
-    <ClInclude Include="GhostFix.h" />
     <ClInclude Include="Hash.h" />
     <ClInclude Include="FPS.h" />
     <ClInclude Include="Hud.h" />
-    <ClInclude Include="IntroSkip.h" />
     <ClInclude Include="KeyActions.h" />
-    <ClInclude Include="LadderSnapFix.h" />
     <ClInclude Include="memory.h" />
-    <ClInclude Include="PhysicsFixes.h" />
     <ClInclude Include="QuickSave.h" />
     <ClInclude Include="resource1.h" />
     <ClInclude Include="RootMotionFix.h" />
-    <ClInclude Include="ScriptFix.h" />
     <ClInclude Include="SearchTex.h" />
-    <ClInclude Include="SfxFix.h" />
     <ClInclude Include="SlopeSlideFix.h" />
     <ClInclude Include="SMAA.h" />
     <ClInclude Include="SoulCounterFix.h" />
@@ -383,8 +365,6 @@
     <ClInclude Include="Settings.h" />
     <ClInclude Include="SSAO.h" />
     <ClInclude Include="TitleMark.h" />
-    <ClInclude Include="TurnFix.h" />
-    <ClInclude Include="UIFix.h" />
     <ClInclude Include="WeaponWearBars.h" />
     <ClInclude Include="WindowManager.h" />
   </ItemGroup>

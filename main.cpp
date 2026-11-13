@@ -19,7 +19,6 @@
 #include "Detouring.h"
 #include "SaveManager.h"
 #include "FPS.h"
-#include "IntroSkip.h"
 #include "GameParams.h"
 #include "WeaponWearBars.h"
 #include "BulkItemUse.h"
@@ -112,10 +111,13 @@ namespace {
     }
 }
 
+// The stand-up write is part of DSfix's FPS unlock: only with unlockFPS 1. With unlockFPS 0 the thread only reads the
+// sitting state for the SSAO switch below (nothing in the game is written).
 DWORD WINAPI BonfireGlitchDetectionThread(LPVOID lpParam) {
     Sleep(1000); // Wait for the game to initialize
     uintptr_t baseAddr = (uintptr_t)GetModuleHandle(NULL);
     DWORD first_detected = 0;
+    const bool standUp = Settings::get().getUnlockFPS();
 
     while (true) {
         Sleep(200);
@@ -132,7 +134,7 @@ DWORD WINAPI BonfireGlitchDetectionThread(LPVOID lpParam) {
             // neither Human nor Hollow: nothing is checked (as before)
         }
         // 4. Check if we are softlocked (Sitting animation + NO UI Menus open)
-        else if (isSitting && !menuOpen) {
+        else if (standUp && isSitting && !menuOpen) {
             if (first_detected == 0) {
                 first_detected = GetTickCount();
             }
@@ -354,9 +356,6 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
         // MUST execute immediately before game threads start to avoid logic deadlocks
         initFPSTimer();
         if (Settings::get().getUnlockFPS()) applyFPSPatch();
-
-        // skipIntro (with or without unlockFPS): the title screen's own steps skip the autosave notice and the logos
-        if (Settings::get().getSkipIntro()) installIntroSkip();
 
         // weaponWearBars: notes the durability of the equipped weapons when the game reads it
         if (Settings::get().getWeaponWearBars()) installWeaponWearBars();

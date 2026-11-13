@@ -1,5 +1,5 @@
 #include "SlopeSlideFix.h"
-#include "PhysicsFixes.h" // g_PhysicsDeltaTime: the step the engine got this frame (seconds)
+#include "FPS.h"          // g_engineStep: the step the engine got this frame (seconds)
 #include "main.h"         // SDLOG
 #include <cstring>
 #include <cstdint>
@@ -91,7 +91,7 @@ extern "C" unsigned __cdecl slideHoldUpdate(DWORD block, unsigned bits) {
     HoldSlot* s = findSlot(block, false, now);
     if (!s || !(s->remaining > 0.0f)) return bits;
     if (now - s->lastTick > 250) { s->remaining = 0.0f; return bits; } // a load or a long hitch: nothing to keep
-    float step = g_PhysicsDeltaTime;
+    float step = g_engineStep;
     if (!(step > 0.0f)) step = 0.0f;
     s->remaining -= step;
     s->lastTick = now;

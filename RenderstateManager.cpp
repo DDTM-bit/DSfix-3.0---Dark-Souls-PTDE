@@ -21,7 +21,6 @@
 #include "FPS.h"
 #include "resource1.h"
 #include <atlbase.h>
-#include "AspectFix.h"
 #include "WeaponWearBars.h"
 #include "TitleMark.h"
 #include "QuickSave.h"
@@ -1370,6 +1369,19 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 		captureNextFrame = false;
 		SDLOG(0, "== CAPTURING FRAME ==\n")
 	}
+	if (timingIntroMode) {
+		skippedPresents++;
+		if (skippedPresents >= 1200u && !Settings::get().getUnlockFPS()) {
+			SDLOG(1, "Intro mode ended (timeout)!\n");
+			timingIntroMode = false;
+		}
+		if (skippedPresents >= 3000u) {
+			SDLOG(1, "Intro mode ended (full timeout)!\n");
+			timingIntroMode = false;
+		}
+		return S_OK;
+	}
+	skippedPresents = 0;
 	if (g_dumpActive) {
 		if (g_dumpIsRequested) {
 			std::ofstream df(GetDirectoryFile("hud_dump.txt"), std::ios::app);
@@ -3065,7 +3077,9 @@ namespace sortPrompt {
 		return true;
 	}
 
-	// at Present: for each column, the picture most of this frame's rows drew becomes the prompt's value icon
+	// at Present: for each column, the picture most of this frame's rows drew becomes the prompt's value icon.
+	// All columns are chosen first and only then emptied: the "same line" test of a column looks at the other columns'
+	// icons (the last column, weight, used to find all the others already emptied, so it was never taken).
 	void commitAttr() {
 		for (int c = 0; c < 6; ++c) {
 			const int n = g_candN[c];
@@ -3092,7 +3106,9 @@ namespace sortPrompt {
 				}
 				for (int k = 0; k < 4; ++k) g_attrUv[c][k] = g_candUv[c][best][k] / 4096.0f;
 			}
-			for (int i = 0; i < n; ++i) g_candTex[c][i]->Release();
+		}
+		for (int c = 0; c < 6; ++c) {
+			for (int i = 0; i < g_candN[c]; ++i) g_candTex[c][i]->Release();
 			g_candN[c] = 0;
 		}
 	}
@@ -3509,6 +3525,14 @@ HRESULT RSManager::redirectSetTexture(DWORD Stage, IDirect3DBaseTexture9* pTextu
 	//	sprintf(buffer, "tex%4d__", index);
 	//	dumpSurface(buffer, surf);
 	//}
+	if (Settings::get().getSkipIntro() && !timingIntroMode && isTextureBandainamcoLogo(pTexture)) {
+		SDLOG(1, "Intro mode started!\n");
+		timingIntroMode = true;
+	}
+	if (timingIntroMode && (isTextureGuiElements1(pTexture) || isTextureMenuscreenLogo(pTexture) || isTextureText(pTexture))) {
+		SDLOG(1, "Intro mode ended due to texture!\n");
+		timingIntroMode = false;
+	}
 	if (!hudStarted && isTextureHudHealthbar(pTexture)) {
 		SDLOG(1, "HUD started!\n");
 		hudStarted = true;
@@ -4789,9 +4813,6 @@ void RSManager::measureOcclusionScale() {
 	haveOcclusionScale = true;
 	float scale = (static_cast<float>(Settings::get().getRenderWidth()) *
 		static_cast<float>(Settings::get().getRenderHeight())) / (1024.0f * 720.0f);
-	if (isAspectActive()) {
-		scale *= getAspectRatio() / (16.0f / 9.0f);
-	}
 	occlusionScale = scale > 0.01f ? scale : 1.0f;
 	SDLOG(2, "occlusionScale (calculated) = %f\n", occlusionScale);
 }
