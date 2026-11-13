@@ -179,11 +179,16 @@ Source code: <your GitHub link>
 * **NVIDIA FXAA 3.11** by Timothy Lottes.
 * **SSAO effects:** Tomerk (OBGE VSSAO, HBAO), Asmodean (VSSAO2), Durante.
 * **SuperFastHash** by Paul Hsieh. **Microsoft Detours** (MIT).
-* **DDTM Controller Fix** uses SDL2, SDL2-CS and MinHook.
+* **[DDTM Controller Fix](https://github.com/DDTM-bit/DDTMControllerFixPDTE)** (`DDTMControllerFix.dll`, included): GNU GPL v3. It uses SDL2, SDL2-CS, MinHook.NET (a port of MinHook), SharpDisasm/udis86 and the .NET runtime.
+
 
 ## Third-Party Licenses
 
 The full license texts are in the archive:
-* `LICENSE.txt`: GNU GPL v3 (DSfix 3.0)
+* `LICENSE.txt`: GNU GPL v3 (DSfix 3.0 and DDTM Controller Fix)
 * `DSfix_THIRD_PARTY_LICENSES.txt`: AMD FidelityFX CAS, SMAA, NVIDIA FXAA, SuperFastHash, Microsoft Detours, High-Res UI and Subtitle fonts
-* `DDTMControllerFix_THIRD_PARTY_LICENSES.txt`: SDL2, SDL2-CS, MinHook
+* `DDTMControllerFix_THIRD_PARTY_LICENSES.txt`: SDL2, SDL2-CS, MinHook.NET, MinHook, SharpDisasm/udis86, .NET runtime
+
+Source code:
+* DSfix 3.0: https://github.com/DDTM-bit/DSfix-3.0---Dark-Souls-PTDE
+* DDTM Controller Fix: https://github.com/DDTM-bit/DDTMControllerFixPDTE
