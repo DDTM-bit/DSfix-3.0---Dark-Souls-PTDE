@@ -174,7 +174,8 @@ Source code: <your GitHub link>
 * **[Durante / PeterTh](https://github.com/PeterTh/dsfix):** the original DSfix 2.4, the foundation of DSfix 3.0.
 * **Nwks (Clement Barnier):** the original DSfix FPS unlock.
 * **backfoggen:** [High-Res UI and Subtitle fonts](https://www.nexusmods.com/darksouls/mods/21), built into DSfix 3.0 with credit.
-* **[Hal47](https://github.com/Hal47/dsfix):** the Sun and Moon rendering fixes.
+* **[Hal47's DSfix fork](https://github.com/Hal47/dsfix)** (sun and lens flare patch by Seirra): the Sun and Moon rendering fix at high resolutions.
+* **Nicklas Lindgren (niligulmohar):** the water surface fix (part of Durante's DSfix since 2016).
 * **Bonfire softlock fix:** logic from [Sean Pesce's FPSFix+](https://github.com/SeanPesce/FPSFix-Plus), based on [NullBy7e's FPSFix](https://github.com/NullBy7e/FPSFix).
 * **Dark Souls Overhaul team (metal-crow & Sean Pesce):** memory research (equipment and parameter table layouts, durability addresses, and the item-use and covenant-offering addresses) used for the item auto-equip, weapon durability bar, multiple item use and multiple covenant offerings features. All of it is DSfix 3.0's own code. https://github.com/metal-crow/Dark-Souls-1-Overhaul
 * **AMD FidelityFX CAS:** the sharpening (MIT license). https://github.com/GPUOpen-Effects/FidelityFX-CAS
@@ -183,7 +184,6 @@ Source code: <your GitHub link>
 * **SSAO effects:** Tomerk (OBGE VSSAO, HBAO), Asmodean (VSSAO2), Durante.
 * **SuperFastHash** by Paul Hsieh. **Microsoft Detours** (MIT).
 * **DDTM Controller Fix** uses SDL2, SDL2-CS and MinHook.
-* Controller and keyboard icons, the menu cursor and the map pictures: made by DDTM.
 
 ## Third-Party Licenses
 
