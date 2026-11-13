@@ -109,14 +109,17 @@ Needs DDTMControllerFix.dll. Set `DDTMControllerMappings 1` in DSfix.ini.
 - Works with every icon set (`controllerIcons`, tex_override or the game's own).
 - The key icons come from `KeyboardMouse.png`, built into DSfix. To change their look, replace it with your own 16 × 16 grid picture (for example 1024 × 1024) in the same order.
 ---
-* **Weapons & Armor Sort**
-Sort the Weapons and Armor lists in the Inventory, the Equipment item list and the Bottomless Box.
+* **Item Sort**
+Sort the item lists in the Inventory, the Equipment item list and the Bottomless Box.
 
 - **Controller:** hold **RS**, press **D-pad ←/→** to choose what to sort by and **D-pad ↑/↓** for Desc/Asc, then release **RS** to sort.
 - **Keyboard:** hold **Left Alt**, press **←/→** to choose and **↑/↓** for Desc/Asc, then release **Left Alt** to sort.
-- Sort by: Game Order, Physical, Magic, Fire, Lightning (attack or defense), Durability, Weight, and Storage (Bottomless Box only).
+- **Weapons and Armor:** Game Order, Most Recent, Physical, Magic, Fire, Lightning (attack or defense), Durability, Weight, and Storage (Bottomless Box only).
+- **All other lists** (items, materials, keys, spells, arrows, rings): Game Order or Most Recent.
+- **Most Recent:** the item you picked up, bought, received, upgraded, equipped or attuned last comes first. Taking an item out of the Bottomless Box does not count. Each copy of a weapon, armor piece or ring counts on its own. Items you had before using this sort are listed after the others.
+- When an Equipment list opens, the cursor is on the item you have equipped, also when the list is sorted.
 - A prompt in the menu shows the current choice. It works with the HUD on or off.
-- Your choice is saved in `%LOCALAPPDATA%\NBGI\DarkSouls\DSfixSort.ini`.
+- Your choices and the Most Recent order (per character) are saved in `%LOCALAPPDATA%\NBGI\DarkSouls\DSfixSort.ini`.
 - On by default. Turn it off with `WeaponsArmorSort 0` in DSfix.ini.
 ---
 * **Bottomless Box Markers**
@@ -198,7 +201,6 @@ Rest at a bonfire and choose **Enter Covenant** (below Attune Magic). You can sw
 
 ## Credits
 * **[Durante/PeterTh](https://github.com/PeterTh/dsfix):** Huge thanks for the foundational work on original DSFix 2.4
-* **[zofrea](https://github.com/zofrea1/DS1-FPS-Unlock-PTDE-Remastered):** Special thanks for reverse-engineering discoveries and high-fps fixes.
 * **[Hal47](https://github.com/Hal47/dsfix):** Credit for the Sun and Moon rendering fixes.
 * **Bonfire softlock fix:** The Idea is from [Sean Pesce](https://github.com/SeanPesce/FPSFix-Plus).
 * **Dark Souls Overhaul team (metal-crow & Sean Pesce)** – memory research (equipment and parameter table layouts, durability addresses, and the item-use and covenant-offering addresses) used for the item auto-equip, weapon durability bar, multiple item use and multiple covenant offerings features. All of it is DSfix 3.0's own code. https://github.com/metal-crow/Dark-Souls-1-Overhaul
@@ -206,33 +208,7 @@ Rest at a bonfire and choose **Enter Covenant** (below Attune Magic). You can sw
 
 ## Third-Party Licenses
 
-DSfix 3.0 contains code adapted from the following projects, used under its license:
-
-### DS1 FPS Unlock (PTDE & Remastered) by zofrea
-Source: https://github.com/zofrea1/DS1-FPS-Unlock-PTDE-Remastered
-Parts of the FPS fixes are based on the DS1-FPS-Unlock-PTDE-Remastered project.
-
-MIT License
-
-Copyright (c) 2026 zofrea1
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+DSfix 3.0 contains code adapted from the following project, used under its license:
 
 ### AMD FidelityFX CAS (Contrast Adaptive Sharpening)
 Source: https://github.com/GPUOpen-Effects/FidelityFX-CAS

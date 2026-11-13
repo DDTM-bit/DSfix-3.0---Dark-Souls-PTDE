@@ -24,8 +24,9 @@ bool weaponsArmorSortActive();
 // What the sort prompt shows. False when no sortable list has focus (then nothing is drawn).
 struct SortPromptInfo {
     int window;       // 1 Inventory / Equipment (prompt on the help bar), 2 Bottomless Box (prompt in the header)
-    int kind;         // 1 weapons, 2 armor
-    int choice;       // 0 game order, 1..4 physical / magic / fire / lightning, 5 durability, 6 weight, 7 storage (box)
+    int kind;         // 1 weapons, 2 armor, 3 every other item list
+    int choice;       // 0 game order, 1..4 physical / magic / fire / lightning, 5 durability, 6 weight, 7 storage (box),
+                      // 8 most recent
     int desc;         // 1 DESC, 0 ASC
     int held;         // 0 nothing held, 1 RS held (controller prompt), 2 LALT held (keyboard prompt)
     int ownKeyboard;  // without DDTM: 1 = keyboard / mouse used last
@@ -54,3 +55,6 @@ bool installListWheelScroll();
 bool installGameMap();
 // for gameMap: puts its controller and mouse wheel callbacks on the shared XInput and wheel hooks (installs them if needed)
 bool installGameMapInput(void(__stdcall* pad)(unsigned long idx, void* state), bool(__stdcall* wheel)(int delta));
+// WeaponsArmorSort, "Most recent": notes what the hero gains, equips and attunes (called every frame from
+// RSManager::redirectPresent; it works 4 times a second, and does nothing when WeaponsArmorSort is off)
+void wasortFrameTick();

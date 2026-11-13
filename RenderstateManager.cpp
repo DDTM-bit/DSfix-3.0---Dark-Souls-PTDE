@@ -1484,6 +1484,8 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 	quickSaveFrame(d3ddev);
 	// gameMap: records the explored ground; draws the map while the gesture window is open (gameMap 1)
 	gameMap::frameTick(d3ddev);
+	// WeaponsArmorSort: "Most recent" notes what the hero gains, equips and attunes
+	wasortFrameTick();
 	// the menu cursor of DDTMControllerFix.dll (version 3), drawn last so it is on top of everything
 	swCursor::draw(d3ddev);
 
@@ -2892,8 +2894,8 @@ namespace SortPromptLook {
 	const D3DCOLOR kIconColor = 0xFFF0F0F0;  // like the game's prompt icons
 	const wchar_t* const kFontName = L"Palatino Linotype";
 	const int kFontWeight = FW_SEMIBOLD;
-	// The texts. "Game Order" stands where the value's icon goes when the list is in the game's own order.
-	const wchar_t* const kTexts[] = { L" + ", L"Sort By ", L"Desc", L"Asc", L"Game Order" };
+	// The texts. "Game Order" / "Most Recent" stand where the value's icon goes for those two choices.
+	const wchar_t* const kTexts[] = { L" + ", L"Sort By ", L"Desc", L"Asc", L"Game Order", L"Most Recent" };
 }
 
 // BottomlessBoxMarkers: the look of the chest marker, measured on the item's picture (the item's own icon quad)
@@ -2906,7 +2908,7 @@ namespace BoxMarkerLook {
 namespace sortPrompt {
 	struct Vtx { float x, y, z, u, v; D3DCOLOR c; };   // the game's 24-byte prompt / text vertex
 	struct Piece { IDirect3DBaseTexture9* tex; Vtx v[6]; };
-	enum { T_PLUS, T_SORTBY, T_DESC, T_ASC, T_GAMEORDER, T_COUNT };
+	enum { T_PLUS, T_SORTBY, T_DESC, T_ASC, T_GAMEORDER, T_RECENT, T_COUNT };
 	const int kMaxPieces = 8;
 	const int kRowPx = 64;                    // one text line in the text texture
 
@@ -2923,6 +2925,16 @@ namespace sortPrompt {
 	// game's own row drawing, so a texture mod that changes them changes the prompt too
 	IDirect3DBaseTexture9* g_attrTex[6] = { NULL, NULL, NULL, NULL, NULL, NULL };
 	float g_attrUv[6][4];
+	// Other pictures of the same size can sit in the same column (the HUD's status icons under the HP bar, from an
+	// equipped item's special effect). So the icons of each column are only collected during a frame. At Present only
+	// the icons that have another value icon on the same line count (a row draws all its value icons side by side; a
+	// HUD icon stands alone), and of those the picture most rows drew is taken. None of them: the icon is kept.
+	const int kCand = 8;
+	IDirect3DBaseTexture9* g_candTex[6][kCand];   // with a reference, released at Present
+	int g_candUv[6][kCand][4];
+	float g_candY[6][kCand];                       // top of the icon (part of the height, game UI)
+	int g_candN[6] = { 0, 0, 0, 0, 0, 0 };
+	const float kAttrMinY = 0.15f;                 // a row's icon is never this high up (part of the height, game UI)
 	// the Bottomless Box's chest picture above "Storage" (right side), for the storage choice
 	IDirect3DBaseTexture9* g_storeTex = NULL;
 	float g_storeUv[4];
@@ -3053,13 +3065,46 @@ namespace sortPrompt {
 		return true;
 	}
 
+	// at Present: for each column, the picture most of this frame's rows drew becomes the prompt's value icon
+	void commitAttr() {
+		for (int c = 0; c < 6; ++c) {
+			const int n = g_candN[c];
+			int best = -1, bestVotes = 0;
+			for (int i = 0; i < n; ++i) {
+				bool inRow = false;                    // another column has an icon on the same line
+				for (int c2 = 0; c2 < 6 && !inRow; ++c2)
+					for (int j = 0; c2 != c && j < g_candN[c2] && !inRow; ++j)
+						if (fabsf(g_candY[c2][j] - g_candY[c][i]) < 0.006f) inRow = true;
+				if (!inRow) continue;
+				int votes = 0;
+				for (int j = 0; j < n; ++j)
+					if (g_candTex[c][j] == g_candTex[c][i] && memcmp(g_candUv[c][j], g_candUv[c][i], sizeof(g_candUv[c][i])) == 0) ++votes;
+				const bool current = g_candTex[c][i] == g_attrTex[c] && g_attrUv[c][0] == g_candUv[c][i][0] / 4096.0f &&
+					g_attrUv[c][1] == g_candUv[c][i][1] / 4096.0f;
+				if (votes > bestVotes || (votes == bestVotes && current)) { best = i; bestVotes = votes; }
+			}
+			if (best >= 0) {
+				IDirect3DBaseTexture9* t = g_candTex[c][best];
+				if (g_attrTex[c] != t) {
+					t->AddRef();
+					if (g_attrTex[c]) g_attrTex[c]->Release();
+					g_attrTex[c] = t;
+				}
+				for (int k = 0; k < 4; ++k) g_attrUv[c][k] = g_candUv[c][best][k] / 4096.0f;
+			}
+			for (int i = 0; i < n; ++i) g_candTex[c][i]->Release();
+			g_candN[c] = 0;
+		}
+	}
+
 	// called at Present: the help bar's end is kept for the next frame
 	void newFrame() {
+		commitAttr();
 		g_helpMaxXPrev = g_helpMaxX;
 		g_helpMaxX = 0.0f;
 		g_triggered = false;
 		SortPromptInfo info;
-		g_capture = weaponsArmorSortPrompt(&info);
+		g_capture = weaponsArmorSortPrompt(&info) && (info.kind == 1 || info.kind == 2);   // value icons: only in those lists
 	}
 
 	void release() {
@@ -3067,7 +3112,11 @@ namespace sortPrompt {
 		SAFERELEASE(g_keysTex);
 		g_textFailed = false;
 		g_keysFailed = false;
-		for (int i = 0; i < 6; ++i) SAFERELEASE(g_attrTex[i]);
+		for (int i = 0; i < 6; ++i) {
+			SAFERELEASE(g_attrTex[i]);
+			for (int k = 0; k < g_candN[i]; ++k) g_candTex[i][k]->Release();
+			g_candN[i] = 0;
+		}
 		SAFERELEASE(g_storeTex);
 	}
 
@@ -3092,9 +3141,15 @@ namespace sortPrompt {
 		if (w >= 0.018f && w <= 0.026f && h >= 0.033f && h <= 0.045f) {
 			int col = -1;
 			for (int i = 0; i < 6; ++i) if (fabsf(x0 - kAttrX[i]) < 0.004f) col = i;
-			if (col < 0) return;
-			slot = &g_attrTex[col];
-			uv = g_attrUv[col];
+			if (col < 0 || y0 < kAttrMinY || g_candN[col] >= kCand) return;
+			IDirect3DBaseTexture9* t = NULL;
+			dev->GetTexture(0, &t);               // keeps the reference until Present
+			if (!t) return;
+			const int k = g_candN[col]++;
+			g_candTex[col][k] = t;
+			g_candUv[col][k][0] = minU; g_candUv[col][k][1] = minV; g_candUv[col][k][2] = maxU; g_candUv[col][k][3] = maxV;
+			g_candY[col][k] = y0;
+			return;
 		}
 		else if (fabsf(x0 - kStoreBox[0]) < 0.006f && fabsf(y0 - kStoreBox[1]) < 0.006f && fabsf(w - kStoreBox[2]) < 0.006f &&
 			fabsf(h - kStoreBox[3]) < 0.008f) {
@@ -3283,6 +3338,7 @@ namespace sortPrompt {
 		float aw = 0.0f, ah = 0.0f;
 		bool attrIcon = false;
 		if (info.choice == 0) text(T_GAMEORDER, 0.0f);               // "Game Order"
+		else if (info.choice == 8) text(T_RECENT, 0.0f);             // "Most Recent"
 		else if (info.choice == 7) {
 			if (g_storeTex && texSize2D(g_storeTex, aw, ah)) {         // the box's chest picture above "Storage"
 				icon(g_storeTex, g_storeUv, aw, ah, kGapTextIcon);

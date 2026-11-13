@@ -259,6 +259,7 @@ bool weaponMaxDurability(uint32_t weaponId, uint32_t* maxDurability) {
 // =====================================================================================================================
 #include <cstdio>
 #include <cmath>
+#include <algorithm>
 
 // QuickSelectEstus (further down) is told about every pad read by the XInput hook below.
 namespace estus { void padSeen(DWORD idx, WORD buttons); }
@@ -304,12 +305,14 @@ namespace wasort {
     //  4. keyboard read:      cmp eax,0x8007001E                            (right after the game reads the keys)
     //  5. XInput:             jmp dword ptr [XInputGetState]                (every pad read of the game goes here)
     //  6. Change Order:       call 0xC089A0                                 (Inventory: the move of "Change order")
+    //  7. Equipment list open: mov eax,[esi] / mov edx,[eax+0x8C]          (after the game placed the list's view)
     const BYTE kExpRefresh[9] = { 0x80,0xBE,0x45,0x01,0x00,0x00,0x01, 0x75,0x2A };
     const BYTE kExpCollect[9] = { 0xC6,0x86,0x45,0x01,0x00,0x00,0x00, 0xFF,0xD0 };
     const BYTE kExpTick[5] = { 0xD9,0x44,0x24,0x08, 0x51 };
     const BYTE kExpKeyboard[5] = { 0x3D,0x1E,0x00,0x07,0x80 };
     const BYTE kExpXInput[6] = { 0xFF,0x25,0xE8,0xC3,0x0C,0x01 };
     const BYTE kExpChangeOrder[5] = { 0xE8,0x9B,0x0C,0xFA,0xFF };   // at 0x00C67D00: call 0x00C089A0
+    const BYTE kExpEquipOpen[8] = { 0x8B,0x06, 0x8B,0x90,0x8C,0x00,0x00,0x00 };
     DWORD g_moveFn = 0x00C089A0;       // the game's move: shifts the order numbers between two rows of the list
     DWORD g_refreshCont = 0x00CA098E;  // after the compare: needs collecting
     DWORD g_refreshSkip = 0x00CA09B8;  // where the original jne went
@@ -328,13 +331,161 @@ namespace wasort {
     // ---------------------------------------------------------------------------------------------------------------
     // The remembered choice and the file
     // ---------------------------------------------------------------------------------------------------------------
-    const int kChoices = 7;                       // 0 game order, 1..4 the four attack/defense values, 5 durability, 6 weight
-    const int kChoicesBox = 8;                    // the Bottomless Box also has 7 storage
+    // Choices: 0 game order, 1..4 the four attack/defense values, 5 durability, 6 weight, 7 storage (Bottomless Box only),
+    // 8 most recent. Weapons and armor cycle through all of them, most recent right after game order. Every other item
+    // list (kind 3) has only game order and most recent, one choice for all of them.
+    const int kKindOther = 3;
     const int kChoiceStorage = 7;
-    volatile int g_choice[3] = { 0, 0, 0 };      // [1] weapons, [2] armor
-    volatile int g_desc[3] = { 1, 1, 1 };        // 1 = DESC (default), 0 = ASC
+    const int kChoiceRecent = 8;
+    const int kCycle[] = { 0, kChoiceRecent, 1, 2, 3, 4, 5, 6, kChoiceStorage };
+    const int kCycleLen = 8, kCycleLenBox = 9;    // storage only in the box
+    const int kCycleOther[] = { 0, kChoiceRecent };
+    volatile int g_choice[4] = { 0, 0, 0, 0 };   // [1] weapons, [2] armor, [3] every other item list
+    volatile int g_desc[4] = { 1, 1, 1, 1 };     // 1 = DESC (default), 0 = ASC
     volatile LONG g_saveBusy = 0;
     volatile LONG g_saveDirty = 0;
+
+    bool validChoice(int kind, int c) {
+        if (kind == kKindOther) return c == 0 || c == kChoiceRecent;
+        return c >= 0 && c <= kChoiceRecent;
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // "Most recent". The game keeps no time for its items, so DSfix numbers them itself: each time an item is picked up,
+    // bought or received, upgraded or infused, equipped or attuned, it gets the next number of its character (taking it
+    // out of the Bottomless Box does not count). The numbers are kept in DSfixSort.ini, one block per save slot, with the
+    // character's name: another character made in that slot starts a new block.
+    // ---------------------------------------------------------------------------------------------------------------
+    const int kRecentSlots = 10;                  // the game's save slots
+    const int kRecentMax = 3072;                  // records per character; when full, the oldest quarter is dropped
+    const int kNameLen = 16;                      // the character's name: 15 characters at most
+    const int kPositions = 2048;                  // inventory positions
+    // Weapons, armor and rings do not stack: two copies with the same id are two rows. They also get a number per
+    // inventory position, so only the copy that was gained or equipped is recent. Everything else (and an item only
+    // in the Bottomless Box) uses the number of its id.
+    struct RecentSet {
+        int used;
+        wchar_t name[kNameLen];
+        DWORD next;                               // the last number given
+        int n;
+        DWORD kid[kRecentMax];                    // kind | id, as the inventory has it
+        DWORD stamp[kRecentMax];
+        DWORD posKid[kPositions];                 // per inventory position: the copy that got posStamp
+        DWORD posStamp[kPositions];
+    };
+    RecentSet g_sets[kRecentSlots];
+    CRITICAL_SECTION g_recentLock;                // the save thread copies the sets while the game adds to them
+    bool g_recentLockReady = false;
+    volatile LONG g_recentLoaded = 0;             // the file was read: nothing is written before
+    volatile LONG g_recentDirty = 0;              // numbers given since the last write
+    DWORD g_dirtySince = 0;
+    int g_activeSet = -1;                         // the save slot of the character in play
+    const int kHashSize = 8192;                   // a power of 2, well above kRecentMax
+    short g_hash[kHashSize];                      // the active set's records by kind | id (-1 = empty)
+    DWORD g_stampTmp[kRecentMax];
+
+    int hashOf(DWORD kid) { return (int)((kid * 2654435761u) >> 19) & (kHashSize - 1); }
+
+    // From here to stampItem: only with g_recentLock held.
+    void hashInsert(DWORD kid, int index) {
+        int h = hashOf(kid);
+        while (g_hash[h] >= 0) h = (h + 1) & (kHashSize - 1);
+        g_hash[h] = (short)index;
+    }
+    void rebuildHash() {
+        memset(g_hash, 0xFF, sizeof(g_hash));
+        if (g_activeSet < 0) return;
+        const RecentSet& s = g_sets[g_activeSet];
+        for (int i = 0; i < s.n; ++i) hashInsert(s.kid[i], i);
+    }
+    int findRecord(DWORD kid) {
+        if (g_activeSet < 0) return -1;
+        const RecentSet& s = g_sets[g_activeSet];
+        for (int h = hashOf(kid), k = 0; k < kHashSize; ++k, h = (h + 1) & (kHashSize - 1)) {
+            const int i = g_hash[h];
+            if (i < 0) return -1;
+            if (i < s.n && s.kid[i] == kid) return i;
+        }
+        return -1;
+    }
+    // an item's number for the character in play (0 = none: not gained or equipped since "Most recent" came)
+    DWORD recentStamp(DWORD kid) {
+        const int i = findRecord(kid);
+        return i >= 0 ? g_sets[g_activeSet].stamp[i] : 0;
+    }
+    void dropOldest() {
+        RecentSet& s = g_sets[g_activeSet];
+        if (s.n < 4) return;
+        memcpy(g_stampTmp, s.stamp, sizeof(DWORD) * s.n);
+        std::nth_element(g_stampTmp, g_stampTmp + s.n / 4, g_stampTmp + s.n);
+        const DWORD cut = g_stampTmp[s.n / 4];
+        int m = 0;
+        for (int i = 0; i < s.n; ++i) if (s.stamp[i] > cut) { s.kid[m] = s.kid[i]; s.stamp[m] = s.stamp[i]; ++m; }
+        s.n = m;
+        rebuildHash();
+    }
+    // the character in play: its block (a new one when the slot has none or another name)
+    void activateSet(int slot, const wchar_t* name) {
+        RecentSet& s = g_sets[slot];
+        if (!s.used || wcsncmp(s.name, name, kNameLen) != 0) {
+            s.used = 1;
+            wcsncpy_s(s.name, kNameLen, name, _TRUNCATE);
+            s.next = 0;
+            s.n = 0;
+            memset(s.posKid, 0, sizeof(s.posKid));
+            memset(s.posStamp, 0, sizeof(s.posStamp));
+        }
+        g_activeSet = slot;
+        rebuildHash();
+    }
+
+    // weapons (not arrows / bolts: ids 2000000..2199999), armor and rings: one row per copy
+    bool singleCopy(DWORD kid) {
+        const DWORD kind = kid & 0xF0000000, id = kid & 0x0FFFFFFF;
+        if (kind == 0x10000000 || kind == 0x20000000) return true;
+        return kind == 0 && !(id >= 2000000 && id < 2200000);
+    }
+    // the number of a list row: pos = its inventory position (-1: only in the Bottomless Box)
+    DWORD entryStamp(DWORD kid, int pos) {
+        if (kid == 0xFFFFFFFF) return 0;
+        if (pos >= 0 && pos < kPositions && singleCopy(kid)) {
+            if (g_activeSet < 0) return 0;
+            const RecentSet& s = g_sets[g_activeSet];
+            return s.posKid[pos] == kid ? s.posStamp[pos] : 0;
+        }
+        return recentStamp(kid);
+    }
+
+    // gives the item the next number of the character in play (pos: its inventory position, -1 = none)
+    void stampItem(DWORD kid, int pos) {
+        if (g_activeSet < 0 || kid == 0xFFFFFFFF) return;
+        EnterCriticalSection(&g_recentLock);
+        RecentSet& s = g_sets[g_activeSet];
+        int i = findRecord(kid);
+        if (i < 0) {
+            if (s.n >= kRecentMax) dropOldest();
+            i = s.n++;
+            s.kid[i] = kid;
+            hashInsert(kid, i);
+        }
+        s.stamp[i] = ++s.next;
+        if (pos >= 0 && pos < kPositions && singleCopy(kid)) { s.posKid[pos] = kid; s.posStamp[pos] = s.next; }
+        LeaveCriticalSection(&g_recentLock);
+        if (!g_recentDirty) g_dirtySince = GetTickCount();
+        InterlockedExchange(&g_recentDirty, 1);
+    }
+
+    // a copy that came out of the Bottomless Box keeps the number its id has (it is not made recent)
+    void keepBoxStamp(DWORD kid, int pos) {
+        if (g_activeSet < 0 || pos < 0 || pos >= kPositions || !singleCopy(kid)) return;
+        EnterCriticalSection(&g_recentLock);
+        RecentSet& s = g_sets[g_activeSet];
+        s.posKid[pos] = kid;
+        s.posStamp[pos] = recentStamp(kid);
+        LeaveCriticalSection(&g_recentLock);
+        if (!g_recentDirty) g_dirtySince = GetTickCount();
+        InterlockedExchange(&g_recentDirty, 1);
+    }
 
     bool sortFilePath(wchar_t* dir1, wchar_t* dir2, wchar_t* file, wchar_t* tmp, DWORD size) {
         wchar_t base[MAX_PATH];
@@ -347,24 +498,56 @@ namespace wasort {
         return true;
     }
 
-    // Writes both choices. Any failure is silent: the choice then simply lives only while the game runs.
+    // Writes the choices and every character's numbers (on the save thread). Any failure is silent: they then live only
+    // while the game runs.
     void writeSortFile() {
+        if (!g_recentLoaded) return;
         wchar_t dir1[MAX_PATH], dir2[MAX_PATH], file[MAX_PATH], tmp[MAX_PATH];
         if (!sortFilePath(dir1, dir2, file, tmp, MAX_PATH)) return;
-        CreateDirectoryW(dir1, NULL);
-        CreateDirectoryW(dir2, NULL);
-        char text[64];
-        const int len = _snprintf_s(text, sizeof(text), _TRUNCATE, "Weapons=%d\r\nWeaponsOrder=%s\r\nArmor=%d\r\nArmorOrder=%s\r\n",
-            g_choice[1], g_desc[1] ? "DESC" : "ASC", g_choice[2], g_desc[2] ? "DESC" : "ASC");
-        HANDLE h = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (h == INVALID_HANDLE_VALUE) return;
-        DWORD written = 0;
-        const BOOL ok = len > 0 && WriteFile(h, text, (DWORD)len, &written, NULL) && written == (DWORD)len;
-        CloseHandle(h);
-        if (!ok || !MoveFileExW(tmp, file, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            DeleteFileW(tmp);
-            return;
+        HANDLE heap = GetProcessHeap();
+        RecentSet* sets = (RecentSet*)HeapAlloc(heap, 0, sizeof(g_sets));
+        if (!sets) return;
+        EnterCriticalSection(&g_recentLock);
+        memcpy(sets, g_sets, sizeof(g_sets));
+        LeaveCriticalSection(&g_recentLock);
+        size_t cap = 512;
+        for (int k = 0; k < kRecentSlots; ++k) if (sets[k].used) cap += 160 + (size_t)(sets[k].n + kPositions) * 32;
+        char* text = (char*)HeapAlloc(heap, 0, cap);
+        if (!text) { HeapFree(heap, 0, sets); return; }
+        int len = _snprintf_s(text, cap, _TRUNCATE,
+            "Weapons=%d\r\nWeaponsOrder=%s\r\nArmor=%d\r\nArmorOrder=%s\r\nItems=%d\r\nItemsOrder=%s\r\n",
+            g_choice[1], g_desc[1] ? "DESC" : "ASC", g_choice[2], g_desc[2] ? "DESC" : "ASC",
+            g_choice[3], g_desc[3] ? "DESC" : "ASC");
+        for (int k = 0; k < kRecentSlots && len > 0; ++k) {
+            const RecentSet& s = sets[k];
+            if (!s.used) continue;
+            char name[64] = { 0 };
+            if (!WideCharToMultiByte(CP_UTF8, 0, s.name, -1, name, sizeof(name), NULL, NULL)) name[0] = 0;
+            int m = _snprintf_s(text + len, cap - len, _TRUNCATE, "Character=%d %s\r\nNext=%u\r\n", k, name, s.next);
+            len = m < 0 ? -1 : len + m;
+            for (int i = 0; i < s.n && len > 0; ++i) {
+                m = _snprintf_s(text + len, cap - len, _TRUNCATE, "Recent=%08X %u\r\n", s.kid[i], s.stamp[i]);
+                len = m < 0 ? -1 : len + m;
+            }
+            for (int i = 0; i < kPositions && len > 0; ++i) {
+                if (!s.posStamp[i]) continue;
+                m = _snprintf_s(text + len, cap - len, _TRUNCATE, "Copy=%d %08X %u\r\n", i, s.posKid[i], s.posStamp[i]);
+                len = m < 0 ? -1 : len + m;
+            }
         }
+        HeapFree(heap, 0, sets);
+        if (len > 0) {
+            CreateDirectoryW(dir1, NULL);
+            CreateDirectoryW(dir2, NULL);
+            HANDLE h = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (h != INVALID_HANDLE_VALUE) {
+                DWORD written = 0;
+                const BOOL ok = WriteFile(h, text, (DWORD)len, &written, NULL) && written == (DWORD)len;
+                CloseHandle(h);
+                if (!ok || !MoveFileExW(tmp, file, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) DeleteFileW(tmp);
+            }
+        }
+        HeapFree(heap, 0, text);
     }
 
     DWORD WINAPI saveThread(LPVOID) {
@@ -391,21 +574,38 @@ namespace wasort {
         return -1;
     }
 
-    // Reads "Weapons=n", "WeaponsOrder=DESC|ASC", "Armor=n" and "ArmorOrder=DESC|ASC". Returns false when the file is
-    // missing or anything in it is wrong (an older file with only the two value lines counts as wrong).
-    bool readSortFile(int* weapons, int* armor, int* weaponsDesc, int* armorDesc) {
+    // the text after "key" when the line starts with it (any case), else NULL
+    const char* valueOf(const char* line, const char* key) {
+        const size_t n = strlen(key);
+        return _strnicmp(line, key, n) == 0 ? line + n : NULL;
+    }
+
+    // Reads the choices (by kind: [1] weapons, [2] armor, [3] the other lists) and the characters' numbers:
+    //   Weapons=n / WeaponsOrder=DESC|ASC / Armor=n / ArmorOrder=... / Items=n / ItemsOrder=...
+    //   Character=<save slot> <name>, then Next=<last number>, one Recent=<kind | id in hex> <number> per item, and one
+    //   Copy=<inventory position> <kind | id in hex> <number> per weapon, armor piece or ring copy.
+    // Returns false when the file is missing or anything in it is wrong (an older file without the Items lines counts as
+    // wrong, so it is written anew). With g_recentLock held.
+    bool readSortFile(int* choice, int* desc) {
+        static const char* const kKeys[4] = { NULL, "Weapons=", "Armor=", "Items=" };
+        static const char* const kOrderKeys[4] = { NULL, "WeaponsOrder=", "ArmorOrder=", "ItemsOrder=" };
         wchar_t dir1[MAX_PATH], dir2[MAX_PATH], file[MAX_PATH], tmp[MAX_PATH];
-        *weapons = 0; *armor = 0; *weaponsDesc = 1; *armorDesc = 1;
+        for (int k = 0; k < 4; ++k) { choice[k] = 0; desc[k] = 1; }
         if (!sortFilePath(dir1, dir2, file, tmp, MAX_PATH)) return false;
         HANDLE h = CreateFileW(file, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (h == INVALID_HANDLE_VALUE) return false;
-        char text[256];
+        const DWORD size = GetFileSize(h, NULL);
+        if (size == INVALID_FILE_SIZE || size > 16 * 1024 * 1024) { CloseHandle(h); return false; }
+        HANDLE heap = GetProcessHeap();
+        char* text = (char*)HeapAlloc(heap, 0, (SIZE_T)size + 1);
+        if (!text) { CloseHandle(h); return false; }
         DWORD got = 0;
-        const BOOL ok = ReadFile(h, text, sizeof(text) - 1, &got, NULL);
+        const BOOL ok = ReadFile(h, text, size, &got, NULL);
         CloseHandle(h);
-        if (!ok) return false;
+        if (!ok) { HeapFree(heap, 0, text); return false; }
         text[got] = 0;
-        bool haveW = false, haveA = false, haveWo = false, haveAo = false, good = true;
+        bool have[4] = { false, false, false, false }, haveOrder[4] = { false, false, false, false }, good = true;
+        int cur = -1;                             // the character block being read
         char* line = text;
         while (*line) {
             char* end = line;
@@ -415,27 +615,79 @@ namespace wasort {
             if (*line) {
                 int value = -1;
                 char extra = 0;
-                if (_strnicmp(line, "Weapons=", 8) == 0 && sscanf_s(line + 8, "%d%c", &value, &extra, 1) == 1 &&
-                    value >= 0 && value < kChoicesBox) { *weapons = value; haveW = true; }
-                else if (_strnicmp(line, "Armor=", 6) == 0 && sscanf_s(line + 6, "%d%c", &value, &extra, 1) == 1 &&
-                    value >= 0 && value < kChoicesBox) { *armor = value; haveA = true; }
-                else if (_strnicmp(line, "WeaponsOrder=", 13) == 0 && (value = parseOrder(line + 13)) >= 0) { *weaponsDesc = value; haveWo = true; }
-                else if (_strnicmp(line, "ArmorOrder=", 11) == 0 && (value = parseOrder(line + 11)) >= 0) { *armorDesc = value; haveAo = true; }
+                unsigned int a = 0, b = 0;
+                const char* v = NULL;
+                bool known = false;
+                for (int k = 1; k <= 3 && !known; ++k) {
+                    if ((v = valueOf(line, kKeys[k])) != NULL) {
+                        known = true;
+                        if (sscanf_s(v, "%d%c", &value, &extra, 1) == 1 && validChoice(k, value)) { choice[k] = value; have[k] = true; }
+                        else good = false;
+                    }
+                    else if ((v = valueOf(line, kOrderKeys[k])) != NULL) {
+                        known = true;
+                        if ((value = parseOrder(v)) >= 0) { desc[k] = value; haveOrder[k] = true; }
+                        else good = false;
+                    }
+                }
+                if (known) {
+                    // a choice line (read above)
+                }
+                else if ((v = valueOf(line, "Character=")) != NULL) {
+                    const char* space = strchr(v, ' ');
+                    if (space && sscanf_s(v, "%d", &value) == 1 && value >= 0 && value < kRecentSlots) {
+                        RecentSet& s = g_sets[value];
+                        s.used = 1;
+                        s.next = 0;
+                        s.n = 0;
+                        memset(s.posKid, 0, sizeof(s.posKid));
+                        memset(s.posStamp, 0, sizeof(s.posStamp));
+                        memset(s.name, 0, sizeof(s.name));
+                        if (!MultiByteToWideChar(CP_UTF8, 0, space + 1, -1, s.name, kNameLen)) memset(s.name, 0, sizeof(s.name));
+                        s.name[kNameLen - 1] = 0;
+                        cur = value;
+                    }
+                    else { good = false; cur = -1; }
+                }
+                else if ((v = valueOf(line, "Next=")) != NULL) {
+                    if (cur >= 0 && sscanf_s(v, "%u%c", &a, &extra, 1) == 1) { if (a > g_sets[cur].next) g_sets[cur].next = a; }
+                    else good = false;
+                }
+                else if ((v = valueOf(line, "Recent=")) != NULL) {
+                    if (cur >= 0 && sscanf_s(v, "%x %u%c", &a, &b, &extra, 1) == 2 && b) {
+                        RecentSet& s = g_sets[cur];
+                        if (s.n < kRecentMax) { s.kid[s.n] = a; s.stamp[s.n] = b; ++s.n; }
+                        if (b > s.next) s.next = b;
+                    }
+                    else good = false;
+                }
+                else if ((v = valueOf(line, "Copy=")) != NULL) {
+                    unsigned int c = 0;
+                    if (cur >= 0 && sscanf_s(v, "%u %x %u%c", &a, &b, &c, &extra, 1) == 3 && a < (unsigned)kPositions && c) {
+                        RecentSet& s = g_sets[cur];
+                        s.posKid[a] = b;
+                        s.posStamp[a] = c;
+                        if (c > s.next) s.next = c;
+                    }
+                    else good = false;
+                }
                 else good = false;
             }
             if (!keep) break;
             line = end + 1;
         }
-        return good && haveW && haveA && haveWo && haveAo;
+        HeapFree(heap, 0, text);
+        for (int k = 1; k <= 3; ++k) if (!have[k] || !haveOrder[k]) good = false;
+        return good;
     }
 
     DWORD WINAPI loadThread(LPVOID) {
-        int w = 0, a = 0, wd = 1, ad = 1;
-        const bool good = readSortFile(&w, &a, &wd, &ad);
-        g_choice[1] = w;
-        g_choice[2] = a;
-        g_desc[1] = wd;
-        g_desc[2] = ad;
+        int c[4], d[4];
+        EnterCriticalSection(&g_recentLock);
+        const bool good = readSortFile(c, d);
+        LeaveCriticalSection(&g_recentLock);
+        for (int k = 1; k <= 3; ++k) { g_choice[k] = c[k]; g_desc[k] = d[k]; }
+        InterlockedExchange(&g_recentLoaded, 1);
         if (!good) requestSave();
         return 0;
     }
@@ -456,7 +708,7 @@ namespace wasort {
 
     // ---------------------------------------------------------------------------------------------------------------
     // Which lists are ours. Noted at every rebuild (hook 1); read every frame (hook 3).
-    // kind: 0 not ours, 1 weapons (shields included, ammo not), 2 armor.
+    // kind: 0 not ours, 1 weapons (shields included, ammo not), 2 armor, 3 every other item list.
     // ---------------------------------------------------------------------------------------------------------------
     enum Window { W_NONE = 0, W_INVENTORY, W_BOX, W_EQUIP };
     struct ListInfo { DWORD list; int window; int kind; };
@@ -472,7 +724,8 @@ namespace wasort {
         return W_NONE;
     }
 
-    // frame = ebp of the rebuild function: [frame+8] slot (Equipment), [frame+0xC] tab category (4 weapons, 6 armor).
+    // frame = ebp of the rebuild function: [frame+8] slot (Equipment), [frame+0xC] tab category (Inventory and Bottomless
+    // Box: 0..3 items, materials, keys, spells, 4 weapons, 5 arrows / bolts, 6 armor, 7 rings).
     int kindOf(DWORD list, DWORD frame, int* windowOut) {
         const int window = windowOf(list);
         if (windowOut) *windowOut = window;
@@ -482,7 +735,8 @@ namespace wasort {
         if (window == W_EQUIP) {
             if (slot >= 0 && slot <= 3) return 1;   // left / right hand 1 and 2
             if (slot >= 8 && slot <= 11) return 2;  // head, chest, hands, legs
-            return 0;                               // ammo, rings, quick items
+            if ((slot >= 4 && slot <= 7) || (slot >= 13 && slot <= 19)) return kKindOther;   // ammo, rings, quick items
+            return 0;
         }
         if (window == W_INVENTORY) {
             const DWORD mm = rd32(kMenuMan);
@@ -490,6 +744,7 @@ namespace wasort {
         }
         if (category == 4) return 1;
         if (category == 6) return 2;
+        if (category >= 0 && category <= 7) return kKindOther;
         return 0;
     }
 
@@ -552,8 +807,11 @@ namespace wasort {
         g_startDesc = g_tempDesc;
     }
     void stepChoice(int dir) {
-        const int n = g_modeWindow == W_BOX ? kChoicesBox : kChoices;
-        g_temp = (g_temp + dir + n) % n;
+        const int* cycle = g_modeKind == kKindOther ? kCycleOther : kCycle;
+        const int n = g_modeKind == kKindOther ? 2 : (g_modeWindow == W_BOX ? kCycleLenBox : kCycleLen);
+        int at = 0;
+        for (int i = 0; i < n; ++i) if (cycle[i] == g_temp) at = i;
+        g_temp = cycle[(at + dir + n) % n];
     }
     void toggleOrder() {
         g_tempDesc = g_tempDesc ? 0 : 1;
@@ -693,6 +951,222 @@ namespace wasort {
         if (g_kbMode || (g_kbWaitUp & 8)) keys[kDikDown] = 0;
     }
 
+    bool rdBlock(DWORD a, void* out, DWORD n) {
+        if (!n) return true;
+        __try { memcpy(out, (const void*)a, n); return true; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+
+    // the inventory slot of an inventory position (28 bytes: +0 kind, +4 id, +8 count held, +0xC order, +0x10 used,
+    // +0x14 durability)
+    DWORD inventorySlot(DWORD player, DWORD i) {
+        const DWORD inv = player + 0x1B8;
+        if ((int)i < 0 || i >= rd32(inv + 0x110)) return 0;
+        const DWORD block = (i < rd32(inv + 0x118)) ? rd32(inv + 0x120) : rd32(inv + 0x124);
+        return block ? block + i * 28 : 0;
+    }
+
+    // kind | id of a list entry (0xFFFFFFFF when unknown) and its inventory position (-1: only in the box). Bottomless
+    // Box entries: (inventory position * 2) | 1 for a held item, (box position * 2) for an item only in the box.
+    DWORD entryKid(int window, DWORD player, DWORD entry, int* pos) {
+        *pos = -1;
+        if (window == W_BOX && !(entry & 1)) {
+            const DWORD i = entry >> 1;
+            const DWORD box = rd32(player + 0x420);
+            if (!box || i > 0x7FF) return 0xFFFFFFFF;
+            return rd32(box + 8 + i * 32);
+        }
+        const DWORD p = window == W_BOX ? (entry >> 1) : entry;
+        const DWORD slot = inventorySlot(player, p);
+        if (!slot) return 0xFFFFFFFF;
+        *pos = (int)p;
+        return rd32(slot) | rd32(slot + 4);
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // "Most recent": the look (wasortFrameTick, every frame at Present; it works 4 times a second). It compares the
+    // inventory, the Bottomless Box, the equipment and the attunement slots with the last look:
+    //   - an inventory slot that is new, holds another id (upgrade, infusion) or holds more: gained. Not when the same
+    //     item left the Bottomless Box in that moment (taken out of the box), and not the Estus Flask filling or
+    //     emptying (only a new flask or a higher level counts);
+    //   - an equipment slot (player data + 0x1D4: 20 inventory positions) that now holds another position: equipped;
+    //   - a spell in the attunement slots (player data + 0x50C: 12 x { magic id, -1 = empty; uses }) that was not there.
+    // After a loading screen or with another character the first look only notes what is there. So does a look that
+    // finds more than 16 gains at once (the game filling the inventory while it loads a save).
+    // Equipment slots: 0..3 left / right hand 1 and 2, 4..7 arrows / bolts 1 and 2, 8..11 head / chest / hands / legs,
+    // 13 / 14 rings, 15..19 quick items (12 is not an item list).
+    // ---------------------------------------------------------------------------------------------------------------
+    const DWORD kWorldChrMan = 0x0137D644;        // [+0x3C] = the hero (0 at the title screen)
+    const DWORD kGameMan = 0x013784A0;            // +0xA70 = the save slot in play (0..9)
+    const DWORD kEquipSlots = 0x1D4;              // player data: EquipGameData (+0x1B8) + 0x1C
+    const DWORD kMagicSlots = 0x50C;              // player data: EquipMagicData (+0x500) + 0xC
+    const int kEquipCount = 20, kMagicCount = 12;
+    const DWORD kInvMax = 2048, kBoxMax = 2048;
+    const int kMassGains = 16;
+    const DWORD kPollMs = 250, kFlushMs = 10000;
+    BYTE g_invNow[kInvMax * 28];
+    BYTE g_boxNow[kBoxMax * 32];
+    struct Seen { DWORD kid; DWORD count; BYTE used; };
+    Seen g_seen[kInvMax];
+    DWORD g_seenCount = 0;
+    DWORD g_boxKid[kBoxMax], g_boxCnt[kBoxMax];
+    DWORD g_boxSeenN = 0;
+    DWORD g_equipSeen[kEquipCount];
+    DWORD g_magicSeen[kMagicCount];
+    bool g_have = false;                          // the last look is valid
+    DWORD g_havePlayer = 0;
+    DWORD g_lastPoll = 0;
+
+    bool isEstus(DWORD kid) {
+        const DWORD id = kid & 0x0FFFFFFF;
+        return (kid & 0xF0000000) == 0x40000000 && id >= 200 && id <= 215;
+    }
+    void slotNow(DWORD i, DWORD count, Seen& out) {
+        if (i >= count) { out.kid = 0; out.count = 0; out.used = 0; return; }
+        const BYTE* s = g_invNow + i * 28;
+        out.used = s[0x10] ? 1 : 0;
+        out.kid = *(const DWORD*)s | *(const DWORD*)(s + 4);
+        out.count = *(const DWORD*)(s + 8);
+    }
+    void boxNow(DWORD i, DWORD boxN, DWORD& kid, DWORD& cnt) {
+        const BYTE* e = g_boxNow + i * 32;
+        const bool used = i < boxN && (e[0xA] & 1);
+        kid = used ? *(const DWORD*)e : 0;
+        cnt = used ? *(const WORD*)(e + 8) : 0;
+    }
+
+    void recentTick() {
+        if (!g_installed || !g_recentLoaded) return;
+        const DWORD now = GetTickCount();
+        if (now - g_lastPoll < kPollMs) return;
+        g_lastPoll = now;
+        const DWORD player = playerData();
+        const DWORD mm = rd32(kMenuMan);
+        const int loading = mm ? (int)rd32(mm + 0x7EC) : 0;
+        const DWORD gm = rd32(kGameMan);
+        const DWORD saveSlot = gm ? rd32(gm + 0xA70) : 0xFFFFFFFF;
+        const DWORD wcm = rd32(kWorldChrMan);
+        const DWORD hero = wcm ? rd32(wcm + 0x3C) : 0;
+        const bool inPlay = player && hero && saveSlot < (DWORD)kRecentSlots && !(loading >= 1 && loading <= 4);
+        // the numbers are written 10 s after the first new one, or at once when play stops (loading screen, title)
+        if (g_recentDirty && (!inPlay || now - g_dirtySince >= kFlushMs)) {
+            InterlockedExchange(&g_recentDirty, 0);
+            requestSave();
+        }
+        if (!inPlay) { g_have = false; return; }
+        wchar_t name[kNameLen];
+        memset(name, 0, sizeof(name));
+        if (!rdBlock(player + 0xA0, name, sizeof(wchar_t) * (kNameLen - 1)) || !name[0]) { g_have = false; return; }
+        if (g_activeSet != (int)saveSlot || wcsncmp(g_sets[saveSlot].name, name, kNameLen) != 0) {
+            EnterCriticalSection(&g_recentLock);
+            activateSet((int)saveSlot, name);
+            LeaveCriticalSection(&g_recentLock);
+            g_have = false;
+        }
+        if (player != g_havePlayer) { g_have = false; g_havePlayer = player; }
+
+        // inventory, box, equipment, attunement
+        const DWORD inv = player + 0x1B8;
+        DWORD count = rd32(inv + 0x110), split = rd32(inv + 0x118);
+        const DWORD blockA = rd32(inv + 0x120), blockB = rd32(inv + 0x124);
+        if (count > kInvMax) count = kInvMax;
+        if (split > count) split = count;
+        if (!blockA || (count > split && !blockB) || !rdBlock(blockA, g_invNow, split * 28) ||
+            !rdBlock(blockB + split * 28, g_invNow + split * 28, (count - split) * 28)) { g_have = false; return; }
+        const DWORD box = rd32(player + 0x420);
+        DWORD boxN = box ? rd32(box + 0x10008) + 1 : 0;
+        if (boxN > kBoxMax) boxN = kBoxMax;
+        if (boxN && !rdBlock(box + 8, g_boxNow, boxN * 32)) boxN = 0;
+        DWORD equip[kEquipCount], magic[kMagicCount * 2];
+        if (!rdBlock(player + kEquipSlots, equip, sizeof(equip)) || !rdBlock(player + kMagicSlots, magic, sizeof(magic))) {
+            g_have = false;
+            return;
+        }
+
+        if (!g_have) {
+            // the first look: only noted
+            for (DWORD i = 0; i < kInvMax; ++i) slotNow(i, count, g_seen[i]);
+            g_seenCount = count;
+            for (DWORD i = 0; i < kBoxMax; ++i) boxNow(i, boxN, g_boxKid[i], g_boxCnt[i]);
+            g_boxSeenN = boxN;
+            for (int k = 0; k < kEquipCount; ++k) g_equipSeen[k] = equip[k];
+            for (int k = 0; k < kMagicCount; ++k) g_magicSeen[k] = magic[2 * k];
+            g_have = true;
+            return;
+        }
+
+        // what left the box in this moment
+        DWORD leftBox[64];
+        int nLeft = 0;
+        const DWORD boxUpto = boxN > g_boxSeenN ? boxN : g_boxSeenN;
+        for (DWORD i = 0; i < boxUpto; ++i) {
+            DWORD kid, cnt;
+            boxNow(i, boxN, kid, cnt);
+            if (g_boxKid[i] && (kid != g_boxKid[i] || cnt < g_boxCnt[i]) && nLeft < 64) leftBox[nLeft++] = g_boxKid[i];
+            g_boxKid[i] = kid;
+            g_boxCnt[i] = cnt;
+        }
+        g_boxSeenN = boxN;
+
+        // gains
+        DWORD found[64];
+        int foundPos[64];
+        int nFound = 0, nGains = 0;
+        const DWORD upto = count > g_seenCount ? count : g_seenCount;
+        for (DWORD i = 0; i < upto; ++i) {
+            Seen cur;
+            slotNow(i, count, cur);
+            Seen& was = g_seen[i];
+            bool gained = false;
+            if (cur.used) {
+                if (!was.used) gained = true;                                   // picked up, bought or received
+                else if (cur.kid != was.kid) {
+                    const bool estusSame = isEstus(cur.kid) && isEstus(was.kid) &&
+                        ((cur.kid & 0x0FFFFFFF) - 200) / 2 == ((was.kid & 0x0FFFFFFF) - 200) / 2;
+                    if (!estusSame) gained = true;                              // upgraded or infused
+                }
+                else if (cur.count > was.count && !isEstus(cur.kid)) gained = true;   // more of it
+            }
+            was = cur;
+            if (!gained) continue;
+            bool fromBox = false;
+            for (int k = 0; k < nLeft; ++k) if (leftBox[k] == cur.kid) fromBox = true;
+            if (fromBox) {
+                keepBoxStamp(cur.kid, (int)i);
+                continue;
+            }
+            ++nGains;
+            if (nFound < 32) { found[nFound] = cur.kid; foundPos[nFound] = (int)i; ++nFound; }
+        }
+        g_seenCount = count;
+        // equipped: a slot that holds another inventory position now
+        for (int k = 0; k < kEquipCount; ++k) {
+            const DWORD pos = equip[k];
+            if (pos != g_equipSeen[k] && k != 12 && pos < count && nFound < 64) {
+                Seen s;
+                slotNow(pos, count, s);
+                if (s.used) {
+                    found[nFound] = s.kid;
+                    foundPos[nFound] = (int)pos;      // equipped
+                    ++nFound;
+                }
+            }
+            g_equipSeen[k] = pos;
+        }
+        // attuned: a spell that was in no attunement slot
+        for (int k = 0; k < kMagicCount; ++k) {
+            const DWORD id = magic[2 * k];
+            if (id == 0xFFFFFFFF || id == 0 || nFound >= 64) continue;
+            bool before = false;
+            for (int j = 0; j < kMagicCount; ++j) if (g_magicSeen[j] == id) before = true;
+            if (!before) { found[nFound] = 0x40000000 | id; foundPos[nFound] = -1; ++nFound; }   // attuned
+        }
+        for (int k = 0; k < kMagicCount; ++k) g_magicSeen[k] = magic[2 * k];
+
+        if (nGains > kMassGains) return;          // the game loading: not counted
+        for (int k = 0; k < nFound; ++k) stampItem(found[k], foundPos[k]);
+    }
+
     // ---------------------------------------------------------------------------------------------------------------
     // Calling the game's own lookups (they take the id in esi / the block in eax, so a small bridge is needed)
     // ---------------------------------------------------------------------------------------------------------------
@@ -737,6 +1211,7 @@ namespace wasort {
         int weight10;       // weight x 10, as printed (one decimal)
         int upgrade;
         int storage;        // Bottomless Box: how many are in the box (the "Storage" number of the row)
+        DWORD recent;       // "Most recent": the item's number (0 = none)
         const wchar_t* name;
     };
     const int kMaxItems = 2048;
@@ -834,6 +1309,11 @@ namespace wasort {
     int compareItems(const Item& a, const Item& b) {
         // the chosen value: DESC = highest first, ASC = lowest first
         const int c = g_sortChoice;
+        if (c == kChoiceRecent) {
+            // most recent: the highest number first, the items without one after them; equal numbers keep the game's order
+            if (a.recent != b.recent) return a.recent > b.recent ? -1 : 1;
+            return a.pos < b.pos ? -1 : (a.pos > b.pos ? 1 : 0);
+        }
         if (c == kChoiceStorage) {
             // storage: equal counts keep the game's order
             if (a.storage != b.storage) return (g_sortDesc ? a.storage > b.storage : a.storage < b.storage) ? -1 : 1;
@@ -873,6 +1353,70 @@ namespace wasort {
         if (src != g_orderA) for (int i = 0; i < n; ++i) g_orderA[i] = src[i];
     }
 
+    // Most recent: DESC = the item gained or equipped last first, then the items without a number in the game's order;
+    // ASC = exactly the other way round.
+    void sortRecent(int window, DWORD player, DWORD eBegin, int entries, int* order, int n, int desc) {
+        bool ok = true;
+        EnterCriticalSection(&g_recentLock);
+        for (int k = 0; k < n; ++k) {
+            const int index = order[k];
+            if (index < 0 || index >= entries) { ok = false; break; }   // not what is expected: the list is left as it is
+            Item& it = g_items[k];
+            it.pos = k;
+            it.index = index;
+            int pos = -1;
+            const DWORD kid = entryKid(window, player, rd32(eBegin + 4 * index), &pos);
+            it.recent = entryStamp(kid, pos);
+        }
+        LeaveCriticalSection(&g_recentLock);
+        if (!ok) return;
+        g_sortChoice = kChoiceRecent;
+        g_sortDesc = 1;
+        sortItems(n);
+        for (int k = 0; k < n; ++k) order[desc ? k : n - 1 - k] = g_items[g_orderA[k]].index;
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // When an Equipment list opens (0xCA1C40), the game puts the equipped item at the top of the view: it looks for it
+    // in its own order. A sorted list shows another order, so another item got the cursor. Hook 7 notes the list and the
+    // equipped inventory position; the first sort of that list (within 1 s) puts the view on that item again, the same
+    // way the game does. With nothing equipped the game opens where the list was left; that is not changed.
+    // ---------------------------------------------------------------------------------------------------------------
+    volatile DWORD g_openList = 0;
+    DWORD g_openPos = 0, g_openTime = 0;
+    const DWORD kListRows = 0xF4;                 // rows the list shows at once
+
+    void __stdcall onEquipOpen(DWORD list) {
+        g_openList = 0;
+        const DWORD mm = rd32(kMenuMan);
+        const DWORD player = playerData();
+        const DWORD slot = mm ? rd32(mm + 0x134) : 0xFFFFFFFF;   // the equipment slot of the list
+        if (!player || slot >= (DWORD)kEquipCount) return;
+        const DWORD pos = rd32(player + kEquipSlots + 4 * slot);
+        if (pos >= kInvMax) return;               // nothing equipped there
+        g_openPos = pos;
+        g_openTime = GetTickCount();
+        g_openList = list;
+    }
+
+    // after a sort: the view on the equipped item, if this list just opened
+    void showEquipped(DWORD list, const int* order, int n, DWORD eBegin, int entries) {
+        if (g_openList != list) return;
+        g_openList = 0;
+        if (GetTickCount() - g_openTime > 1000) return;
+        for (int k = 0; k < n; ++k) {
+            const int index = order[k];
+            if (index < 0 || index >= entries || rd32(eBegin + 4 * index) != g_openPos) continue;
+            const int rows = (int)rd32(list + kListRows);
+            int scroll = k, cursor = 0;
+            if (rows <= 0 || rows > n) { scroll = 0; cursor = k; }
+            else if (k + rows > n) { scroll = n - rows; cursor = k - scroll; }
+            *(DWORD*)(list + kListScroll) = (DWORD)scroll;
+            *(DWORD*)(list + kListCursor) = (DWORD)cursor;
+            return;
+        }
+    }
+
     void sortList(DWORD list, int window, int kind) {
         const int choice = shownChoice(kind, window);
         const int desc = g_desc[kind];
@@ -887,11 +1431,19 @@ namespace wasort {
         const int n = (int)((oEnd - oBegin) / 4);
         const bool toTop = (g_toTopList == list);
         int* order = (int*)oBegin;
+        if (choice == kChoiceRecent) {
+            if (n >= 2 && n <= kMaxItems) sortRecent(window, player, eBegin, entries, order, n, desc);
+            showEquipped(list, order, n, eBegin, entries);
+            if (toTop) { *(DWORD*)(list + kListCursor) = 0; *(DWORD*)(list + kListScroll) = 0; g_toTopList = 0; }
+            return;
+        }
         if (choice == 0 && !desc && n >= 2) {
             // game order, ASC: the game's own order reversed
             for (int i = 0, j = n - 1; i < j; ++i, --j) { const int t = order[i]; order[i] = order[j]; order[j] = t; }
+            showEquipped(list, order, n, eBegin, entries);
         }
         if (choice == 0 || n < 2 || n > kMaxItems) {
+            if (g_openList == list) g_openList = 0;   // the game's own order: the game's own view is right
             if (toTop) { *(DWORD*)(list + kListCursor) = 0; *(DWORD*)(list + kListScroll) = 0; g_toTopList = 0; }
             return;
         }
@@ -907,6 +1459,7 @@ namespace wasort {
         g_sortDesc = desc;
         sortItems(n);
         for (int k = 0; k < n; ++k) order[k] = g_items[g_orderA[k]].index;
+        showEquipped(list, order, n, eBegin, entries);
         if (toTop) { *(DWORD*)(list + kListCursor) = 0; *(DWORD*)(list + kListScroll) = 0; g_toTopList = 0; }
     }
 
@@ -1003,6 +1556,22 @@ namespace wasort {
         }
     }
 
+    // hook 7: right after the Equipment list placed its view (0xCA1F5E: mov eax,[esi] / mov edx,[eax+0x8C])
+    DWORD g_openCont = 0x00CA1F66;
+    __declspec(naked) void equipopen_stub() {
+        __asm {
+            pushad
+            pushfd
+            push esi                            // the list
+            call onEquipOpen
+            popfd
+            popad
+            mov eax, dword ptr[esi]             // the instructions the jump replaced
+            mov edx, dword ptr[eax + 0x8C]
+            jmp dword ptr[g_openCont]
+        }
+    }
+
     __declspec(naked) void keyboard_stub() {
         __asm {
             pushad
@@ -1072,8 +1641,12 @@ bool installWeaponsArmorSort() {
     using namespace wasort;
     if (g_installed) return true;
     if (!Settings::get().getWeaponsArmorSort()) return false;
+    if (!g_recentLockReady) {
+        InitializeCriticalSection(&g_recentLock);
+        g_recentLockReady = true;
+    }
 
-    const int kSites = 6;
+    const int kSites = 7;
     const Site sites[kSites] = {
         { "rebuild start",  0x00CA0985, 9, kExpRefresh,     (const void*)&refresh_stub,       0xE9 },
         { "collect step",   0x00CA09AF, 9, kExpCollect,     (const void*)&collect_stub,       0xE9 },
@@ -1081,6 +1654,7 @@ bool installWeaponsArmorSort() {
         { "keyboard read",  0x006447C8, 5, kExpKeyboard,    (const void*)&keyboard_stub,      0xE9 },
         { "XInput",         0x00ABA542, 6, kExpXInput,      (const void*)&sortXInputGetState, 0xE9 },
         { "change order",   0x00C67D00, 5, kExpChangeOrder, (const void*)&changeorder_stub,   0xE8 },
+        { "equipment open", 0x00CA1F5E, 8, kExpEquipOpen,   (const void*)&equipopen_stub,     0xE9 },
     };
     for (int i = 0; i < kSites; ++i) {
         if (i == 0 && g_refreshPatched) continue;   // already put there by BottomlessBoxMarkers
@@ -1107,7 +1681,7 @@ bool installWeaponsArmorSort() {
     g_xinputPatched = true;
     HANDLE h = CreateThread(NULL, 0, loadThread, NULL, 0, NULL);
     if (h) CloseHandle(h);
-    SDLOG(0, "WeaponsArmorSort: on (Weapons and Armor lists: RS + D-pad / LALT + arrows)\n");
+    SDLOG(0, "WeaponsArmorSort: on (Weapons and Armor values, Most recent in every item list: RS + D-pad / LALT + arrows)\n");
     return true;
 }
 
@@ -1135,14 +1709,6 @@ bool weaponsArmorSortPrompt(SortPromptInfo* out) {
 // (drawn by RenderstateManager.cpp). The game side only needs hook 1 above, to know the box's list object.
 // ---------------------------------------------------------------------------------------------------------------------
 namespace wasort {
-    // the inventory slot of an inventory position (28 bytes: +0 kind, +4 id, +8 count held, +0x14 durability)
-    DWORD inventorySlot(DWORD player, DWORD i) {
-        const DWORD inv = player + 0x1B8;
-        if ((int)i < 0 || i >= rd32(inv + 0x110)) return 0;
-        const DWORD block = (i < rd32(inv + 0x118)) ? rd32(inv + 0x120) : rd32(inv + 0x124);
-        return block ? block + i * 28 : 0;
-    }
-
     // An entry of the box list: (inventory position * 2) | 1 for a held item, (box position * 2) for an item only in the
     // box. True when nothing of it is held and some of it is stored.
     bool allInBox(DWORD player, DWORD entry) {
@@ -1602,3 +2168,7 @@ bool installGameMapInput(void(__stdcall* pad)(unsigned long idx, void* state), b
     }
     return true;
 }
+
+// "Most recent" sorting: the look at what the hero gains, equips and attunes (WeaponsArmorSort, above). Called every frame
+// from RSManager::redirectPresent; it works 4 times a second, and does nothing when WeaponsArmorSort is off.
+void wasortFrameTick() { wasort::recentTick(); }
