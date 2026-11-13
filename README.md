@@ -124,9 +124,9 @@ Rest at a bonfire and choose **Enter Covenant** (below Attune Magic). You can sw
 `BonfireCovenants 1` in DSfix.ini (default 0 = off, nothing is patched).
 ## Bugs and Issues Fixed
 
-### Frame Pacing Conflict between Limiter and Present
-* **Issue:** In `RSManager::frameTimeManagement()`, the timer waits for the target frame time before calling `d3ddev->Present()`. If GPU VSync or the driver frame queue blocks inside `Present()`, the next frame measures this block as elapsed render time, resulting in double-throttling and persistent frame-time jitter.
-* **Applied Solution:** Prevents Limiter Desync, Absorbs Driver Delays and Reduces Input Latency.
+### High-Precision Frame Limiter
+* **Issue:** DSfix 2.4 waited for the next frame in a busy loop, which kept a CPU core busy and was less precise.
+* **Applied Solution:** The limiter sleeps on a high-resolution timer and only spins for the last moment before the frame, for even frame times and less CPU use (on older Windows the timer resolution is raised to 1 ms).
 
 ### Memory Deallocation Mismatch (delete vs delete[])
 * **Issue:** In `RSManager::prefetchTextures()`, texture buffer data is allocated as an array using `new char[data.size]`. However, `RSManager::~RSManager()` deletes it using `SAFEDELETE` (which executes scalar delete) instead of `delete[]`, causing undefined behavior and heap corruption upon shutdown.
@@ -136,25 +136,21 @@ Rest at a bonfire and choose **Enter Covenant** (below Attune Magic). You can sw
 * **Issue:** `GetDirectoryFile()` uses a single local static `char path[320]`. Because `SaveManager`, `BonfireGlitchDetectionThread`, and the rendering thread all execute asynchronously, concurrent calls to `GetDirectoryFile()` overwrite the buffer simultaneously, leading to file-path corruption and crashes.
 * **Applied Solution:** Thread Isolation, Zero Caller Refactoring.
 
-### Floating-Point Truncation in updateFramerate()
-* **Issue:** The smoothing check `if (abs(deltaTime - targetTime) < 2.0)` uses integer `abs()` instead of floating-point `fabs()` or `std::abs()`. Passing `double` values implicitly casts the delta to an `int`, stripping sub-millisecond precision and compromising frame-time smoothing.
-* **Applied Solution:** Restored Precision: `std::abs()` correctly overloads for `double` types; Performance Improvement: Using `std::abs()` natively on a `double` compiles down to a single, instantaneous bitwise operation.
-
 ### Missing HWND Verification in KeyActions::processIO()
 * **Issue:** Hotkey checks evaluate `GetForegroundWindow() != NULL`. This condition evaluates to true even when typing in other applications (such as Discord, a web browser, or an overlay), causing DSfix actions and the `g_Force30FPS` toggle to trigger outside the game.
 * **Applied Solution:** Process Isolation, Overlay & Alt-Tab Immunity.
 
-### Excessive Work Under Loader Lock in DllMain
-* **Issue:** `DllMain` directly creates background threads, loads dependent libraries (`dinput8.dll`), and engages Detours transactions during `DLL_PROCESS_ATTACH`. Doing heavy I/O and synchronization under loader lock risks deadlocks during startup on Windows 11.
-* **Applied Solution:** Prevents Windows 11 Deadlocks, Safe and Seamless Hooking.
+### Less Work Under Loader Lock in DllMain
+* **Issue:** DllMain created background threads and loaded the chained dinput8.dll during DLL_PROCESS_ATTACH, which risks deadlocks at start-up.
+* **Applied Solution:** Threads and the dinput8.dll loading now start on the game's first DirectInput call, outside the loader lock. Only the hooks that must exist before the game starts are still set in DllMain.
 
 ### Uninitialized hudVertices Buffer
 * **Issue:** `RSManager` declares `INT16 hudVertices[32]` but leaves it uninitialized in the constructor. Calling `reloadHUDVertices` when `hudvertices.txt` is missing leaves uninitialized garbage in memory.
 * **Applied Solution:** Safe Fallback - `memset`.
 
-### Out-of-Bounds Memory Read in Config Parser
-* **Issue:** KeyActions: The out-of-bounds memory read occurs in `KeyActions::load()` because the macro attempts to read the character immediately following a key name before verifying if the key name actually exists in the parsed line.
-* **Applied Solution:** Move the read inside the check.
+### Key Parser Read Before Check
+* **Issue:** `KeyActions::load()` read the character after a key name before checking that the key name was found in the line.
+* **Applied Solution:** The read is now done only after the check.
 
 ### Infinite Freeze on Zero FPS Limit
 * **Applied Solution:** 60 FPS for user input of 0 fps limit.
