@@ -180,7 +180,8 @@ Source code: <your GitHub link>
 * **SSAO effects:** Tomerk (OBGE VSSAO, HBAO), Asmodean (VSSAO2), Durante.
 * **SuperFastHash** by Paul Hsieh. **Microsoft Detours** (MIT).
 * **[DDTM Controller Fix](https://github.com/DDTM-bit/DDTMControllerFixPDTE)** (`DDTMControllerFix.dll`, included): GNU GPL v3. It uses SDL2, SDL2-CS, MinHook.NET (a port of MinHook), SharpDisasm/udis86 and the .NET runtime.
-
+* Controller button icons (PlayStation, Xbox, Switch), keyboard icons, the menu cursor and the map pictures: made by DDTM.
+* Effect/infusion icons and quick-menu pictures: the game's own textures (FromSoftware / Bandai Namco), upscaled.
 
 ## Third-Party Licenses
 
