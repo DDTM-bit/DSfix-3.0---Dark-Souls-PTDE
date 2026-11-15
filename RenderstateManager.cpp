@@ -2960,6 +2960,7 @@ namespace sortPrompt {
 	const float kHelpChainGap = 60.0f;        // UI pixels: a larger gap ends the help bar
 	bool g_triggered = false;                 // the prompt was drawn this frame
 	bool g_capture = false;                   // a sortable list has focus: watch the row icons
+	bool g_captureAttr = false;               // ... a weapons or armor list: the value icons too (else only the box's chest)
 
 	// How the game draws its prompt icons: UI pixels per whole texture width / height, and the height of that icon,
 	// read from the help bar's first icon (its button texture). The game does not draw them square: a 56 x 52 cell
@@ -3120,7 +3121,9 @@ namespace sortPrompt {
 		g_helpMaxX = 0.0f;
 		g_triggered = false;
 		SortPromptInfo info;
-		g_capture = weaponsArmorSortPrompt(&info) && (info.kind == 1 || info.kind == 2);   // value icons: only in those lists
+		const bool on = weaponsArmorSortPrompt(&info);
+		g_captureAttr = on && (info.kind == 1 || info.kind == 2);   // value icons: only in those lists
+		g_capture = g_captureAttr || (on && info.window == 2);      // the box: its chest picture, for the storage choice
 	}
 
 	void release() {
@@ -3155,6 +3158,7 @@ namespace sortPrompt {
 		IDirect3DBaseTexture9** slot = NULL;
 		float* uv = NULL;
 		if (w >= 0.018f && w <= 0.026f && h >= 0.033f && h <= 0.045f) {
+			if (!g_captureAttr) return;           // the box's other item lists: their rows have no value icons
 			int col = -1;
 			for (int i = 0; i < 6; ++i) if (fabsf(x0 - kAttrX[i]) < 0.004f) col = i;
 			if (col < 0 || y0 < kAttrMinY || g_candN[col] >= kCand) return;

@@ -24,7 +24,7 @@ To ensure maximum stability on modern machines, configure your environment using
 
 * **Native Resolution Mapping:** Ensure your in-game resolution is set to match your desktop monitor and the rendering resolution in dsfix so the image is sharp and on all screen size. You can try to set your resolution in game menu or in: `%LOCALAPPDATA%\NBGI\DarkSouls\DarkSouls.ini`.
 * **Frame rate (`unlockFPS`):** choose one of two ways.
-  * `unlockFPS 1`: DSfix unlocks the frame rate up to `FPSlimit` and, above 30 FPS, applies its own high-FPS fixes (see below). Other high-FPS bugs of the game are not fixed by DSfix. `FPSlimit 30` gives the original game speed and behaviour.
+  * `unlockFPS 1 with 30FPS Limit` - The safest way with no FPS bugs. With unlockFPS 1 it runs better then vanilla. DSfix can unlock the frame rate but it only fixes some of the problems: the slide steering and slide start on steep slopes, the cutscene camera, the soul counter and the Blighttown swamp poison build-up. Other high-FPS bugs of the game are not fixed.
   * `unlockFPS 0`: DSfix does not change the frame rate or timing at all. Use this when another mod unlocks the frame rate and fixes the high-FPS bugs. All other DSfix 3.0 features keep working.
 * **Texture Prefetching:** If you don't use textures that are more than 2GB in the dsfix\tex_override folder you can set the option `enableTexturePrefetch` to `1` in `DSfix.ini` for a faster texture load at startup. Dark Souls PTDE is a 32-bit executable, meaning the entire game will hard-crash if it tries to use more than 4GB of total RAM. If you use a massive 4K texture pack (like Mulderland's Enhancement Pack) and enable prefetching, DSfix will attempt to load gigabytes of `.png` files into RAM all at once.
 ---
@@ -94,7 +94,7 @@ Sort the item lists in the Inventory, the Equipment item list and the Bottomless
 - **Controller:** hold **RS**, press **D-pad ←/→** to choose what to sort by and **D-pad ↑/↓** for Desc/Asc, then release **RS** to sort.
 - **Keyboard:** hold **Left Alt**, press **←/→** to choose and **↑/↓** for Desc/Asc, then release **Left Alt** to sort.
 - **Weapons and Armor:** Game Order, Most Recent, Physical, Magic, Fire, Lightning (attack or defense), Durability, Weight, and Storage (Bottomless Box only).
-- **All other lists** (items, materials, keys, spells, arrows, rings): Game Order or Most Recent.
+- **All other lists** (items, materials, keys, spells, arrows, rings): Game Order, Most Recent and Storage (Bottomless Box only) .
 - **Most Recent:** the item you picked up, bought, received, upgraded, equipped or attuned last comes first. Taking an item out of the Bottomless Box does not count. Each copy of a weapon, armor piece or ring counts on its own. Items you had before using this sort are listed after the others.
 - When an Equipment list opens, the cursor is on the item you have equipped, also when the list is sorted.
 - A prompt in the menu shows the current choice. It works with the HUD on or off.

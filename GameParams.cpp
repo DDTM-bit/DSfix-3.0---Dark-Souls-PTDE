@@ -244,6 +244,8 @@ bool weaponMaxDurability(uint32_t weaponId, uint32_t* maxDurability) {
 //   (attack for weapons, defense for armor), 5 durability, 6 weight, 7 storage (Bottomless Box only: how many are in
 //   the box; elsewhere it counts as game order). DESC = highest first (the default); for game order DESC is the game's
 //   own order and ASC the same list reversed.
+//   Every other item list: game order or most recent; in the Bottomless Box also storage, in the tabs whose items can be
+//   stored (consumables, materials, arrows / bolts, rings). The box's item lists keep a choice of their own.
 //   Ties: weight (lightest first), durability (highest first), name, upgrade level (highest first), game order.
 //   For storage, ties simply keep the game's order.
 //
@@ -333,20 +335,24 @@ namespace wasort {
     // ---------------------------------------------------------------------------------------------------------------
     // Choices: 0 game order, 1..4 the four attack/defense values, 5 durability, 6 weight, 7 storage (Bottomless Box only),
     // 8 most recent. Weapons and armor cycle through all of them, most recent right after game order. Every other item
-    // list (kind 3) has only game order and most recent, one choice for all of them.
+    // list (kind 3) has game order and most recent, one choice for the Inventory and the Equipment lists; the Bottomless
+    // Box's item lists have their own choice (slot 4), with storage too in the tabs whose items can be stored.
     const int kKindOther = 3;
+    const int kSlotBoxItems = 4;                  // the choice of the Bottomless Box's other item lists
     const int kChoiceStorage = 7;
     const int kChoiceRecent = 8;
     const int kCycle[] = { 0, kChoiceRecent, 1, 2, 3, 4, 5, 6, kChoiceStorage };
     const int kCycleLen = 8, kCycleLenBox = 9;    // storage only in the box
     const int kCycleOther[] = { 0, kChoiceRecent };
-    volatile int g_choice[4] = { 0, 0, 0, 0 };   // [1] weapons, [2] armor, [3] every other item list
-    volatile int g_desc[4] = { 1, 1, 1, 1 };     // 1 = DESC (default), 0 = ASC
+    const int kCycleOtherBox[] = { 0, kChoiceRecent, kChoiceStorage };   // the box's tabs whose items can be stored
+    volatile int g_choice[5] = { 0, 0, 0, 0, 0 };   // [1] weapons, [2] armor, [3] every other item list, [4] the box's
+    volatile int g_desc[5] = { 1, 1, 1, 1, 1 };     // 1 = DESC (default), 0 = ASC
     volatile LONG g_saveBusy = 0;
     volatile LONG g_saveDirty = 0;
 
-    bool validChoice(int kind, int c) {
-        if (kind == kKindOther) return c == 0 || c == kChoiceRecent;
+    bool validChoice(int slot, int c) {
+        if (slot == kKindOther) return c == 0 || c == kChoiceRecent;
+        if (slot == kSlotBoxItems) return c == 0 || c == kChoiceRecent || c == kChoiceStorage;
         return c >= 0 && c <= kChoiceRecent;
     }
 
@@ -515,9 +521,10 @@ namespace wasort {
         char* text = (char*)HeapAlloc(heap, 0, cap);
         if (!text) { HeapFree(heap, 0, sets); return; }
         int len = _snprintf_s(text, cap, _TRUNCATE,
-            "Weapons=%d\r\nWeaponsOrder=%s\r\nArmor=%d\r\nArmorOrder=%s\r\nItems=%d\r\nItemsOrder=%s\r\n",
+            "Weapons=%d\r\nWeaponsOrder=%s\r\nArmor=%d\r\nArmorOrder=%s\r\nItems=%d\r\nItemsOrder=%s\r\n"
+            "BoxItems=%d\r\nBoxItemsOrder=%s\r\n",
             g_choice[1], g_desc[1] ? "DESC" : "ASC", g_choice[2], g_desc[2] ? "DESC" : "ASC",
-            g_choice[3], g_desc[3] ? "DESC" : "ASC");
+            g_choice[3], g_desc[3] ? "DESC" : "ASC", g_choice[4], g_desc[4] ? "DESC" : "ASC");
         for (int k = 0; k < kRecentSlots && len > 0; ++k) {
             const RecentSet& s = sets[k];
             if (!s.used) continue;
@@ -580,17 +587,20 @@ namespace wasort {
         return _strnicmp(line, key, n) == 0 ? line + n : NULL;
     }
 
-    // Reads the choices (by kind: [1] weapons, [2] armor, [3] the other lists) and the characters' numbers:
-    //   Weapons=n / WeaponsOrder=DESC|ASC / Armor=n / ArmorOrder=... / Items=n / ItemsOrder=...
+    // Reads the choices ([1] weapons, [2] armor, [3] the other lists, [4] the Bottomless Box's other lists) and the
+    // characters' numbers:
+    //   Weapons=n / WeaponsOrder=DESC|ASC / Armor=n / ArmorOrder=... / Items=n / ItemsOrder=... / BoxItems=n /
+    //   BoxItemsOrder=...
     //   Character=<save slot> <name>, then Next=<last number>, one Recent=<kind | id in hex> <number> per item, and one
     //   Copy=<inventory position> <kind | id in hex> <number> per weapon, armor piece or ring copy.
     // Returns false when the file is missing or anything in it is wrong (an older file without the Items lines counts as
-    // wrong, so it is written anew). With g_recentLock held.
+    // wrong, so it is written anew; a file without the BoxItems lines gives the box the Items choice). With
+    // g_recentLock held.
     bool readSortFile(int* choice, int* desc) {
-        static const char* const kKeys[4] = { NULL, "Weapons=", "Armor=", "Items=" };
-        static const char* const kOrderKeys[4] = { NULL, "WeaponsOrder=", "ArmorOrder=", "ItemsOrder=" };
+        static const char* const kKeys[5] = { NULL, "Weapons=", "Armor=", "Items=", "BoxItems=" };
+        static const char* const kOrderKeys[5] = { NULL, "WeaponsOrder=", "ArmorOrder=", "ItemsOrder=", "BoxItemsOrder=" };
         wchar_t dir1[MAX_PATH], dir2[MAX_PATH], file[MAX_PATH], tmp[MAX_PATH];
-        for (int k = 0; k < 4; ++k) { choice[k] = 0; desc[k] = 1; }
+        for (int k = 0; k < 5; ++k) { choice[k] = 0; desc[k] = 1; }
         if (!sortFilePath(dir1, dir2, file, tmp, MAX_PATH)) return false;
         HANDLE h = CreateFileW(file, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (h == INVALID_HANDLE_VALUE) return false;
@@ -604,7 +614,7 @@ namespace wasort {
         CloseHandle(h);
         if (!ok) { HeapFree(heap, 0, text); return false; }
         text[got] = 0;
-        bool have[4] = { false, false, false, false }, haveOrder[4] = { false, false, false, false }, good = true;
+        bool have[5] = { false, false, false, false, false }, haveOrder[5] = { false, false, false, false, false }, good = true;
         int cur = -1;                             // the character block being read
         char* line = text;
         while (*line) {
@@ -618,7 +628,7 @@ namespace wasort {
                 unsigned int a = 0, b = 0;
                 const char* v = NULL;
                 bool known = false;
-                for (int k = 1; k <= 3 && !known; ++k) {
+                for (int k = 1; k <= 4 && !known; ++k) {
                     if ((v = valueOf(line, kKeys[k])) != NULL) {
                         known = true;
                         if (sscanf_s(v, "%d%c", &value, &extra, 1) == 1 && validChoice(k, value)) { choice[k] = value; have[k] = true; }
@@ -678,15 +688,18 @@ namespace wasort {
         }
         HeapFree(heap, 0, text);
         for (int k = 1; k <= 3; ++k) if (!have[k] || !haveOrder[k]) good = false;
+        // older files have no BoxItems lines: the box starts with the Items choice (game order or most recent)
+        if (!have[4]) { choice[4] = choice[3]; good = false; }
+        if (!haveOrder[4]) { desc[4] = desc[3]; good = false; }
         return good;
     }
 
     DWORD WINAPI loadThread(LPVOID) {
-        int c[4], d[4];
+        int c[5], d[5];
         EnterCriticalSection(&g_recentLock);
         const bool good = readSortFile(c, d);
         LeaveCriticalSection(&g_recentLock);
-        for (int k = 1; k <= 3; ++k) { g_choice[k] = c[k]; g_desc[k] = d[k]; }
+        for (int k = 1; k <= 4; ++k) { g_choice[k] = c[k]; g_desc[k] = d[k]; }
         InterlockedExchange(&g_recentLoaded, 1);
         if (!good) requestSave();
         return 0;
@@ -711,7 +724,7 @@ namespace wasort {
     // kind: 0 not ours, 1 weapons (shields included, ammo not), 2 armor, 3 every other item list.
     // ---------------------------------------------------------------------------------------------------------------
     enum Window { W_NONE = 0, W_INVENTORY, W_BOX, W_EQUIP };
-    struct ListInfo { DWORD list; int window; int kind; };
+    struct ListInfo { DWORD list; int window; int kind; int category; };
     const int kListCache = 8;
     ListInfo g_lists[kListCache];
     int g_listNext = 0;
@@ -748,13 +761,18 @@ namespace wasort {
         return 0;
     }
 
-    void rememberList(DWORD list, int window, int kind) {
+    // category: the tab (Inventory and Bottomless Box, see kindOf)
+    void rememberList(DWORD list, int window, int kind, int category) {
         for (int i = 0; i < kListCache; ++i) {
-            if (g_lists[i].list == list) { g_lists[i].window = window; g_lists[i].kind = kind; return; }
+            if (g_lists[i].list == list) {
+                g_lists[i].window = window; g_lists[i].kind = kind; g_lists[i].category = category;
+                return;
+            }
         }
         g_lists[g_listNext].list = list;
         g_lists[g_listNext].window = window;
         g_lists[g_listNext].kind = kind;
+        g_lists[g_listNext].category = category;
         g_listNext = (g_listNext + 1) % kListCache;
     }
 
@@ -762,11 +780,28 @@ namespace wasort {
         for (int i = 0; i < kListCache; ++i) if (g_lists[i].list == list) return g_lists[i].kind;
         return 0;
     }
+    int cachedCategory(DWORD list) {
+        for (int i = 0; i < kListCache; ++i) if (g_lists[i].list == list) return g_lists[i].category;
+        return -1;
+    }
+
+    // The choice a list uses: the Bottomless Box's other item lists have their own (slot 4).
+    int choiceSlot(int kind, int window) {
+        return (kind == kKindOther && window == W_BOX) ? kSlotBoxItems : kind;
+    }
+    // Storage is offered in the Bottomless Box only: weapons and armor, and of the other tabs those whose items can be
+    // stored: 0 consumables, 1 materials, 5 arrows / bolts, 7 rings (not 2 key items or 3 spells).
+    bool storageOffered(int kind, int window, int category) {
+        if (window != W_BOX) return false;
+        if (kind != kKindOther) return true;
+        return category == 0 || category == 1 || category == 5 || category == 7;
+    }
 
     // The list that took input most recently (only ours are noted).
     volatile DWORD g_focusList = 0;
     volatile int g_focusKind = 0;
     volatile int g_focusWindow = 0;
+    volatile int g_focusCategory = -1;
     volatile DWORD g_focusTime = 0;
     const DWORD kFocusMs = 120;                   // no input step for this long: the list has lost focus
 
@@ -789,26 +824,32 @@ namespace wasort {
     volatile int g_temp = 0;                      // the choice shown while held
     volatile int g_tempDesc = 1;                  // the order shown while held
     volatile int g_modeWindow = 0;                // the window the choosing started in
+    volatile int g_modeCategory = -1;             // and its tab
+    volatile int g_modeSlot = 0;                  // the choice it changes (g_choice / g_desc)
     int g_startChoice = 0, g_startDesc = 1;       // what was shown when the button went down
     volatile bool g_lastKeyboard = true;          // without DDTM: keyboard / mouse used last (for the prompt)
 
-    // The value shown for a list: storage outside the Bottomless Box counts as game order.
-    int shownChoice(int kind, int window) {
-        const int c = g_choice[kind];
-        return (c == kChoiceStorage && window != W_BOX) ? 0 : c;
+    // The value shown for a list: storage where it is not offered (outside the Bottomless Box, the box's key items and
+    // spells) counts as game order.
+    int shownChoice(int kind, int window, int category) {
+        const int c = g_choice[choiceSlot(kind, window)];
+        return (c == kChoiceStorage && !storageOffered(kind, window, category)) ? 0 : c;
     }
 
     void beginChoosing(int kind) {
         g_modeKind = kind;
         g_modeWindow = g_focusWindow;
-        g_temp = shownChoice(kind, g_modeWindow);
-        g_tempDesc = g_desc[kind];
+        g_modeCategory = g_focusCategory;
+        g_modeSlot = choiceSlot(kind, g_modeWindow);
+        g_temp = shownChoice(kind, g_modeWindow, g_modeCategory);
+        g_tempDesc = g_desc[g_modeSlot];
         g_startChoice = g_temp;
         g_startDesc = g_tempDesc;
     }
     void stepChoice(int dir) {
-        const int* cycle = g_modeKind == kKindOther ? kCycleOther : kCycle;
-        const int n = g_modeKind == kKindOther ? 2 : (g_modeWindow == W_BOX ? kCycleLenBox : kCycleLen);
+        const bool storage = storageOffered(g_modeKind, g_modeWindow, g_modeCategory);
+        const int* cycle = g_modeKind == kKindOther ? (storage ? kCycleOtherBox : kCycleOther) : kCycle;
+        const int n = g_modeKind == kKindOther ? (storage ? 3 : 2) : (storage ? kCycleLenBox : kCycleLen);
         int at = 0;
         for (int i = 0; i < n; ++i) if (cycle[i] == g_temp) at = i;
         g_temp = cycle[(at + dir + n) % n];
@@ -821,8 +862,8 @@ namespace wasort {
         const int kind = g_modeKind;
         if (!commit || kind == 0) return;
         if (g_temp == g_startChoice && g_tempDesc == g_startDesc) return;
-        g_choice[kind] = g_temp;
-        g_desc[kind] = g_tempDesc;
+        g_choice[g_modeSlot] = g_temp;
+        g_desc[g_modeSlot] = g_tempDesc;
         g_resortKind = kind;
         requestSave();
     }
@@ -1306,6 +1347,38 @@ namespace wasort {
         return true;
     }
 
+    // Storage of a row in the Bottomless Box's other item lists, as the box screen prints it (0xC612E0): a box row shows
+    // its own count; a held row shows the box's count when the item stacks (the game's test at 0xEA70E0: goods and
+    // arrows / bolts stack, armor and rings never), else 0.
+    bool readStorage(DWORD player, DWORD entry, Item* it) {
+        it->storage = 0;
+        const DWORD i = entry >> 1;
+        if (!(entry & 1)) {
+            const DWORD box = rd32(player + 0x420);
+            if (!box || i > 0x7FF) return false;
+            it->storage = (int)(rd32(box + 8 + i * 32 + 8) & 0xFFFF);
+            return true;
+        }
+        const DWORD inv = player + 0x1B8;
+        if ((int)i < 0 || i >= rd32(inv + 0x110)) return false;
+        const DWORD block = (i < rd32(inv + 0x118)) ? rd32(inv + 0x120) : rd32(inv + 0x124);
+        if (!block) return false;
+        const DWORD slot = block + i * 28;
+        const DWORD kind = rd32(slot), id = rd32(slot + 4);
+        bool stackable = kind == 0x40000000;      // goods
+        if (kind == kKindWeapon) {
+            DWORD look[5] = { 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0 };
+            gameLookup(kFnWeaponLookup, id, look);
+            const DWORD row = look[1];
+            if (row) {
+                const DWORD category = rd32(row + kWepCategory) & 0xFF;
+                stackable = category == 13 || category == 14;
+            }
+        }
+        if (stackable) it->storage = boxCount(player, kind, id);
+        return true;
+    }
+
     int compareItems(const Item& a, const Item& b) {
         // the chosen value: DESC = highest first, ASC = lowest first
         const int c = g_sortChoice;
@@ -1417,9 +1490,9 @@ namespace wasort {
         }
     }
 
-    void sortList(DWORD list, int window, int kind) {
-        const int choice = shownChoice(kind, window);
-        const int desc = g_desc[kind];
+    void sortList(DWORD list, int window, int kind, int category) {
+        const int choice = shownChoice(kind, window, category);
+        const int desc = g_desc[choiceSlot(kind, window)];
         const DWORD player = playerData();
         const DWORD entriesVec = rd32(list + kListEntries);
         const DWORD orderVec = rd32(list + kListOrder);
@@ -1453,7 +1526,11 @@ namespace wasort {
             Item& it = g_items[k];
             it.pos = k;
             it.index = index;
-            if (!readItem(window, player, rd32(eBegin + 4 * index), kind, choice == kChoiceStorage, &it)) return;
+            if (kind == kKindOther) {
+                // the box's other item lists: only storage reaches here (game order and most recent are done above)
+                if (!readStorage(player, rd32(eBegin + 4 * index), &it)) return;
+            }
+            else if (!readItem(window, player, rd32(eBegin + 4 * index), kind, choice == kChoiceStorage, &it)) return;
         }
         g_sortChoice = choice;
         g_sortDesc = desc;
@@ -1474,15 +1551,16 @@ namespace wasort {
         const int kind = kindOf(list, frame, &window);
         if (window == W_NONE) return; // shops and the rest: nothing to note
         if (window == W_BOX) g_boxList = list;
-        rememberList(list, window, kind);
+        rememberList(list, window, kind, (int)rd32(frame + 0xC));
     }
 
     void __stdcall sortOnCollected(DWORD list, DWORD frame) {
         int window = W_NONE;
         const int kind = kindOf(list, frame, &window);
         if (window == W_NONE) return;
-        rememberList(list, window, kind);
-        if (kind) sortList(list, window, kind);
+        const int category = (int)rd32(frame + 0xC);
+        rememberList(list, window, kind, category);
+        if (kind) sortList(list, window, kind, category);
         else if (g_toTopList == list) g_toTopList = 0;
     }
 
@@ -1491,6 +1569,7 @@ namespace wasort {
         if (!kind) return;
         g_focusList = list;
         g_focusWindow = windowOf(list);
+        g_focusCategory = cachedCategory(list);
         g_focusKind = kind;
         g_focusTime = GetTickCount();
         if (g_resortKind == kind) {
@@ -1599,7 +1678,7 @@ namespace wasort {
         bool allow = true;
         if (windowOf(list) == W_INVENTORY) {
             const int kind = cachedKind(list);
-            if (kind) allow = (shownChoice(kind, W_INVENTORY) == 0);
+            if (kind) allow = (shownChoice(kind, W_INVENTORY, cachedCategory(list)) == 0);
         }
         g_changeOrderAllowed = allow;
     }
@@ -1697,8 +1776,8 @@ bool weaponsArmorSortPrompt(SortPromptInfo* out) {
     const bool held = (g_padMode || g_kbMode) && g_modeKind == kind;
     out->window = g_focusWindow == W_BOX ? 2 : 1;
     out->kind = kind;
-    out->choice = held ? g_temp : shownChoice(kind, g_focusWindow);
-    out->desc = held ? g_tempDesc : g_desc[kind];
+    out->choice = held ? g_temp : shownChoice(kind, g_focusWindow, g_focusCategory);
+    out->desc = held ? g_tempDesc : g_desc[choiceSlot(kind, g_focusWindow)];
     out->held = g_padMode ? 1 : (g_kbMode ? 2 : 0);
     out->ownKeyboard = g_lastKeyboard ? 1 : 0;
     return true;
