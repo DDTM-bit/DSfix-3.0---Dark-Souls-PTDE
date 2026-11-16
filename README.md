@@ -58,13 +58,7 @@ Open the gesture window (Back) while you play and a map appears next to it, a li
   Choose one of 8 medallions and write up to 34 letters (shown in two lines under the pin).
   Pins go only on the ground you have explored, never on top of each other or a bonfire, and they
   zoom, move and change page with the map like bonfires. Saved per character in `DSfixMap.dat`.
-  - Controller: `L3` shows a `+` (left stick moves it), `A` places a pin or opens a pin's menu
-    (Edit text, Change medallion, Delete), `B` back. Text: `A` type, `X` delete, `Y` space,
-    `LB` Shift, `START` OK.
-  - Keyboard / mouse: click on the map to place a pin or open its menu, then type on the keyboard;
-    `Enter` OK, `Esc` / `Backspace` / right click back.
-  - While a pin box is open the game gets none of these keys (needs DDTMControllerFix to type on the
-    real keyboard; without it, click the on-screen keys).
+ 
 - No fast travel: the map only shows.
 - Controls: pad RS move, LT/RT zoom, LB/RB area, R3 area/world. Mouse drag move, wheel zoom,
   `,` / `.` area, `M` area/world.
