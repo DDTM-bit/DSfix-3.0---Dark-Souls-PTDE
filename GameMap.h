@@ -26,7 +26,8 @@
 //   Map block: the game's 0xD6B790 reads [0x01378520]: +0x08 list (+0x0C count, +0x10 entries of 0x3C, id at +4),
 //     +0x14 index; the id is area << 24 | block << 16
 //   Bonfires: [[0x0137E204] + 0xB48] + 0x24 = list head (what the bonfire talk scripts read, 0xD75D60 / 0xBD8870):
-//     node +0 next, +8 item; item +4 bonfire entity, WORD +8 kindle (0 unlit, 10 lit, 20 / 30 / 40 kindled). A bonfire
+//     node +0 next, +8 item; item +4 bonfire entity, WORD +8 kindle (0 unlit, 10 lit, 20 / 30 / 40 kindled; the label
+//     shows it as the Estus it gives: K:5 / 10 / 15 / 20). A bonfire
 //     is in the list once its map was loaded. Positions and entities: the game's MSB files (object o0200).
 //   Soul remains: GameDataMan [0x01378700]: [+0x1C] = record, +0 x y z, +0x34 humanity, +0x38 souls (-1 = none; the
 //     game's own check 0xD5B3B9 is souls > 0), +0x3C map id (as the map block id). The byte +0x18 alone is not enough:
@@ -556,6 +557,7 @@ namespace Look {
     float g_zoom[2] = { Look::kAreaZoom, Look::kWorldZoom };
     float g_offX = 0.0f, g_offZ = 0.0f;         // moved away from the page's centre (metres)
     bool g_lit[64];
+    WORD g_kindle[64];                          // the list's kindle value of each lit bonfire (10 lit, 20 / 30 / 40 kindled)
     int g_bonfirePlace[64];                     // the area page of each bonfire (the table)
     int g_bonfirePlace2[64];                    // and the area of the explored ground around it, if another one
     int g_bonfireGround[64];                    // the game's banner area recorded right at the bonfire (its name), -1 = none
@@ -587,6 +589,7 @@ namespace Look {
 
     void readLitBonfires() {
         memset(g_lit, 0, sizeof(g_lit));
+        memset(g_kindle, 0, sizeof(g_kindle));
         DWORD root = 0, db = 0, head = 0, node = 0;
         if (!rdD(kBonfireRoot, root) || !root || !rdD(root + 0xB48, db) || !db || !rdD(db + 0x24, head) || !head) return;
         if (!rdD(head, node)) return;
@@ -594,7 +597,11 @@ namespace Look {
             DWORD item = 0, e = 0, k = 0;
             if (!rdD(node + 8, item)) return;
             if (item && rdD(item + 4, e) && rdD(item + 8, k) && (k & 0xFFFF) != 0)
-                for (int i = 0; i < kBonfireCount; ++i) if (kBonfires[i].entity == e) g_lit[i] = true;
+                for (int i = 0; i < kBonfireCount; ++i)
+                    if (kBonfires[i].entity == e) {
+                        g_lit[i] = true;
+                        if ((WORD)k > g_kindle[i]) g_kindle[i] = (WORD)k;
+                    }
             if (!rdD(node, node)) return;
         }
     }
@@ -1274,6 +1281,7 @@ namespace Look {
             // bonfire labels: under the icon, else above it, else left out
             int nl = 0;
             const wchar_t* lText[64];
+            wchar_t lBuf[64][96];                               // "name (K:n)": n = the Estus the bonfire gives, 5 / 10 / 15 / 20
             LRect lRect[64];
             if (g_page == 0 || g_zoom[1] <= Look::kBonfireNameWorldZoom) {
                 const float lh = Look::kBonfireNameSize * s * 1.2f, px_ = Look::kNamePadX * s, py_ = Look::kNamePadY * s;
@@ -1283,6 +1291,9 @@ namespace Look {
                     if (kBonfires[b].name >= 0) name = placeName((WORD)kBonfires[b].name);
                     else if (g_bonfireGround[b] >= 0) name = placeName(kPlaces[g_bonfireGround[b]].id);
                     if (!name) continue;
+                    const int est = g_kindle[b] >= 40 ? 20 : g_kindle[b] >= 30 ? 15 : g_kindle[b] >= 20 ? 10 : 5;   // 10 lit: 5
+                    _snwprintf_s(lBuf[nl], 96, _TRUNCATE, L"%s (K:%d)", name, est);
+                    name = lBuf[nl];
                     const float w = textWidth(3, name) + px_ * 2.0f, h = lh + py_ * 2.0f;
                     const LRect under = { bx[i] - w * 0.5f, by[i] + bsz[i] * 0.45f + 1.0f, bx[i] + w * 0.5f, by[i] + bsz[i] * 0.45f + 1.0f + h };
                     const LRect over = { bx[i] - w * 0.5f, by[i] - bsz[i] * 0.5f - 1.0f - h, bx[i] + w * 0.5f, by[i] - bsz[i] * 0.5f - 1.0f };
