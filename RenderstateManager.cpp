@@ -2929,9 +2929,9 @@ namespace BoxMarkerLook {
 // NewItemMarkers: the orange "!" (Resources\NewItem.png, square, its glow inside the square). The same corner as the box
 // marker, drawn after it, so it is on top when both show. Also used on the tab icons.
 namespace NewMarkerLook {
-	const float kSize = 0.36f;               // marker width (= height) as a part of the picture's width
-	const float kRight = -0.05f;             // gap between the marker and the picture's right edge (part of its width; < 0: past it)
-	const float kTop = 0.09f;                // marker top below the picture's top (part of its height)
+	const float kSize = 0.29f;               // marker width (= height) as a part of the picture's width
+	const float kRight = -0.02f;             // gap between the marker and the picture's right edge (part of its width; < 0: past it)
+	const float kTop = 0.11f;                // marker top below the picture's top (part of its height)
 }
 
 namespace sortPrompt {

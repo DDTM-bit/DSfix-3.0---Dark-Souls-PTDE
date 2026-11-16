@@ -51,7 +51,8 @@ Open the gesture window (Back) while you play and a map appears next to it, a li
 - Area pages (Firelink Shrine, Undead Burg, ...) and a world page of all Lordran, with area names.
   Anor Londo is at the top.
 - Your lit bonfires (read from the game, so loading an older save shows that save's bonfires),
-  with their names; lower or higher bonfires are marked.
+  with their names and their kindle level, for example `Anor Londo (K:10)`: K is the number of
+  Estus Flask charges the bonfire gives (5 lit, 10 / 15 / 20 kindled). Lower or higher bonfires are marked.
 - Your soul remains (green spot, or an arrow on the edge when off the map) and your direction.
 - No fast travel: the map only shows.
 - Controls: pad RS move, LT/RT zoom, LB/RB area, R3 area/world. Mouse drag move, wheel zoom,
