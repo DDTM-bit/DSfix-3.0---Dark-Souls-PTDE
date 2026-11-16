@@ -243,6 +243,7 @@ void OptimizeCPUExecution() {
 // moves the reported position back to where that spot of the menu was before the shrink, so hover and clicks hit what
 // is drawn under the cursor. With no shrunk window open the real position is passed through unchanged.
 void remapMenuCursor(POINT* p); // RenderstateManager.cpp
+void gameMapFilterKeyState(BYTE* s); // RenderstateManager.cpp (GameMap.h): the mouse buttons while a pin box is open
 namespace {
     typedef BOOL (WINAPI* GetCursorPos_t)(LPPOINT);
     GetCursorPos_t oGetCursorPos = NULL;
@@ -282,6 +283,21 @@ namespace {
     void installMenuMouseMapping() {
         const bool ok = patchGameImport("user32.dll", "GetCursorPos", (void*)hkGetCursorPos, (void**)&oGetCursorPos);
         SDLOG(0, "Menu mouse mapping: %s\n", ok ? "GetCursorPos hooked" : "GetCursorPos not imported by the game, not active");
+    }
+
+    // gameMap pins: the game reads its mouse buttons with GetKeyboardState (0x00F3B2EC: entries 1 / 2 / 4 = left /
+    // right / middle). While a map pin box is open they read as released (the right button would close the gesture
+    // window); gameMapFilterKeyState (RenderstateManager.cpp) does nothing otherwise.
+    typedef BOOL (WINAPI* GetKeyboardState_t)(PBYTE);
+    GetKeyboardState_t oGetKeyboardState = NULL;
+    BOOL WINAPI hkGetKeyboardState(PBYTE s) {
+        const BOOL ok = oGetKeyboardState(s);
+        if (ok && s) gameMapFilterKeyState(s);
+        return ok;
+    }
+    void installMapMouseFilter() {
+        const bool ok = patchGameImport("user32.dll", "GetKeyboardState", (void*)hkGetKeyboardState, (void**)&oGetKeyboardState);
+        if (!ok) SDLOG(0, "gameMap: GetKeyboardState not imported by the game, a right click in a pin box also reaches the game\n");
     }
 }
 
@@ -388,7 +404,7 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
         installCameraDistance();
 
         // gameMap: the in-game map with the gesture window (0 = nothing at all)
-        if (Settings::get().getGameMap()) installGameMap();
+        if (Settings::get().getGameMap()) { installGameMap(); installMapMouseFilter(); }
 
         // quickSave: a key saves the current character and copies it to QuickSave\QS_DRAKS0005
         if (Settings::get().getQuickSave()) quickSaveInit();

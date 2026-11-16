@@ -67,6 +67,7 @@ IDR_TEX_QUICKMENUTEMPLATE RCDATA "Resources\\QuickMenuTemplate.png"
 IDR_TEX_CURSOR RCDATA "Resources\\Cursor.png"
 IDR_TEX_BONFIRE RCDATA "Resources\\Bonfire.png"
 IDR_TEX_NEWITEM RCDATA "Resources\\NewItem.png"
+IDR_TEX_MAPPINS RCDATA "Resources\\MapPins.png"
 
 /////////////////////////////////////////////////////////////////////////////
 #endif    // not APSTUDIO_INVOKED

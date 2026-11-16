@@ -15,6 +15,7 @@ using namespace std;
 
 void requestHudDump(); // defined in RenderstateManager.cpp
 void toggleSharpenPass(); // defined in RenderstateManager.cpp
+bool gameMapTyping(); // defined in RenderstateManager.cpp: a map pin box is open
 
 // DSfix 3.0: Global flag for smart physics toggle
 bool g_Force30FPS = false;
@@ -145,11 +146,14 @@ void KeyActions::processIO() {
 		// Only process inputs if the currently focused window belongs to this game process
 		if (fgWindow != NULL && fgPid == ::GetCurrentProcessId()) {
 			g_Force30FPS = false; // Reset the state every single frame
+			// gameMap pins: while the player types a pin's text the keys are read (so they do not fire later) but do nothing
+			const bool typing = gameMapTyping();
 
 			for (IntStrMap::const_iterator i = keyBindingMap.begin(); i != keyBindingMap.end(); ++i) {
 
 				// DSfix 3.0: Call GetAsyncKeyState exactly ONCE and store the result to prevent flag erasure
 				short keyState = GetAsyncKeyState(i->first);
+				if (typing) continue;
 				bool isDown = (keyState & 0x8000) != 0;
 				bool justPressed = (keyState & 1) != 0;
 

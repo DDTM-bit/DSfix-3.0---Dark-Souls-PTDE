@@ -108,13 +108,28 @@ namespace Look {
                                                             // never overlap: area names first, then bonfire labels)
     // zoom: metres per UI pixel (smaller = closer)
     const float kAreaZoom = 0.35f, kAreaZoomMin = 0.06f, kAreaZoomMax = 3.0f;
-    const float kWorldZoom = 2.2f, kWorldZoomMin = 0.4f, kWorldZoomMax = 6.0f;
+    const float kWorldZoom = 2.2f, kWorldZoomMin = 0.1f, kWorldZoomMax = 6.0f;   // min: close enough to part icons a few metres apart
     const float kTriggerZoomPerSecond = 3.0f;               // full trigger: this factor per second
     const float kWheelZoomStep = 0.80f;                     // one wheel notch up
     const float kStickPanPerSecond = 0.8f;                  // full stick: this part of the window width per second
     const bool kMirrorX = false;                            // true = the map is drawn mirrored left / right
     const float kRotationDeg = 90.0f;                       // the map's turn (counter-clockwise): 90 = Anor Londo on top,
                                                             // Ash Lake at the bottom. The same for every page.
+    // map pins (Resources\MapPins.png: 8 medallions, 4 x 2)
+    const float kPinSize = 21.0f;                           // a pin's medallion on the map
+    const float kPinBelowScale = 0.80f, kPinBelowDark = 0.60f;
+    const D3DCOLOR kPinName = D3DCOLOR_ARGB(245, 200, 224, 250);      // pin texts: pale blue
+    const D3DCOLOR kPinNameLine = D3DCOLOR_ARGB(210, 92, 132, 176);
+    const float kAimSpeed = 300.0f;                         // the '+': UI pixels per second at full left stick
+    const float kAimSize = 9.0f;                            // half the '+'
+    const D3DCOLOR kAim = D3DCOLOR_ARGB(255, 225, 240, 255), kAimOnPin = D3DCOLOR_ARGB(255, 120, 200, 255);
+    const D3DCOLOR kAimOff = D3DCOLOR_ARGB(150, 140, 140, 140);   // the '+' off the explored ground: no pin there
+    // the boxes (choose a medallion, a pin's menu, its text)
+    const D3DCOLOR kBoxBack = D3DCOLOR_ARGB(240, 12, 16, 24), kBoxLine = D3DCOLOR_ARGB(230, 110, 150, 200);
+    const D3DCOLOR kBoxSel = D3DCOLOR_ARGB(255, 150, 205, 255), kBoxSelBack = D3DCOLOR_ARGB(200, 40, 70, 110);
+    const D3DCOLOR kKeyBack = D3DCOLOR_ARGB(220, 26, 34, 48), kBoxText = D3DCOLOR_ARGB(255, 225, 235, 248);
+    const float kBoxCell = 31.0f, kBoxGap = 4.0f, kBoxPad = 12.0f;   // kBoxCell / kBoxGap: the medallion box
+    const float kKeyW = 36.0f, kKeyH = 26.0f, kKeyGap = 4.0f;
 }
 
 // =====================================================================================================================
@@ -372,9 +387,22 @@ namespace Look {
     }
 
 // =====================================================================================================================
-// The file: DSfixMap.dat next to DRAKS0005.sl2. "DSMP", version 1, 10 slots: used, name (16 wchar), count, cells.
+// Map pins: the player's own markers (a medallion and up to 34 letters), per character
 // =====================================================================================================================
-    struct SlotData { bool used; wchar_t name[16]; std::vector<CellRec> cells; };
+    const int kPinMax = 100, kPinText = 34, kPinLine = 17, kPinIcons = 8;
+    struct PinRec { float x, y, z; WORD place; BYTE icon; BYTE len; wchar_t text[kPinText]; };   // 84 bytes, as in the file
+    std::vector<PinRec> g_pins;                       // the character in play (place = PlaceName id)
+    bool pinCharOk(wchar_t c) {
+        return (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || (c >= L'0' && c <= L'9') || c == L' ' || c == L'\'' ||
+            c == L'.' || c == L'-';
+    }
+
+// =====================================================================================================================
+// The file: DSfixMap.dat next to DRAKS0005.sl2. "DSMP", version 1, 10 slots: used, name (16 wchar), count, cells.
+// Then the pins: "PINS", version 1, for each of the 10 slots a count and that many PinRec. An older DSfix reads the
+// slots and does not look further (it keeps working, without the pins).
+// =====================================================================================================================
+    struct SlotData { bool used; wchar_t name[16]; std::vector<CellRec> cells; std::vector<PinRec> pins; };
     SlotData g_file[10];
     bool g_fileRead = false;
     std::string g_filePath;                           // empty = no save folder found: kept only while the game runs
@@ -415,7 +443,7 @@ namespace Look {
 
     void readFile() {
         g_fileRead = true;
-        for (int s = 0; s < 10; ++s) { g_file[s].used = false; g_file[s].name[0] = 0; g_file[s].cells.clear(); }
+        for (int s = 0; s < 10; ++s) { g_file[s].used = false; g_file[s].name[0] = 0; g_file[s].cells.clear(); g_file[s].pins.clear(); }
         const std::string folder = findSaveFolder();
         if (folder.empty()) { SDLOG(0, "gameMap: no save folder found, the explored map is kept only while the game runs\n"); return; }
         g_filePath = folder + "\\DSfixMap.dat";
@@ -434,6 +462,7 @@ namespace Look {
             SDLOG(0, "gameMap: %s is not a map file of this DSfix, it will be written new\n", g_filePath.c_str());
             return;
         }
+        int whole = 0;                               // slots read completely
         for (int s = 0; s < 10; ++s) {
             if (p + 4 + 32 + 4 > d.size()) break;
             const DWORD used = *(const DWORD*)&d[p]; p += 4;
@@ -447,6 +476,25 @@ namespace Look {
                 memcpy(&g_file[s].cells[0], &d[p], (size_t)n * sizeof(CellRec));
             }
             p += (size_t)n * sizeof(CellRec);
+            ++whole;
+        }
+        // the pins (after the 10 slots)
+        if (whole == 10 && p + 8 <= d.size() && memcmp(&d[p], "PINS", 4) == 0 && *(const DWORD*)&d[p + 4] == 1) {
+            p += 8;
+            for (int s = 0; s < 10; ++s) {
+                if (p + 4 > d.size()) break;
+                const DWORD n = *(const DWORD*)&d[p]; p += 4;
+                if (n > (DWORD)kPinMax || p + (size_t)n * sizeof(PinRec) > d.size()) break;
+                for (DWORD i = 0; i < n; ++i) {
+                    PinRec r;
+                    memcpy(&r, &d[p], sizeof(PinRec)); p += sizeof(PinRec);
+                    if (r.icon >= kPinIcons || r.len > kPinText || placeIndex(r.place) < 0 || !(r.x == r.x) || !(r.z == r.z) || !(r.y == r.y)) continue;
+                    bool ok = true;
+                    for (int k = 0; k < r.len; ++k) if (!pinCharOk(r.text[k])) ok = false;
+                    if (!ok) continue;
+                    g_file[s].pins.push_back(r);
+                }
+            }
         }
         SDLOG(0, "gameMap: %s read\n", g_filePath.c_str());
     }
@@ -457,6 +505,7 @@ namespace Look {
         SlotData& sd = g_file[g_activeSlot];
         sd.used = true;
         memcpy(sd.name, g_activeName, sizeof(sd.name));
+        sd.pins = g_pins;
         sd.cells.clear();
         sd.cells.reserve(g_cellCount);
         for (int p = 0; p < kPlaceCount; ++p)
@@ -494,6 +543,8 @@ namespace Look {
         j->path = g_filePath;
         size_t total = 12;
         for (int s = 0; s < 10; ++s) total += 40 + g_file[s].cells.size() * sizeof(CellRec);
+        total += 8;                                  // the pins: "PINS", version, then a count and the pins of each slot
+        for (int s = 0; s < 10; ++s) total += 4 + g_file[s].pins.size() * sizeof(PinRec);
         j->data.resize(total);
         BYTE* p = &j->data[0];
         memcpy(p, "DSMP", 4); *(DWORD*)(p + 4) = 1; *(DWORD*)(p + 8) = 10; p += 12;
@@ -503,6 +554,12 @@ namespace Look {
             const DWORD n = (DWORD)g_file[s].cells.size();
             *(DWORD*)p = n; p += 4;
             if (n) { memcpy(p, &g_file[s].cells[0], n * sizeof(CellRec)); p += n * sizeof(CellRec); }
+        }
+        memcpy(p, "PINS", 4); *(DWORD*)(p + 4) = 1; p += 8;
+        for (int s = 0; s < 10; ++s) {
+            const DWORD n = (DWORD)g_file[s].pins.size();
+            *(DWORD*)p = n; p += 4;
+            if (n) { memcpy(p, &g_file[s].pins[0], n * sizeof(PinRec)); p += n * sizeof(PinRec); }
         }
         HANDLE t = CreateThread(NULL, 0, writerThread, j, 0, NULL);
         if (!t) { delete j; InterlockedExchange(&g_writing, 0); return false; }
@@ -520,12 +577,14 @@ namespace Look {
             unsaved = g_dirty && !saveFile();
         }
         clearCells();
+        g_pins.clear();
         g_activeSlot = slot;
         memcpy(g_activeName, name, sizeof(g_activeName));
         g_activeName[15] = 0;
         const SlotData& sd = g_file[slot];
         bool same = sd.used && wcsncmp(sd.name, g_activeName, 16) == 0;
         if (same) {
+            g_pins = sd.pins;
             for (size_t i = 0; i < sd.cells.size(); ++i) {
                 const CellRec& c = sd.cells[i];
                 const int p = placeIndex(c.place);
@@ -535,7 +594,7 @@ namespace Look {
         g_dirty = !same || unsaved;              // a new character in this slot: its (empty) map replaces the old one
         char nm[64] = { 0 };
         WideCharToMultiByte(CP_UTF8, 0, g_activeName, -1, nm, sizeof(nm) - 1, NULL, NULL);
-        SDLOG(0, "gameMap: slot %d \"%s\": %u explored cells%s\n", slot, nm, g_cellCount, same ? "" : " (new map)");
+        SDLOG(0, "gameMap: slot %d \"%s\": %u explored cells, %u pins%s\n", slot, nm, g_cellCount, (unsigned)g_pins.size(), same ? "" : " (new map)");
     }
 
 // =====================================================================================================================
@@ -627,6 +686,18 @@ namespace Look {
     volatile LONG g_rc[4] = { 0, 0, 0, 0 };     // the map in client pixels (for the wheel, window thread)
     HWND g_hwnd = NULL;
     DWORD g_lastPadUse = 0, g_lastKbmUse = 0;
+    // map pins: the pad buttons they use (the physical button, through DDTMControllerFix's mapping like LB / RB)
+    enum { PB_A = 1, PB_B = 2, PB_X = 4, PB_Y = 8, PB_LB = 0x10, PB_START = 0x20, PB_L3 = 0x40,
+           PB_UP = 0x100, PB_DOWN = 0x200, PB_LEFT = 0x400, PB_RIGHT = 0x800 };
+    WORD g_pbNow[4] = { 0, 0, 0, 0 };           // held now, per pad
+    volatile LONG g_pbPress = 0;                // pressed since the map last looked (only while the map takes input)
+    SHORT g_lsx[4] = { 0, 0, 0, 0 }, g_lsy[4] = { 0, 0, 0, 0 };
+    volatile bool g_pinBlock = false;           // a pin mode is on: the game gets nothing from the pads
+    DWORD g_pinGraceUntil = 0;                  // a little after the '+' or a box ended the game still gets nothing (the
+                                                // key that ended it may reach the pad a frame later: B, Esc, ...)
+    WORD g_waitUp[4] = { 0, 0, 0, 0 };          // buttons held when a pin mode ended: hidden from the game until let go
+    BYTE g_waitTrig[4] = { 0, 0, 0, 0 };        // the same for the triggers (1 LT, 2 RT): DDTMControllerFix gives the right
+                                                // mouse button to the game as RT (heavy attack) outside its menus
 
     // DDTMControllerFix's controller mapping: physical button (4 LB, 5 RB, 6 LT, 7 RT) -> the game button carrying it
     // (0 A, 1 B, 2 X, 3 Y, 4 LB, 5 RB, 6 LT, 7 RT), -1 = it reaches the game as none of them
@@ -656,6 +727,29 @@ namespace Look {
         const int gLB = physToGame(4), gRB = physToGame(5), gLT = physToGame(6), gRT = physToGame(7);
         PhysPad& o = g_pad[idx];
         const PhysPad old = o;
+        const BYTE rawLt = s->lt, rawRt = s->rt;                // before the map takes its own
+        // map pins: their buttons (before the game's copy is changed below)
+        {
+            WORD pb = 0;
+            if (gameValue(s, physToGame(0)) > 30) pb |= PB_A;
+            if (gameValue(s, physToGame(1)) > 30) pb |= PB_B;
+            if (gameValue(s, physToGame(2)) > 30) pb |= PB_X;
+            if (gameValue(s, physToGame(3)) > 30) pb |= PB_Y;
+            if (gameValue(s, gLB) > 30) pb |= PB_LB;
+            // the keyboard's "back" key of DDTMControllerFix reaches the game as B
+            kbIcons::Shared* sh = kbIcons::shared();
+            if (sh && sh->kbmActive && (s->buttons & 0x2000)) pb |= PB_B;
+            if (s->buttons & 0x0010) pb |= PB_START;
+            if (s->buttons & 0x0040) pb |= PB_L3;
+            if (sh && sh->version >= 5 && (sh->physButtons & 0x0040)) pb |= PB_L3;   // L3 taken by a DDTM macro (AUTO_RUN)
+            if (s->buttons & 0x0001) pb |= PB_UP;
+            if (s->buttons & 0x0002) pb |= PB_DOWN;
+            if (s->buttons & 0x0004) pb |= PB_LEFT;
+            if (s->buttons & 0x0008) pb |= PB_RIGHT;
+            if (g_inputActive) InterlockedOr(&g_pbPress, (LONG)(pb & ~g_pbNow[idx]));
+            g_pbNow[idx] = pb;
+            g_lsx[idx] = s->lx; g_lsy[idx] = s->ly;
+        }
         o.r3 = (s->buttons & 0x0080) != 0;
         o.lb = gameValue(s, gLB) > 30; o.rb = gameValue(s, gRB) > 30;
         o.lt = gameValue(s, gLT); o.rt = gameValue(s, gRT);
@@ -665,8 +759,85 @@ namespace Look {
             s->buttons != 0 || abs(s->lx) > 9000 || abs(s->ly) > 9000) g_lastPadUse = GetTickCount();
         if (g_inputActive) {
             s->rx = 0; s->ry = 0;
-            s->buttons &= (WORD)~0x0080;
+            s->buttons &= (WORD)~0x00C0;                       // R3 (page) and L3 (pins)
             gameClear(s, gLB); gameClear(s, gRB); gameClear(s, gLT); gameClear(s, gRT);
+        }
+        // map pins: while the '+' or a box is shown the game gets nothing; what is still held when it ends reaches the
+        // game only after it was let go (B leaving a box must not close the gesture window, A must not do a gesture)
+        if (g_pinBlock) {
+            g_waitUp[idx] = s->buttons;
+            g_waitTrig[idx] = (BYTE)((rawLt > 30 ? 1 : 0) | (rawRt > 30 ? 2 : 0));
+            s->buttons = 0;
+            s->lx = 0; s->ly = 0;
+            s->lt = 0; s->rt = 0;
+        }
+        else {
+            if (g_waitUp[idx]) {
+                g_waitUp[idx] &= s->buttons;
+                s->buttons &= (WORD)~g_waitUp[idx];
+            }
+            if (g_waitTrig[idx]) {
+                if (rawLt <= 30) g_waitTrig[idx] &= (BYTE)~1; else if (g_waitTrig[idx] & 1) s->lt = 0;
+                if (rawRt <= 30) g_waitTrig[idx] &= (BYTE)~2; else if (g_waitTrig[idx] & 2) s->rt = 0;
+            }
+        }
+    }
+
+    // ---- map pins: the real keyboard while a box is open (a keyboard hook on the window's thread, only then) ----
+    enum { KC_BACK = 0xF001, KC_ENTER = 0xF002, KC_ESC = 0xF003, KC_UP = 0xF010, KC_DOWN = 0xF011, KC_LEFT = 0xF012, KC_RIGHT = 0xF013 };
+    HHOOK g_kbHook = NULL;
+    volatile LONG g_kq[64];
+    volatile LONG g_kqHead = 0, g_kqTail = 0;   // one writer (the window thread), one reader (the frame)
+    WORD keyCode(UINT vk) {
+        const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0, caps = (GetKeyState(VK_CAPITAL) & 1) != 0;
+        switch (vk) {
+        case VK_BACK: return KC_BACK;
+        case VK_RETURN: return KC_ENTER;
+        case VK_ESCAPE: return KC_ESC;
+        case VK_UP: return KC_UP;
+        case VK_DOWN: return KC_DOWN;
+        case VK_LEFT: return KC_LEFT;
+        case VK_RIGHT: return KC_RIGHT;
+        case VK_SPACE: return L' ';
+        case VK_DECIMAL: return L'.';
+        case VK_SUBTRACT: return L'-';
+        }
+        if (vk >= 'A' && vk <= 'Z') return (WORD)((shift != caps) ? vk : vk + 32);
+        if (vk >= '0' && vk <= '9') return shift ? 0 : (WORD)vk;
+        if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) return (WORD)(L'0' + (vk - VK_NUMPAD0));
+        if (shift) return 0;
+        const WORD c = (WORD)(MapVirtualKeyW(vk, MAPVK_VK_TO_CHAR) & 0x7FFF);   // the key's letter on this layout
+        return (c == L'\'' || c == L'.' || c == L'-') ? c : 0;
+    }
+    LRESULT CALLBACK kbProc(int code, WPARAM wp, LPARAM lp) {
+        if (code == HC_ACTION && !(lp & 0x80000000)) {           // pressed (or held: repeats)
+            const WORD c = keyCode((UINT)wp);
+            const LONG head = g_kqHead;
+            if (c && ((head + 1) & 63) != g_kqTail) {
+                g_kq[head] = c;
+                InterlockedExchange(&g_kqHead, (head + 1) & 63);
+            }
+        }
+        return CallNextHookEx(g_kbHook, code, wp, lp);
+    }
+    WORD popKey() {
+        const LONG tail = g_kqTail;
+        if (tail == g_kqHead) return 0;
+        const WORD c = (WORD)g_kq[tail];
+        InterlockedExchange(&g_kqTail, (tail + 1) & 63);
+        return c;
+    }
+    void keyboardHook(bool on) {
+        if (on && !g_kbHook && g_hwnd) {
+            const DWORD tid = GetWindowThreadProcessId(g_hwnd, NULL);
+            InterlockedExchange(&g_kqTail, g_kqHead);
+            g_kbHook = tid ? SetWindowsHookExW(WH_KEYBOARD, kbProc, NULL, tid) : NULL;
+            static bool logged = false;
+            if (!g_kbHook && !logged) { logged = true; SDLOG(0, "gameMap: pins: the keyboard hook could not be set, type with the on-screen keys\n"); }
+        }
+        else if (!on && g_kbHook) {
+            UnhookWindowsHookEx(g_kbHook);
+            g_kbHook = NULL;
         }
     }
 
@@ -693,6 +864,8 @@ namespace Look {
     enum { SHAPE_HERO, SHAPE_UP, SHAPE_STAIN_ARROW, SHAPE_COUNT };
     IDirect3DTexture9* g_shape[SHAPE_COUNT] = { NULL, NULL, NULL };
     bool g_bonfireTried = false;
+    IDirect3DTexture9* g_pinTex = NULL;         // the 8 medallions (4 x 2), premultiplied, with smaller copies
+    bool g_pinTried = false;
     IDirect3DStateBlock9* g_sb = NULL;
     ID3DXFont* g_font[4] = { NULL, NULL, NULL, NULL };  // title, labels, help, bonfire names
     int g_fontForH = 0;
@@ -707,6 +880,8 @@ namespace Look {
         SAFERELEASE(g_bump);
         SAFERELEASE(g_bonfireTex);
         g_bonfireTried = false;
+        SAFERELEASE(g_pinTex);
+        g_pinTried = false;
         for (int i = 0; i < SHAPE_COUNT; ++i) SAFERELEASE(g_shape[i]);
         SAFERELEASE(g_sb);
         for (int i = 0; i < 4; ++i) SAFERELEASE(g_font[i]);
@@ -860,6 +1035,37 @@ namespace Look {
                 }
             }
             g_bonfireTex->UnlockRect(0);
+        }
+        return true;
+    }
+
+    bool loadPins(IDirect3DDevice9* dev) {
+        if (g_pinTried) return g_pinTex != NULL;
+        g_pinTried = true;
+        HRSRC r = FindResource(g_hModule, MAKEINTRESOURCE(IDR_TEX_MAPPINS), RT_RCDATA);
+        HGLOBAL hg = r ? LoadResource(g_hModule, r) : NULL;
+        const void* data = hg ? LockResource(hg) : NULL;
+        const DWORD size = r ? SizeofResource(g_hModule, r) : 0;
+        if (!data || !size) { SDLOG(0, "gameMap: MapPins.png is missing from the DLL, map pins are drawn as spots\n"); return false; }
+        // all its smaller copies (box filter, from the straight colours), then each copy premultiplied
+        if (FAILED(TrueD3DXCreateTextureFromFileInMemoryEx(dev, data, size, D3DX_DEFAULT, D3DX_DEFAULT, D3DX_DEFAULT, 0,
+            D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, D3DX_FILTER_NONE, D3DX_FILTER_BOX, 0, NULL, NULL, &g_pinTex)) || !g_pinTex) {
+            g_pinTex = NULL;
+            SDLOG(0, "gameMap: MapPins.png could not be read, map pins are drawn as spots\n");
+            return false;
+        }
+        for (DWORD l = 0; l < g_pinTex->GetLevelCount(); ++l) {
+            D3DSURFACE_DESC d;
+            D3DLOCKED_RECT lr;
+            if (FAILED(g_pinTex->GetLevelDesc(l, &d)) || FAILED(g_pinTex->LockRect(l, &lr, NULL, 0))) continue;
+            for (UINT y = 0; y < d.Height; ++y) {
+                UINT32* row = (UINT32*)((BYTE*)lr.pBits + (size_t)y * lr.Pitch);
+                for (UINT x = 0; x < d.Width; ++x) {
+                    const UINT32 p = row[x], a = p >> 24;
+                    row[x] = (a << 24) | ((((p >> 16) & 255) * a + 127) / 255 << 16) | ((((p >> 8) & 255) * a + 127) / 255 << 8) | (((p & 255) * a + 127) / 255);
+                }
+            }
+            g_pinTex->UnlockRect(l);
         }
         return true;
     }
@@ -1026,15 +1232,29 @@ namespace Look {
 
     // labels must not cover each other: every placed label / icon is an obstacle for the next ones
     struct LRect { float l, t, r, b; };
-    LRect g_obst[256];
+    LRect g_obst[512];
     int g_obstN = 0;
-    void addObst(const LRect& r) { if (g_obstN < 256) g_obst[g_obstN++] = r; }
+    void addObst(const LRect& r) { if (g_obstN < 512) g_obst[g_obstN++] = r; }
     bool freeRect(const LRect& r) {
         for (int i = 0; i < g_obstN; ++i) {
             const LRect& o = g_obst[i];
             if (r.l < o.r && r.r > o.l && r.t < o.b && r.b > o.t) return false;
         }
         return true;
+    }
+    // a label's place next to an icon: under it, else above, else right, else left (inside the window and free); NULL = none
+    const LRect* labelSpot(float cx, float cy, float half, float top, float bottom, float w, float h, LRect* c) {
+        const View& v = g_view;
+        const LRect under = { cx - w * 0.5f, bottom + 1.0f, cx + w * 0.5f, bottom + 1.0f + h };
+        const LRect over = { cx - w * 0.5f, top - 1.0f - h, cx + w * 0.5f, top - 1.0f };
+        const LRect right = { cx + half + 2.0f, cy - h * 0.5f, cx + half + 2.0f + w, cy + h * 0.5f };
+        const LRect left = { cx - half - 2.0f - w, cy - h * 0.5f, cx - half - 2.0f, cy + h * 0.5f };
+        const LRect all[4] = { under, over, right, left };
+        for (int i = 0; i < 4; ++i) {
+            const LRect& r = all[i];
+            if (r.l >= v.l && r.r <= v.r && r.t >= v.t && r.b <= v.b && freeRect(r)) { *c = r; return c; }
+        }
+        return NULL;
     }
     // where an area's name goes: its explored cell nearest to the middle of its explored ground (kept until it grows)
     void placeAnchor(int p, float& x, float& z) {
@@ -1091,6 +1311,337 @@ namespace Look {
         quad(xs[4], y, xs[4] + ic, y + ic, D3DCOLOR_ARGB(f8, f8, f8, f8));
         flush(dev);
         for (int i = 0; i < 5; ++i) text(2, names[i], xs[i] + ic + tg, ty, Look::kHelp, DT_LEFT | DT_TOP, fade);
+    }
+
+// =====================================================================================================================
+// Map pins: state, layout helpers
+//   Controller: L3 shows a '+' (left stick moves it; at the edge the map moves), A on a pin opens its menu, elsewhere
+//   the medallion box; B or L3 hide the '+'. Keyboard / mouse: a click on the map (press and let go without moving) does
+//   the same. While the '+' or a box shows, the game gets nothing from the pads (and, with DDTMControllerFix version 4,
+//   nothing from the keyboard): the hero does not move, the gesture list does not react.
+// =====================================================================================================================
+    enum { PM_NONE, PM_AIM, PM_PICK, PM_MENU, PM_TEXT };
+    int g_pm = PM_NONE;
+    bool g_pmFromAim = false;                   // a box closes back to the '+'
+    float g_aimX = 0.0f, g_aimY = 0.0f;         // the '+': UI pixels from the window's centre
+    float g_spotPx = 0.0f, g_spotPy = 0.0f;     // the spot of a new pin (back buffer pixels)
+    int g_pinSel = -1;                          // the pin a box works on (-1: a new one)
+    int g_pickSel = 0, g_menuSel = 0, g_keySel = 0;
+    wchar_t g_edit[kPinText + 1];
+    int g_editLen = 0;
+    bool g_shift = false;
+    bool g_pickFull = false;                    // 100 pins: a new one is refused
+    // where the pins are on screen (last frame): hits and snapping
+    float g_pinPx[kPinMax], g_pinPy[kPinMax];
+    bool g_pinShown[kPinMax];
+    float g_zoneT = 0.0f, g_zoneB = 0.0f;       // between the title and the legend (last frame): where new pins can go
+    float g_bfPx[64], g_bfPy[64];               // the bonfire icons on screen (last frame): a new pin keeps clear of them too
+    int g_bfN = 0;
+    // the boxes (last frame): mouse hits
+    float g_boxL = 0, g_boxT = 0, g_boxR = 0, g_boxB = 0;
+    float g_cellL[kPinIcons], g_cellT[kPinIcons], g_cellR[kPinIcons], g_cellB[kPinIcons];
+    float g_itemL[4], g_itemT[4], g_itemR[4], g_itemB[4];
+    // the on-screen keyboard: 4 rows of 10, then Space (5 wide), Delete (3), OK (2)
+    enum { KK_SHIFT = 1, KK_DEL = 8, KK_OK = 13 };
+    struct Key { int row, col, span; wchar_t code; };
+    Key g_keys[44];
+    int g_keyN = 0;
+    float g_keyL[44], g_keyT[44], g_keyR[44], g_keyB[44];
+    void buildKeys() {
+        if (g_keyN) return;
+        const wchar_t* rows[4] = { L"1234567890", L"QWERTYUIOP", L"ASDFGHJKL'", L"ZXCVBNM.-" };
+        for (int r = 0; r < 4; ++r)
+            for (int c = 0; rows[r][c]; ++c) { const Key k = { r, c, 1, rows[r][c] }; g_keys[g_keyN++] = k; }
+        const Key sh = { 3, 9, 1, (wchar_t)KK_SHIFT }, sp = { 4, 0, 5, L' ' }, de = { 4, 5, 3, (wchar_t)KK_DEL }, ok = { 4, 8, 2, (wchar_t)KK_OK };
+        g_keys[g_keyN++] = sh; g_keys[g_keyN++] = sp; g_keys[g_keyN++] = de; g_keys[g_keyN++] = ok;
+    }
+    int keyAt(int row, int col) {
+        for (int i = 0; i < g_keyN; ++i)
+            if (g_keys[i].row == row && col >= g_keys[i].col && col < g_keys[i].col + g_keys[i].span) return i;
+        return -1;
+    }
+
+    // a pin's text in two lines of at most 17: at the last space that fits, else cut at 17
+    int wrapPin(const wchar_t* t, int n, wchar_t* l1, wchar_t* l2) {
+        l1[0] = l2[0] = 0;
+        if (n <= 0) return 0;
+        if (n <= kPinLine) { memcpy(l1, t, n * sizeof(wchar_t)); l1[n] = 0; return 1; }
+        int cut = -1;
+        for (int i = kPinLine; i >= 1; --i) if (t[i] == L' ' && n - (i + 1) <= kPinLine) { cut = i; break; }
+        const int a = cut >= 0 ? cut : kPinLine, b = cut >= 0 ? cut + 1 : kPinLine;
+        memcpy(l1, t, a * sizeof(wchar_t)); l1[a] = 0;
+        memcpy(l2, t + b, (n - b) * sizeof(wchar_t)); l2[n - b] = 0;
+        return 2;
+    }
+
+    // back buffer pixel -> world x / z (the inverse of toScreen)
+    void toWorld(float px, float py, float& x, float& z) {
+        const View& v = g_view;
+        float wx, wz;
+        screenDirToWorld((px - (v.l + v.r) * 0.5f) * v.mppBb, (py - (v.t + v.b) * 0.5f) * v.mppBb, wx, wz);
+        x = v.cx + wx; z = v.cz + wz;
+    }
+    // A new pin goes only on the explored ground drawn on this page: the nearest explored cell within what the drawing
+    // shows around the cells at this zoom. Its area and height come from that cell (of floors stacked above each other,
+    // the one nearest the page's reference height), so the pin sits right on every page. False: not on the ground.
+    bool pathAt(float x, float z, int& place, float& y) {
+        const View& v = g_view;
+        const float mppUi = v.mppBb * v.s;
+        int lod = kLods - 1;
+        for (int l = 0; l < kLods; ++l) if (kCellSize[l] / mppUi >= 2.0f) { lod = l; break; }
+        float tol = kCellSize[lod] * 1.1f;
+        if (tol < 2.5f) tol = 2.5f;
+        float best = 1e30f;
+        place = -1; y = v.refY;
+        for (int p = 0; p < kPlaceCount; ++p) {
+            if (!onPage(p)) continue;
+            const std::vector<CellRec>& cells = g_cells[0][p];
+            for (size_t i = 0; i < cells.size(); ++i) {
+                const float dx = (cells[i].x + 0.5f) * kCellSize[0] - x, dz = (cells[i].z + 0.5f) * kCellSize[0] - z;
+                const float d2 = dx * dx + dz * dz;
+                if (d2 > tol * tol) continue;
+                const float cy = (cells[i].y + 0.5f) * kCellHeight[0];
+                const float score = d2 + 0.01f * (cy - v.refY) * (cy - v.refY);
+                if (score < best) { best = score; place = p; y = cy; }
+            }
+        }
+        return place >= 0;
+    }
+    bool pathAtScreen(float px, float py) {
+        float x, z, y;
+        int place;
+        toWorld(px, py, x, z);
+        return pathAt(x, z, place, y);
+    }
+
+    // free for a pin's medallion at this zoom (no other shown pin closer than one medallion)
+    bool spotFree(float px, float py, float d, int skip) {
+        for (int i = 0; i < (int)g_pins.size() && i < kPinMax; ++i) {
+            if (i == skip || !g_pinShown[i]) continue;
+            const float dx = g_pinPx[i] - px, dy = g_pinPy[i] - py;
+            if (dx * dx + dy * dy < d * d) return false;
+        }
+        for (int i = 0; i < g_bfN; ++i) {                     // a bonfire icon is about as big
+            const float dx = g_bfPx[i] - px, dy = g_bfPy[i] - py;
+            if (dx * dx + dy * dy < d * d) return false;
+        }
+        return true;
+    }
+    // "snapped": a spot on another pin (or a bonfire) moves right next to it: the free place on the explored ground
+    // nearest to where it was asked for
+    void snapSpot(float& px, float& py, float d) {
+        if (spotFree(px, py, d, -1)) return;
+        const View& v = g_view;
+        float bestD = 1e30f, bx = px, by = py;
+        const int n = (int)g_pins.size() < kPinMax ? (int)g_pins.size() : kPinMax;
+        for (int i = 0; i < n + g_bfN; ++i) {
+            if (i < n && !g_pinShown[i]) continue;
+            const float ox = i < n ? g_pinPx[i] : g_bfPx[i - n], oy = i < n ? g_pinPy[i] : g_bfPy[i - n];
+            for (int a = 0; a < 16; ++a) {
+                const float ang = a * 3.14159265f / 8.0f;
+                const float cx = ox + cosf(ang) * d * 1.02f, cy = oy + sinf(ang) * d * 1.02f;
+                if (cx < v.l + d * 0.5f || cx > v.r - d * 0.5f || cy < g_zoneT + d * 0.5f || cy > g_zoneB - d * 0.5f) continue;
+                const float dd = (cx - px) * (cx - px) + (cy - py) * (cy - py);
+                if (dd >= bestD || !spotFree(cx, cy, d, -1) || !pathAtScreen(cx, cy)) continue;
+                bestD = dd; bx = cx; by = cy;
+            }
+        }
+        px = bx; py = by;
+    }
+    // the shown pin under a point (-1: none)
+    int pinAt(float px, float py, float r) {
+        int best = -1;
+        float bd = r * r;
+        for (int i = 0; i < (int)g_pins.size() && i < kPinMax; ++i) {
+            if (!g_pinShown[i]) continue;
+            const float dx = g_pinPx[i] - px, dy = g_pinPy[i] - py, d = dx * dx + dy * dy;
+            if (d <= bd) { bd = d; best = i; }
+        }
+        return best;
+    }
+
+    // ---- map pins: drawing the '+' and the boxes (inside the map window, over everything else) ----
+    void lineRect(float l, float t, float r, float b, float lw, D3DCOLOR c) {
+        quad(l, t, r, t + lw, c); quad(l, b - lw, r, b, c);
+        quad(l, t + lw, l + lw, b - lw, c); quad(r - lw, t + lw, r, b - lw, c);
+    }
+    void pinUv(int icon, float& u0, float& v0, float& u1, float& v1) {
+        u0 = (icon % 4) * 0.25f; v0 = (icon / 4) * 0.5f; u1 = u0 + 0.25f; v1 = v0 + 0.5f;
+    }
+    // a medallion: the texture's cell, or a blue spot without the picture (premultiplied colour c)
+    void medallion(float cx, float cy, float size, int icon, D3DCOLOR c) {
+        float u0, v0, u1, v1;
+        pinUv(icon, u0, v0, u1, v1);
+        if (g_pinTex) quad(cx - size * 0.5f, cy - size * 0.5f, cx + size * 0.5f, cy + size * 0.5f, c, u0, v0, u1, v1);
+        else quad(cx - size * 0.5f, cy - size * 0.5f, cx + size * 0.5f, cy + size * 0.5f, c);
+    }
+    void medallionStates(IDirect3DDevice9* dev) {
+        setDrawStates(dev, g_pinTex ? (IDirect3DBaseTexture9*)g_pinTex : (IDirect3DBaseTexture9*)g_blob, false);
+        if (g_pinTex) dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
+    }
+    D3DCOLOR medallionColour(float fade, float dark) {
+        const DWORD a = (DWORD)(fade * 255.0f + 0.5f), c = (DWORD)(fade * dark * 255.0f + 0.5f);
+        return g_pinTex ? D3DCOLOR_ARGB(a, c, c, c) : pm(D3DCOLOR_ARGB(255, 90, 160, 235), fade * dark);
+    }
+    // the typing on the real keyboard: only when DDTMControllerFix (version 4) keeps those keys from the game
+    bool realTyping() {
+        kbIcons::Shared* sh = kbIcons::shared();
+        return sh && sh->version >= 4;
+    }
+
+    void drawPinUi(IDirect3DDevice9* dev, float s, float fade, bool padHelp) {
+        const View& v = g_view;
+        const float lw = floorf(s + 0.5f) < 1.0f ? 1.0f : floorf(s + 0.5f);
+        if (g_pm == PM_AIM) {
+            const float cx = floorf((v.l + v.r) * 0.5f + g_aimX * s + 0.5f), cy = floorf((v.t + v.b) * 0.5f + g_aimY * s + 0.5f);
+            const float h = Look::kAimSize * s, t = (lw * 2.0f < 2.0f ? 2.0f : lw * 2.0f) * 0.5f;
+            const bool on = pinAt(cx, cy, Look::kPinSize * s * 0.55f) >= 0;
+            const bool ground = on || (cy >= g_zoneT && cy <= g_zoneB && pathAtScreen(cx, cy));
+            setDrawStates(dev, NULL, false);
+            const D3DCOLOR o = pm(D3DCOLOR_ARGB(220, 0, 0, 0), fade);
+            const D3DCOLOR c = pm(on ? Look::kAimOnPin : (ground ? Look::kAim : Look::kAimOff), fade);
+            quad(cx - h - lw, cy - t - lw, cx + h + lw, cy + t + lw, o);
+            quad(cx - t - lw, cy - h - lw, cx + t + lw, cy + h + lw, o);
+            quad(cx - h, cy - t, cx + h, cy + t, c);
+            quad(cx - t, cy - h, cx + t, cy + h, c);
+            flush(dev);
+            return;
+        }
+        if (g_pm < PM_PICK) return;
+        loadPins(dev);
+        const float pad = Look::kBoxPad * s, th = Look::kLabelSize * s * 1.35f, hh = Look::kHelpSize * s * 1.35f;
+        const float fy = Look::kLabelSize * s * 1.2f;          // the label font's line
+        const bool typing = realTyping();
+        const wchar_t* help = NULL;
+        const wchar_t* title = NULL;
+        wchar_t titleBuf[64];
+        float bw = 0, bh = 0;
+        const float cell = Look::kBoxCell * s, gap = Look::kBoxGap * s;
+        const float kw = Look::kKeyW * s, kh = Look::kKeyH * s, kg = Look::kKeyGap * s;
+        const float ih = Look::kLabelSize * s * 1.7f;
+        const float fieldH = fy * 2.0f + 6.0f * s;
+        if (g_pm == PM_PICK) {
+            help = padHelp ? (g_pinSel >= 0 ? L"D-pad  Choose     A  Change     B  Back" : L"D-pad  Choose     A  Place     B  Back")
+                           : L"Click  Choose     Esc  Back";
+            title = g_pinSel >= 0 ? L"Change medallion" : (g_pickFull ? L"100 pins: delete one first" : L"New pin");
+            bw = 4 * cell + 3 * gap + 2 * pad;
+            bh = pad + th + 2 * cell + gap + hh + pad * 1.5f;
+        }
+        else if (g_pm == PM_MENU) {
+            help = padHelp ? L"D-pad  Choose     A  Select     B  Back" : L"Click  Select     Esc  Back";
+            title = L"Pin";
+            if (g_pinSel >= 0 && g_pinSel < (int)g_pins.size()) {
+                const PinRec& r = g_pins[g_pinSel];
+                wchar_t l1[kPinLine + 1], l2[kPinLine + 1];
+                if (wrapPin(r.text, r.len, l1, l2) > 0) {
+                    _snwprintf_s(titleBuf, 64, _TRUNCATE, L"%s%s", l1, l2[0] ? L"..." : L"");
+                    title = titleBuf;
+                }
+                else title = L"Pin";
+            }
+            bw = 210.0f * s + 2 * pad;
+            bh = pad + th + 4 * ih + hh + pad;
+        }
+        else {
+            help = padHelp ? L"A  Type    X  Delete    Y  Space    LB  Shift    START  OK    B  Cancel"
+                           : (typing ? L"Type     Enter  OK     Backspace  Delete     Esc  Cancel"
+                                     : L"Click the keys     Esc  Cancel");
+            _snwprintf_s(titleBuf, 64, _TRUNCATE, L"Pin text   %d / %d", g_editLen, kPinText);
+            title = titleBuf;
+            bw = 10 * kw + 9 * kg + 2 * pad;
+            bh = pad + th + fieldH + gap + 5 * kh + 4 * kg + gap + hh + pad;
+        }
+        const float hw = textWidth(2, help) + 2 * pad, tw = textWidth(1, title) + 2 * pad;
+        if (hw > bw) bw = hw;
+        if (tw > bw) bw = tw;
+        float l = floorf((v.l + v.r - bw) * 0.5f), t = floorf((v.t + v.b - bh) * 0.5f);
+        if (l < v.l + 4) l = v.l + 4;
+        if (t < v.t + 4) t = v.t + 4;
+        const float r = l + bw, b = t + bh;
+        g_boxL = l; g_boxT = t; g_boxR = r; g_boxB = b;
+        // background and frames
+        setDrawStates(dev, NULL, false);
+        quad(l, t, r, b, pm(Look::kBoxBack, fade));
+        lineRect(l, t, r, b, lw, pm(Look::kBoxLine, fade));
+        const float y0 = t + pad + th;
+        if (g_pm == PM_PICK) {
+            const float gx = floorf((l + r - (4 * cell + 3 * gap)) * 0.5f);
+            for (int i = 0; i < kPinIcons; ++i) {
+                const float cl = gx + (i % 4) * (cell + gap), ct = y0 + (i / 4) * (cell + gap);
+                g_cellL[i] = cl; g_cellT[i] = ct; g_cellR[i] = cl + cell; g_cellB[i] = ct + cell;
+                if (i == g_pickSel && !g_pickFull) {
+                    quad(cl, ct, cl + cell, ct + cell, pm(Look::kBoxSelBack, fade));
+                    lineRect(cl, ct, cl + cell, ct + cell, lw, pm(Look::kBoxSel, fade));
+                }
+            }
+        }
+        else if (g_pm == PM_MENU) {
+            for (int i = 0; i < 4; ++i) {
+                const float it = y0 + i * ih;
+                g_itemL[i] = l + pad; g_itemT[i] = it; g_itemR[i] = r - pad; g_itemB[i] = it + ih;
+                if (i == g_menuSel) {
+                    quad(l + pad, it, r - pad, it + ih, pm(Look::kBoxSelBack, fade));
+                    lineRect(l + pad, it, r - pad, it + ih, lw, pm(Look::kBoxSel, fade));
+                }
+            }
+        }
+        else {
+            // the text field, then the keys
+            lineRect(l + pad, y0, r - pad, y0 + fieldH, lw, pm(Look::kBoxLine, fade));
+            buildKeys();
+            const float ky = y0 + fieldH + gap;
+            for (int i = 0; i < g_keyN; ++i) {
+                const Key& k = g_keys[i];
+                const float kl = l + pad + k.col * (kw + kg), kt = ky + k.row * (kh + kg);
+                const float kr = kl + k.span * kw + (k.span - 1) * kg, kb = kt + kh;
+                g_keyL[i] = kl; g_keyT[i] = kt; g_keyR[i] = kr; g_keyB[i] = kb;
+                const bool sel = i == g_keySel, lit = k.code == KK_SHIFT && g_shift;
+                quad(kl, kt, kr, kb, pm(sel ? Look::kBoxSelBack : Look::kKeyBack, fade));
+                if (sel || lit) lineRect(kl, kt, kr, kb, lw, pm(Look::kBoxSel, fade));
+            }
+        }
+        flush(dev);
+        // medallions
+        medallionStates(dev);
+        if (g_pm == PM_PICK) {
+            for (int i = 0; i < kPinIcons; ++i)
+                medallion((g_cellL[i] + g_cellR[i]) * 0.5f, (g_cellT[i] + g_cellB[i]) * 0.5f, cell * 0.86f, i,
+                    medallionColour(fade, g_pickFull ? 0.45f : 1.0f));
+        }
+        else if (g_pm == PM_TEXT && g_pinSel >= 0 && g_pinSel < (int)g_pins.size()) {
+            const float ms = fieldH - 6.0f * s;
+            medallion(l + pad + 3.0f * s + ms * 0.5f, y0 + fieldH * 0.5f, ms, g_pins[g_pinSel].icon, medallionColour(fade, 1.0f));
+        }
+        flush(dev);
+        // texts
+        text(1, title, (l + r) * 0.5f, t + pad * 0.7f, Look::kBoxText, DT_CENTER | DT_TOP, fade);
+        if (g_pm == PM_MENU) {
+            const wchar_t* items[4] = { L"Edit text", L"Change medallion", L"Delete", L"Back" };
+            for (int i = 0; i < 4; ++i) text(1, items[i], (l + r) * 0.5f, g_itemT[i] + (ih - fy) * 0.5f, Look::kBoxText, DT_CENTER | DT_TOP, fade);
+        }
+        else if (g_pm == PM_TEXT) {
+            wchar_t l1[kPinLine + 2], l2[kPinLine + 2];
+            g_edit[g_editLen] = 0;
+            const int lines = wrapPin(g_edit, g_editLen, l1, l2);
+            const bool caret = ((GetTickCount() / 500) & 1) == 0;
+            wchar_t* last = lines == 2 ? l2 : l1;
+            if (caret) { const size_t n = wcslen(last); last[n] = L'_'; last[n + 1] = 0; }
+            text(1, l1, (l + pad + fieldH + r - pad) * 0.5f, y0 + 3.0f * s, Look::kPinName, DT_CENTER | DT_TOP, fade);
+            text(1, l2, (l + pad + fieldH + r - pad) * 0.5f, y0 + 3.0f * s + fy, Look::kPinName, DT_CENTER | DT_TOP, fade);
+            for (int i = 0; i < g_keyN; ++i) {
+                const Key& k = g_keys[i];
+                wchar_t lab[8] = { 0 };
+                int font = 1;
+                if (k.code == KK_SHIFT) { wcscpy_s(lab, 8, L"Shift"); font = 2; }
+                else if (k.code == KK_DEL) { wcscpy_s(lab, 8, L"Delete"); font = 2; }
+                else if (k.code == KK_OK) { wcscpy_s(lab, 8, L"OK"); font = 2; }
+                else if (k.code == L' ') { wcscpy_s(lab, 8, L"Space"); font = 2; }
+                else lab[0] = (k.code >= L'A' && k.code <= L'Z' && !g_shift) ? (wchar_t)(k.code + 32) : k.code;
+                const float lh = (font == 1 ? Look::kLabelSize : Look::kHelpSize) * s * 1.2f;
+                text(font, lab, (g_keyL[i] + g_keyR[i]) * 0.5f, g_keyT[i] + (kh - lh) * 0.5f, Look::kBoxText, DT_CENTER | DT_TOP, fade);
+            }
+        }
+        text(2, help, (l + r) * 0.5f, b - pad - hh + (hh - Look::kHelpSize * s * 1.2f) * 0.5f, Look::kHelp, DT_CENTER | DT_TOP, fade);
     }
 
     void draw(IDirect3DDevice9* dev, bool padHelp) {
@@ -1230,6 +1781,7 @@ namespace Look {
             const wchar_t* title = g_page == 1 ? L"Lordran" : (g_pagePlace >= 0 ? placeName(kPlaces[g_pagePlace].id) : NULL);
             { const LRect t = { v.l, v.t, v.l + pad * 2.0f + textWidth(0, title), zoneTop }; addObst(t); }      // the title
             { const LRect t = { v.l, zoneBottom, v.r, v.b }; addObst(t); }                                       // legend + controls
+            g_zoneT = zoneTop; g_zoneB = zoneBottom;
             int nb = 0;
             int bi[64];
             float bx[64], by[64], bsz[64];
@@ -1253,6 +1805,32 @@ namespace Look {
                 const float h = Look::kHeroSize * s;
                 const LRect r = { hx - h, hy - h, hx + h, hy + h };
                 addObst(r);
+            }
+            g_bfN = nb;
+            for (int i = 0; i < nb; ++i) { g_bfPx[i] = bx[i]; g_bfPy[i] = by[i]; }
+            // map pins: like bonfires (smaller and darker below the hero's level, an up mark above); their medallions are
+            // obstacles for every label
+            int np = 0;
+            int pIdx[kPinMax];
+            float pX[kPinMax], pY[kPinMax], pSz[kPinMax];
+            bool pBelow[kPinMax], pAbove[kPinMax];
+            const float ps = Look::kPinSize * s;
+            for (int i = 0; i < (int)g_pins.size() && i < kPinMax; ++i) {
+                g_pinShown[i] = false;
+                const PinRec& pr = g_pins[i];
+                if (!onPage(placeIndex(pr.place))) continue;
+                float px, py;
+                toScreen(pr.x, pr.z, px, py);
+                g_pinPx[i] = px; g_pinPy[i] = py;
+                if (px < v.l - ps || px > v.r + ps || py < v.t - ps || py > v.b + ps) continue;
+                g_pinShown[i] = true;
+                const float dy = pr.y - v.refY;
+                pIdx[np] = i; pX[np] = px; pY[np] = py;
+                pBelow[np] = dy < -band; pAbove[np] = dy > band;
+                pSz[np] = pBelow[np] ? ps * Look::kPinBelowScale : ps;
+                const LRect r = { px - pSz[np] * 0.45f, py - pSz[np] * 0.45f, px + pSz[np] * 0.45f, py + pSz[np] * 0.45f };
+                addObst(r);
+                ++np;
             }
             // area names (world page): on the area's explored ground nearest to its middle
             int na = 0;
@@ -1278,7 +1856,7 @@ namespace Look {
                     }
                 }
             }
-            // bonfire labels: under the icon, else above it, else left out
+            // bonfire labels: under the icon, else above, right or left of it, else left out (zoom in to show more)
             int nl = 0;
             const wchar_t* lText[64];
             wchar_t lBuf[64][96];                               // "name (K:n)": n = the Estus the bonfire gives, 5 / 10 / 15 / 20
@@ -1290,19 +1868,37 @@ namespace Look {
                     const wchar_t* name = NULL;
                     if (kBonfires[b].name >= 0) name = placeName((WORD)kBonfires[b].name);
                     else if (g_bonfireGround[b] >= 0) name = placeName(kPlaces[g_bonfireGround[b]].id);
+                    if (!name && g_bonfirePlace[b] >= 0) name = placeName(kPlaces[g_bonfirePlace[b]].id);   // its area
                     if (!name) continue;
                     const int est = g_kindle[b] >= 40 ? 20 : g_kindle[b] >= 30 ? 15 : g_kindle[b] >= 20 ? 10 : 5;   // 10 lit: 5
                     _snwprintf_s(lBuf[nl], 96, _TRUNCATE, L"%s (K:%d)", name, est);
                     name = lBuf[nl];
                     const float w = textWidth(3, name) + px_ * 2.0f, h = lh + py_ * 2.0f;
-                    const LRect under = { bx[i] - w * 0.5f, by[i] + bsz[i] * 0.45f + 1.0f, bx[i] + w * 0.5f, by[i] + bsz[i] * 0.45f + 1.0f + h };
-                    const LRect over = { bx[i] - w * 0.5f, by[i] - bsz[i] * 0.5f - 1.0f - h, bx[i] + w * 0.5f, by[i] - bsz[i] * 0.5f - 1.0f };
-                    const LRect* pick = NULL;
-                    if (under.l >= v.l && under.r <= v.r && under.b <= v.b && freeRect(under)) pick = &under;
-                    else if (over.l >= v.l && over.r <= v.r && over.t >= v.t && freeRect(over)) pick = &over;
+                    LRect spot;
+                    const LRect* pick = labelSpot(bx[i], by[i], bsz[i] * 0.32f, by[i] - bsz[i] * 0.5f, by[i] + bsz[i] * 0.45f, w, h, &spot);
                     if (!pick) continue;
                     addObst(*pick);
                     lText[nl] = name; lRect[nl] = *pick; ++nl;
+                }
+            }
+            // pin labels (up to two lines of 17): under the medallion, else above, right or left of it, else left out
+            int npl = 0;
+            wchar_t pl1[kPinMax][kPinLine + 1], pl2[kPinMax][kPinLine + 1];
+            LRect plRect[kPinMax];
+            if (g_page == 0 || g_zoom[1] <= Look::kBonfireNameWorldZoom) {
+                const float lh = Look::kBonfireNameSize * s * 1.2f, px_ = Look::kNamePadX * s, py_ = Look::kNamePadY * s;
+                for (int i = 0; i < np; ++i) {
+                    const PinRec& pr = g_pins[pIdx[i]];
+                    const int lines = wrapPin(pr.text, pr.len, pl1[npl], pl2[npl]);
+                    if (!lines) continue;
+                    const float w1 = textWidth(3, pl1[npl]), w2 = lines > 1 ? textWidth(3, pl2[npl]) : 0.0f;
+                    const float w = (w1 > w2 ? w1 : w2) + px_ * 2.0f, h = lh * lines + py_ * 2.0f;
+                    LRect spot;
+                    const LRect* pick = labelSpot(pX[i], pY[i], pSz[i] * 0.45f, pY[i] - pSz[i] * 0.45f, pY[i] + pSz[i] * 0.45f, w, h, &spot);
+                    if (!pick) continue;
+                    addObst(*pick);
+                    plRect[npl] = *pick;
+                    ++npl;
                 }
             }
 
@@ -1324,6 +1920,22 @@ namespace Look {
                 quad(x0 - m, y0 - m, x0 + m, y0 + m, D3DCOLOR_ARGB(f8, f8, f8, f8));
             }
             flush(dev);
+            // ---- map pins ----
+            if (np) {
+                loadPins(dev);
+                medallionStates(dev);
+                for (int i = 0; i < np; ++i)
+                    medallion(pX[i], pY[i], pSz[i], g_pins[pIdx[i]].icon, medallionColour(fade, pBelow[i] ? Look::kPinBelowDark : 1.0f));
+                flush(dev);
+                setDrawStates(dev, g_shape[SHAPE_UP], false);
+                for (int i = 0; i < np; ++i) {
+                    if (!pAbove[i]) continue;
+                    const float m = 6.0f * s, x0 = pX[i] + ps * 0.36f, y0 = pY[i] - ps * 0.36f;
+                    const DWORD f8 = (DWORD)(fade * 255.0f + 0.5f);
+                    quad(x0 - m, y0 - m, x0 + m, y0 + m, D3DCOLOR_ARGB(f8, f8, f8, f8));
+                }
+                flush(dev);
+            }
 
             // ---- labels: the bonfire labels' frames, then all texts ----
             if (nl) {
@@ -1337,6 +1949,21 @@ namespace Look {
                     quad(r.l, r.t + lw, r.l + lw, r.b - lw, c); quad(r.r - lw, r.t + lw, r.r, r.b - lw, c);
                 }
                 flush(dev);
+            }
+            if (npl) {
+                setDrawStates(dev, NULL, false);
+                const float lw = floorf(s + 0.5f) < 1.0f ? 1.0f : floorf(s + 0.5f);
+                for (int i = 0; i < npl; ++i) {
+                    const LRect& r = plRect[i];
+                    quad(r.l, r.t, r.r, r.b, pm(Look::kNameBack, fade));
+                    lineRect(r.l, r.t, r.r, r.b, lw, pm(Look::kPinNameLine, fade));
+                }
+                flush(dev);
+            }
+            for (int i = 0; i < npl; ++i) {
+                const float lh = Look::kBonfireNameSize * s * 1.2f, cx = (plRect[i].l + plRect[i].r) * 0.5f, ty = plRect[i].t + Look::kNamePadY * s;
+                text(3, pl1[i], cx, ty, Look::kPinName, DT_CENTER | DT_TOP, fade);
+                if (pl2[i][0]) text(3, pl2[i], cx, ty + lh, Look::kPinName, DT_CENTER | DT_TOP, fade);
             }
             for (int i = 0; i < na; ++i) text(1, aText[i], ax[i], ay[i], Look::kLabel, DT_CENTER | DT_TOP, fade);
             for (int i = 0; i < nl; ++i)
@@ -1387,14 +2014,18 @@ namespace Look {
 
             // title and the controls
             text(0, title, v.l + pad, v.t + pad * 0.6f, Look::kTitle, DT_LEFT | DT_TOP, fade);
-            const wchar_t* help = padHelp
-                ? (g_page == 1 ? L"RS  Move     LT / RT  Zoom     LB / RB  Area     R3  Area map"
-                               : L"RS  Move     LT / RT  Zoom     LB / RB  Area     R3  World map")
-                : (g_page == 1 ? L"Drag  Move     Wheel  Zoom     ,  /  .  Area     M  Area map"
-                               : L"Drag  Move     Wheel  Zoom     ,  /  .  Area     M  World map");
+            const wchar_t* help = g_pm == PM_AIM
+                ? L"LS  Move +     A  Pin here / change pin     B  Back     RS  Move     LT / RT  Zoom"
+                : padHelp
+                ? (g_page == 1 ? L"RS  Move     LT / RT  Zoom     LB / RB  Area     R3  Area map     L3  Pin"
+                               : L"RS  Move     LT / RT  Zoom     LB / RB  Area     R3  World map     L3  Pin")
+                : (g_page == 1 ? L"Drag  Move     Wheel  Zoom     ,  /  .  Area     M  Area map     Click  Pin"
+                               : L"Drag  Move     Wheel  Zoom     ,  /  .  Area     M  World map     Click  Pin");
             const float helpY = v.b - pad * 0.6f - Look::kHelpSize * s * 1.25f;
             text(2, help, v.l + pad, helpY, Look::kHelp, DT_LEFT | DT_TOP, fade);
             drawLegend(dev, v.l + pad, helpY - Look::kLegendIcon * s * 1.35f, s, fade);
+            // map pins: the '+' and the boxes, over everything
+            drawPinUi(dev, s, fade, padHelp);
 
             // the frame (two thin lines, like the game's windows)
             dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
@@ -1423,7 +2054,7 @@ namespace Look {
 // =====================================================================================================================
     bool g_prevR3 = false, g_prevLB = false, g_prevRB = false;
     bool g_prevM = false, g_prevComma = false, g_prevPeriod = false;
-    bool g_dragging = false, g_prevLButton = false;
+    bool g_dragging = false, g_prevLButton = false, g_prevRButton = false;
     POINT g_dragLast = { 0, 0 };
 
     bool gameHasFocus() {
@@ -1457,6 +2088,291 @@ namespace Look {
         if (g_page == 0 && g_pagePlace < 0) g_pagePlace = g_heroPlace;
     }
 
+    // ---- map pins: input ----
+    int g_navDir = 0;
+    DWORD g_navNext = 0;
+    POINT g_lastMouse = { -1, -1 };
+    bool g_press = false;                       // the left button went down on the map (a click, or a drag once it moves)
+    POINT g_pressPt = { 0, 0 };
+
+    void setPinMode(int m) {
+        if (m == g_pm) return;
+        const int old = g_pm;
+        g_pm = m;
+        keyboardHook(m >= PM_PICK);
+        if (m < old) g_pinGraceUntil = GetTickCount() + 200;   // what ended it may still be held: it waits for its release
+        if (m != PM_NONE) { g_dragging = false; g_press = false; }
+    }
+    void closeBox() {
+        setPinMode(g_pmFromAim ? PM_AIM : PM_NONE);
+        g_pinSel = -1;
+    }
+    void pinsChanged() {
+        g_dirty = true;
+        if (!saveFile()) g_lastSaveTick = GetTickCount() - 55000;   // still writing: again in about 5 s
+    }
+    // a click / A on the map: a pin there opens its menu, else the medallion box for a new one
+    void openAt(float px, float py, bool fromAim) {
+        const View& v = g_view;
+        if (px < v.l || px >= v.r || py < v.t || py >= v.b) return;
+        g_pmFromAim = fromAim;
+        const int hit = pinAt(px, py, Look::kPinSize * v.s * 0.55f);
+        if (hit >= 0) {
+            g_pinSel = hit;
+            g_menuSel = 0;
+            setPinMode(PM_MENU);
+        }
+        else {
+            if (py < g_zoneT || py > g_zoneB) return;  // the title, the legend and the controls line
+            if (!pathAtScreen(px, py)) return;         // only on the explored ground
+            g_pinSel = -1;
+            g_spotPx = px; g_spotPy = py;
+            g_pickFull = g_pins.size() >= (size_t)kPinMax;
+            setPinMode(PM_PICK);
+        }
+    }
+    void startText() {
+        if (g_pinSel < 0 || g_pinSel >= (int)g_pins.size()) { closeBox(); return; }
+        const PinRec& r = g_pins[g_pinSel];
+        g_editLen = r.len > kPinText ? kPinText : r.len;
+        memcpy(g_edit, r.text, g_editLen * sizeof(wchar_t));
+        g_edit[g_editLen] = 0;
+        g_shift = g_editLen == 0;                // the first letter capital
+        buildKeys();
+        g_keySel = keyAt(1, 0);                  // Q
+        setPinMode(PM_TEXT);
+    }
+    void pickChoose(int icon) {
+        if (icon < 0 || icon >= kPinIcons) return;
+        if (g_pinSel >= 0 && g_pinSel < (int)g_pins.size()) {
+            g_pins[g_pinSel].icon = (BYTE)icon;
+            pinsChanged();
+            closeBox();
+            return;
+        }
+        if (g_pickFull) return;
+        float px = g_spotPx, py = g_spotPy;
+        snapSpot(px, py, Look::kPinSize * g_view.s);
+        PinRec r;
+        memset(&r, 0, sizeof(r));
+        toWorld(px, py, r.x, r.z);
+        int place = -1;
+        if (!pathAt(r.x, r.z, place, r.y)) {
+            // the snapped place left the ground: the spot itself (it was on it)
+            px = g_spotPx; py = g_spotPy;
+            toWorld(px, py, r.x, r.z);
+            if (!pathAt(r.x, r.z, place, r.y)) { closeBox(); return; }
+        }
+        r.place = kPlaces[place].id;
+        r.icon = (BYTE)icon;
+        g_pins.push_back(r);
+        g_pinSel = (int)g_pins.size() - 1;
+        // the '+' goes where the pin went (snapped next to another one)
+        if (g_pmFromAim) {
+            g_aimX = (px - (g_view.l + g_view.r) * 0.5f) / g_view.s;
+            g_aimY = (py - (g_view.t + g_view.b) * 0.5f) / g_view.s;
+        }
+        pinsChanged();
+        startText();
+    }
+    void menuChoose(int item) {
+        if (g_pinSel < 0 || g_pinSel >= (int)g_pins.size()) { closeBox(); return; }
+        if (item == 0) startText();
+        else if (item == 1) { g_pickSel = g_pins[g_pinSel].icon; g_pickFull = false; setPinMode(PM_PICK); }
+        else if (item == 2) {
+            g_pins.erase(g_pins.begin() + g_pinSel);
+            for (int i = 0; i < kPinMax; ++i) g_pinShown[i] = false;   // drawn again next frame
+            pinsChanged();
+            closeBox();
+        }
+        else closeBox();
+    }
+    void textOk() {
+        if (g_pinSel >= 0 && g_pinSel < (int)g_pins.size()) {
+            PinRec& r = g_pins[g_pinSel];
+            r.len = (BYTE)g_editLen;
+            memset(r.text, 0, sizeof(r.text));
+            memcpy(r.text, g_edit, g_editLen * sizeof(wchar_t));
+            pinsChanged();
+        }
+        closeBox();
+    }
+    void typeChar(wchar_t c) {
+        if (g_editLen >= kPinText || !pinCharOk(c)) return;
+        g_edit[g_editLen++] = c;
+        g_edit[g_editLen] = 0;
+        if (g_shift && ((c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z'))) g_shift = false;
+    }
+    void pressKey(int i) {
+        if (i < 0 || i >= g_keyN) return;
+        const wchar_t c = g_keys[i].code;
+        if (c == KK_SHIFT) g_shift = !g_shift;
+        else if (c == KK_DEL) { if (g_editLen > 0) g_edit[--g_editLen] = 0; }
+        else if (c == KK_OK) textOk();
+        else if (c >= L'A' && c <= L'Z') typeChar(g_shift ? c : (wchar_t)(c + 32));
+        else typeChar(c);
+    }
+    // one step of the selection (1 up, 2 down, 3 left, 4 right)
+    void navStep(int dir) {
+        if (g_pm == PM_PICK) {
+            int c = g_pickSel % 4, r = g_pickSel / 4;
+            if (dir == 1 || dir == 2) r = 1 - r;
+            else c = (c + (dir == 4 ? 1 : 3)) % 4;
+            g_pickSel = r * 4 + c;
+        }
+        else if (g_pm == PM_MENU) g_menuSel = (g_menuSel + (dir == 2 ? 1 : dir == 1 ? 3 : 0)) % 4;
+        else if (g_pm == PM_TEXT) {
+            buildKeys();
+            const Key& k = g_keys[g_keySel >= 0 && g_keySel < g_keyN ? g_keySel : 0];
+            int row = k.row, col = k.col;
+            if (dir == 1) row = (row + 4) % 5;
+            else if (dir == 2) row = (row + 1) % 5;
+            else if (dir == 3) col = k.col - 1 < 0 ? 9 : k.col - 1;
+            else col = k.col + k.span > 9 ? 0 : k.col + k.span;
+            const int n = keyAt(row, col);
+            if (n >= 0) g_keySel = n;
+        }
+    }
+
+    // every frame while the map shows (press: pad buttons pressed since the last frame)
+    void pinInput(LONG press, float dt, DWORD now) {
+        // the pads read in the last half second: held buttons and the left stick
+        WORD held = 0;
+        int lx = 0, ly = 0;
+        for (int i = 0; i < 4; ++i) {
+            if (now - g_padTick[i] > 500) continue;
+            held |= g_pbNow[i];
+            if (abs(g_lsx[i]) + abs(g_lsy[i]) > abs(lx) + abs(ly)) { lx = g_lsx[i]; ly = g_lsy[i]; }
+        }
+        // keyboard / mouse used last: in a box, the pad buttons DDTMControllerFix makes from letter keys are not used
+        // (typing a letter mapped to A or B must not press a key or cancel); only its "back" (B) outside the text box
+        kbIcons::Shared* sh = kbIcons::shared();
+        if (g_pm >= PM_PICK && sh && sh->kbmActive) {
+            press = g_pm == PM_TEXT ? 0 : (press & PB_B);
+            held = 0; lx = ly = 0;
+        }
+        // the real keyboard (boxes only); without DDTMControllerFix version 4 the game would get Enter / Backspace /
+        // arrows too, so then only Esc is used here
+        const bool typing = realTyping();
+        WORD key;
+        while ((key = popKey()) != 0) {
+            if (g_pm < PM_PICK) continue;
+            g_lastKbmUse = now;
+            if (key == KC_ESC) { closeBox(); press &= ~PB_B; continue; }
+            if (!typing) continue;
+            if (key >= KC_UP && key <= KC_RIGHT) { navStep(1 + (key - KC_UP)); continue; }
+            if (g_pm == PM_PICK) {
+                if (key == KC_ENTER && !g_pickFull) pickChoose(g_pickSel);
+                else if (key == KC_BACK) closeBox();
+            }
+            else if (g_pm == PM_MENU) {
+                if (key == KC_ENTER) menuChoose(g_menuSel);
+                else if (key == KC_BACK) closeBox();
+            }
+            else if (g_pm == PM_TEXT) {
+                if (key == KC_ENTER) textOk();
+                else if (key == KC_BACK) { if (g_editLen > 0) g_edit[--g_editLen] = 0; else closeBox(); }
+                else if (key < 0xF000) typeChar((wchar_t)key);
+            }
+        }
+
+        if (g_pm == PM_NONE) {
+            if (press & PB_L3) { g_aimX = g_aimY = 0.0f; g_pmFromAim = false; setPinMode(PM_AIM); }
+            return;
+        }
+        if (g_pm == PM_AIM) {
+            if (press & (PB_L3 | PB_B)) { setPinMode(PM_NONE); return; }
+            const float dz = 8000.0f, mag = sqrtf((float)lx * lx + (float)ly * ly);
+            if (mag > dz) {
+                const float k = (mag - dz) / (32767.0f - dz) / mag;
+                g_aimX += lx * k * Look::kAimSpeed * dt;
+                g_aimY -= ly * k * Look::kAimSpeed * dt;
+            }
+            // at the window's edge the '+' stops and the map moves on
+            const View& v = g_view;
+            const float hx = (v.r - v.l) * 0.5f / v.s - 12.0f, hy = (v.b - v.t) * 0.5f / v.s - 12.0f;
+            float ox = 0.0f, oy = 0.0f;
+            if (g_aimX > hx) { ox = g_aimX - hx; g_aimX = hx; }
+            if (g_aimX < -hx) { ox = g_aimX + hx; g_aimX = -hx; }
+            if (g_aimY > hy) { oy = g_aimY - hy; g_aimY = hy; }
+            if (g_aimY < -hy) { oy = g_aimY + hy; g_aimY = -hy; }
+            if (ox != 0.0f || oy != 0.0f) {
+                float wx, wz;
+                screenDirToWorld(ox * v.s, oy * v.s, wx, wz);
+                g_offX += wx * v.mppBb;
+                g_offZ += wz * v.mppBb;
+            }
+            if (press & PB_A) openAt((v.l + v.r) * 0.5f + g_aimX * v.s, (v.t + v.b) * 0.5f + g_aimY * v.s, true);
+            return;
+        }
+        // a box: the selection moves with the D-pad or the left stick (held: again after a moment)
+        int dir = 0;
+        if ((held & PB_UP) || ly > 20000) dir = 1;
+        else if ((held & PB_DOWN) || ly < -20000) dir = 2;
+        else if ((held & PB_LEFT) || lx < -20000) dir = 3;
+        else if ((held & PB_RIGHT) || lx > 20000) dir = 4;
+        if (dir != g_navDir) {
+            g_navDir = dir;
+            if (dir) { navStep(dir); g_navNext = now + 380; }
+        }
+        else if (dir && (int)(now - g_navNext) >= 0) { navStep(dir); g_navNext = now + 110; }
+        if (g_pm == PM_PICK) {
+            if (press & PB_B) closeBox();
+            else if ((press & PB_A) && !g_pickFull) pickChoose(g_pickSel);
+        }
+        else if (g_pm == PM_MENU) {
+            if (press & PB_B) closeBox();
+            else if (press & PB_A) menuChoose(g_menuSel);
+        }
+        else if (g_pm == PM_TEXT) {
+            if (press & PB_B) closeBox();
+            else if (press & PB_START) textOk();
+            else if (press & PB_A) pressKey(g_keySel);
+            else {
+                if (press & PB_X) { if (g_editLen > 0) g_edit[--g_editLen] = 0; }
+                if (press & PB_Y) typeChar(L' ');
+                if (press & PB_LB) g_shift = !g_shift;
+            }
+        }
+    }
+
+    // the mouse over a box: it points (selection) and clicks
+    void boxMouse(const POINT& pt, bool click) {
+        const bool moved = pt.x != g_lastMouse.x || pt.y != g_lastMouse.y;
+        g_lastMouse = pt;
+        const float x = (float)pt.x, y = (float)pt.y;
+        if (g_pm == PM_PICK) {
+            for (int i = 0; i < kPinIcons; ++i)
+                if (x >= g_cellL[i] && x < g_cellR[i] && y >= g_cellT[i] && y < g_cellB[i]) {
+                    if (moved) g_pickSel = i;
+                    if (click && !g_pickFull) { pickChoose(i); return; }
+                }
+        }
+        else if (g_pm == PM_MENU) {
+            for (int i = 0; i < 4; ++i)
+                if (x >= g_itemL[i] && x < g_itemR[i] && y >= g_itemT[i] && y < g_itemB[i]) {
+                    if (moved) g_menuSel = i;
+                    if (click) { menuChoose(i); return; }
+                }
+        }
+        else if (g_pm == PM_TEXT) {
+            for (int i = 0; i < g_keyN; ++i)
+                if (x >= g_keyL[i] && x < g_keyR[i] && y >= g_keyT[i] && y < g_keyB[i]) {
+                    if (moved) g_keySel = i;
+                    if (click) { pressKey(i); return; }
+                }
+        }
+    }
+
+    // the map closes (or the character / area loads) while a pin mode is on: the text typed so far is kept
+    void endPins() {
+        if (g_pm == PM_TEXT) textOk();
+        g_pmFromAim = false;
+        setPinMode(PM_NONE);
+        g_pinSel = -1;
+        g_pinBlock = false;
+    }
+
     void handleInput(IDirect3DDevice9* dev, float dt) {
         // controller: all pads read in the last half second
         bool r3 = false, lb = false, rb = false;
@@ -1470,6 +2386,10 @@ namespace Look {
             if (p.rt > rt) rt = p.rt;
             if (abs(p.rx) + abs(p.ry) > abs(rx) + abs(ry)) { rx = p.rx; ry = p.ry; }
         }
+        // map pins: in a box the map's own controls wait (LB is Shift there, the stick moves the selection)
+        const LONG press = InterlockedExchange(&g_pbPress, 0);
+        const bool box = g_pm >= PM_PICK;
+        if (box) { r3 = lb = rb = false; lt = rt = 0; rx = ry = 0; }
         if (r3 && !g_prevR3) togglePage();
         if (lb && !g_prevLB) stepArea(-1);
         if (rb && !g_prevRB) stepArea(+1);
@@ -1491,15 +2411,15 @@ namespace Look {
 
         // keyboard / mouse
         const bool focus = gameHasFocus();
-        const bool m = focus && (GetAsyncKeyState('M') & 0x8000) != 0;
-        const bool comma = focus && (GetAsyncKeyState(VK_OEM_COMMA) & 0x8000) != 0;
-        const bool period = focus && (GetAsyncKeyState(VK_OEM_PERIOD) & 0x8000) != 0;
+        const bool m = focus && !box && (GetAsyncKeyState('M') & 0x8000) != 0;
+        const bool comma = focus && !box && (GetAsyncKeyState(VK_OEM_COMMA) & 0x8000) != 0;
+        const bool period = focus && !box && (GetAsyncKeyState(VK_OEM_PERIOD) & 0x8000) != 0;
         if (m && !g_prevM) { togglePage(); g_lastKbmUse = now; }
         if (comma && !g_prevComma) { stepArea(-1); g_lastKbmUse = now; }
         if (period && !g_prevPeriod) { stepArea(+1); g_lastKbmUse = now; }
         g_prevM = m; g_prevComma = comma; g_prevPeriod = period;
         const LONG wheel = InterlockedExchange(&g_wheelAcc, 0);
-        if (wheel) g_zoom[g_page] *= powf(Look::kWheelZoomStep, wheel / 120.0f);
+        if (wheel && !box) g_zoom[g_page] *= powf(Look::kWheelZoomStep, wheel / 120.0f);
         const bool lbtn = focus && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
         POINT pt;
         RECT rc;
@@ -1514,10 +2434,32 @@ namespace Look {
             pt.y = (LONG)(pt.y * (float)bd.Height / rc.bottom);
             have = true;
         }
-        if (have) {
+        const bool rbtn = focus && (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+        if (rbtn && !g_prevRButton && g_pm != PM_NONE) {          // the right button: back, like B / Esc
+            g_lastKbmUse = now;
+            if (box) closeBox(); else setPinMode(PM_NONE);
+            g_prevRButton = rbtn;
+            g_prevLButton = lbtn;
+            pinInput(0, dt, now);
+            return;
+        }
+        g_prevRButton = rbtn;
+        if (have && box) {
+            if (lbtn && !g_prevLButton) g_lastKbmUse = now;
+            boxMouse(pt, lbtn && !g_prevLButton);
+        }
+        else if (have) {
+            // a press on the map: a drag once it moves a few pixels, else (let go where it was) a click: map pins
             const bool inside = pt.x >= g_view.l && pt.x < g_view.r && pt.y >= g_view.t && pt.y < g_view.b;
-            if (lbtn && !g_prevLButton && inside) { g_dragging = true; g_dragLast = pt; g_lastKbmUse = now; }
-            if (!lbtn) g_dragging = false;
+            if (lbtn && !g_prevLButton && inside) { g_press = true; g_pressPt = pt; g_dragging = false; g_dragLast = pt; g_lastKbmUse = now; }
+            const float slop = 5.0f * g_view.s;
+            if (g_press && lbtn && !g_dragging && (fabsf((float)(pt.x - g_pressPt.x)) > slop || fabsf((float)(pt.y - g_pressPt.y)) > slop))
+                g_dragging = true;
+            if (!lbtn) {
+                if (g_press && !g_dragging) openAt((float)g_pressPt.x, (float)g_pressPt.y, g_pm == PM_AIM);
+                g_press = false;
+                g_dragging = false;
+            }
             if (g_dragging) {
                 float wx, wz;
                 screenDirToWorld((float)(pt.x - g_dragLast.x), (float)(pt.y - g_dragLast.y), wx, wz);
@@ -1527,6 +2469,7 @@ namespace Look {
             }
         }
         g_prevLButton = lbtn;
+        pinInput(press, dt, now);
 
         const float zmin = g_page ? Look::kWorldZoomMin : Look::kAreaZoomMin, zmax = g_page ? Look::kWorldZoomMax : Look::kAreaZoomMax;
         if (g_zoom[g_page] < zmin) g_zoom[g_page] = zmin;
@@ -1555,6 +2498,7 @@ namespace Look {
             g_alpha = 0.0f;
             g_inputActive = false;
             g_dragging = false;
+            if (g_pm != PM_NONE) endPins();
             return;
         }
         if (!g_hwnd) {
@@ -1618,11 +2562,22 @@ namespace Look {
         if (g_alpha < 0.0f) g_alpha = 0.0f;
         if (g_alpha > 1.0f) g_alpha = 1.0f;
         g_inputActive = g_shown && g_inputHooks;
+        if (!g_shown) {
+            if (g_pm != PM_NONE) endPins();
+            InterlockedExchange(&g_pbPress, 0);
+        }
         if (g_alpha <= 0.0f) { g_dragging = false; return; }
         if (g_shown) {
             readLitBonfires();
             handleInput(dev, dt);
         }
+        // map pins: the game gets nothing from the pads while the '+' or a box shows, and (DDTMControllerFix version 4)
+        // nothing from the keyboard while a box shows
+        const bool grace = (int)(g_pinGraceUntil - GetTickCount()) > 0;
+        g_pinBlock = g_inputActive && (g_pm != PM_NONE || grace);
+        kbIcons::Shared* sk = kbIcons::shared();
+        if (sk && sk->version >= 4 && (g_pm >= PM_PICK || (grace && g_inputActive))) sk->hostBlockKeysTick = GetTickCount() | 1;
+        if (sk && sk->version >= 5 && g_inputActive) sk->hostMapTick = GetTickCount() | 1;   // DDTM: no macros meanwhile
         kbIcons::Shared* sh = kbIcons::shared();
         const bool padHelp = sh ? sh->kbmActive == 0 : g_lastPadUse >= g_lastKbmUse;
         draw(dev, padHelp);
@@ -1630,6 +2585,30 @@ namespace Look {
 
     // the bottom-left HUD's opacity is multiplied by this (1 = as set in DSfix.ini, 0 while the map shows)
     float hudBottomLeftFactor() { return g_on ? 1.0f - g_alpha : 1.0f; }
+    // a map pin box is open: DSfix's own hotkeys wait (typing a capital must not toggle the HUD)
+    bool pinBoxOpen() { return g_on && g_pm >= PM_PICK; }
+
+    // The game's mouse buttons (it reads them with GetKeyboardState: 1 left, 2 right, 4 middle). While the '+' or a box
+    // shows, and a moment after, they read as released; one still held then stays released until it is let go (a right
+    // click must close only the box, not the gesture window). Game thread.
+    BYTE g_mouseWait = 0;
+    void filterKeyState(BYTE* s) {
+        if (!g_on) return;
+        const bool block = g_pm != PM_NONE || (int)(g_pinGraceUntil - GetTickCount()) > 0;
+        static const int vk[3] = { VK_LBUTTON, VK_RBUTTON, VK_MBUTTON };
+        for (int i = 0; i < 3; ++i) {
+            const BYTE bit = (BYTE)(1 << i);
+            const bool down = (s[vk[i]] & 0x80) != 0;
+            if (block) {
+                if (down) g_mouseWait |= bit;
+                s[vk[i]] = 0;
+            }
+            else if (g_mouseWait & bit) {
+                if (!down) g_mouseWait &= (BYTE)~bit;
+                else s[vk[i]] = 0;
+            }
+        }
+    }
 
 } // namespace gameMap
 

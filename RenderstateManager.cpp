@@ -1937,6 +1937,14 @@ namespace kbIcons {
 		volatile INT32 cursorVisible;    // version 3+: 1 = DDTM's mouse cursor should show now (menus)
 		volatile UINT32 hostCursorTick;  // version 3+: written by DSfix, GetTickCount() of its last frame that can draw the
 		                                 // cursor (never 0); while it is fresh DDTM hides the Windows cursor
+		volatile UINT32 hostBlockKeysTick;  // version 4+: written by DSfix, GetTickCount() while a map pin box is open (never 0;
+		                                    // 0 = none); while it is fresh DDTM gives the game no keyboard keys (the mouse
+		                                    // buttons DSfix filters itself, main.cpp GetKeyboardState). Only written when
+		                                    // version >= 4 (an older block ends before it)
+		volatile UINT32 physButtons;        // version 5+: the real controller's buttons (XInput layout, before DDTM's
+		                                    // [Bindings] and macros); 0 without a controller
+		volatile UINT32 hostMapTick;        // version 5+: written by DSfix, GetTickCount() while its map is open (never 0);
+		                                    // while it is fresh DDTM starts no macro (an AUTO_RUN on L3 would sprint with B)
 	};
 	enum { SLOT_TWO_HAND, SLOT_USE_ITEM, SLOT_DASH, SLOT_INTERACT, SLOT_GESTURES, SLOT_LOCK_ON, SLOT_MENU, SLOT_MENU_LEFT, SLOT_MENU_RIGHT,
 		SLOT_LIGHT_ATTACK, SLOT_HEAVY_ATTACK, SLOT_BLOCK, SLOT_PARRY };
@@ -2897,6 +2905,10 @@ namespace swCursor {
 #include "GameMap.h"
 // for Hud.cpp: the bottom-left HUD opacity is multiplied by this (0 while the map shows)
 float gameMapHudBottomLeftFactor() { return gameMap::hudBottomLeftFactor(); }
+// for KeyActions.cpp: a map pin box is open (DSfix's hotkeys wait while the player types)
+bool gameMapTyping() { return gameMap::pinBoxOpen(); }
+// for main.cpp (its GetKeyboardState hook): the game's mouse buttons while a map pin box is open
+void gameMapFilterKeyState(BYTE* s) { gameMap::filterKeyState(s); }
 
 // ---- WeaponsArmorSort prompt (the sorting itself is in GameParams.cpp) ----
 // LOOK OF THE PROMPT - everything that decides how it looks is in this block. Sizes are in the game's UI pixels
