@@ -44,6 +44,11 @@ namespace boxMarkers {
 	void newFrame();
 	void release();
 }
+// NewItemMarkers: the same (defined right after boxMarkers)
+namespace newMarks {
+	void newFrame();
+	void release();
+}
 // Menu cursor drawn by DSfix (defined right after kbIcons)
 namespace swCursor {
 	void draw(IDirect3DDevice9* dev);
@@ -1291,6 +1296,7 @@ void RSManager::releaseResources() {
 	gameMap::release();
 	sortPrompt::release();
 	boxMarkers::release();
+	newMarks::release();
 	if (g_hudBufOwn) {
 		SAFERELEASE(g_hudBufSurf);
 		SAFERELEASE(g_hudBufTex);
@@ -1363,6 +1369,7 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 	weaponWearBarsNewFrame();
 	if (weaponsArmorSortActive()) sortPrompt::newFrame();
 	if (bottomlessBoxMarkersActive()) boxMarkers::newFrame();
+	if (newItemMarkersActive()) newMarks::newFrame();
 	capturing = false;
 	if (captureNextFrame) {
 		capturing = true;
@@ -1498,6 +1505,8 @@ HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRec
 	gameMap::frameTick(d3ddev);
 	// WeaponsArmorSort: "Most recent" notes what the hero gains, equips and attunes
 	wasortFrameTick();
+	// NewItemMarkers: notes what the hero gains (its own look, independent of the sorting)
+	newItemsFrameTick();
 	// the menu cursor of DDTMControllerFix.dll (version 3), drawn last so it is on top of everything
 	swCursor::draw(d3ddev);
 
@@ -2917,6 +2926,14 @@ namespace BoxMarkerLook {
 	const float kTop = 0.10f;                // marker top below the picture's top (part of its height): the frame's inner top
 }
 
+// NewItemMarkers: the orange "!" (Resources\NewItem.png, square, its glow inside the square). The same corner as the box
+// marker, drawn after it, so it is on top when both show. Also used on the tab icons.
+namespace NewMarkerLook {
+	const float kSize = 0.36f;               // marker width (= height) as a part of the picture's width
+	const float kRight = -0.05f;             // gap between the marker and the picture's right edge (part of its width; < 0: past it)
+	const float kTop = 0.09f;                // marker top below the picture's top (part of its height)
+}
+
 namespace sortPrompt {
 	struct Vtx { float x, y, z, u, v; D3DCOLOR c; };   // the game's 24-byte prompt / text vertex
 	struct Piece { IDirect3DBaseTexture9* tex; Vtx v[6]; };
@@ -3508,6 +3525,221 @@ namespace boxMarkers {
 	}
 }
 
+// NewItemMarkers: the orange "!" on new items. Rows: in the item list column (Inventory, Equipment "select item" list,
+// Bottomless Box: the stand under every item picture starts at x 925 and is 604 wide, in game units), the k-th stand of
+// the frame is the k-th row on screen, and the picture right after it gets the mark, drawn right after the picture (and
+// after the box marker) with the picture's drawn vertices: DSfix's menu scaling, the scissor and the fading stay the same.
+// Tabs: the 8 tab icons of the Inventory / Bottomless Box (CategoryIcons texture, y 1080, 614 x 645, x 1104 + 648 i, in
+// the game's order 0 consumables .. 7 rings). The selected one is drawn twice, then its frame (UV 1304, 224): the marks of
+// the tabs are drawn after that frame, so they are on top and drawn once.
+namespace newMarks {
+	const int kMaxRows = 16;
+	const int kStandU = 3744, kStandV = 2832;
+	const int kListX0 = 925, kListW = 604, kListTol = 48;
+	const int kTabX0 = 1104, kTabPitch = 648, kTabY0 = 1080, kTabW = 614, kTabH = 645, kTabTol = 24;
+	const int kFrameU = 1304, kFrameV = 224;
+	bool g_on = false;
+	bool g_rowsRead = false;
+	int g_rows = 0;
+	unsigned char g_flags[kMaxRows];
+	int g_stands = 0;                          // stands of the list column seen so far in this frame
+	int g_standIdx = 0;
+	bool g_afterStand = false;
+	int g_standX0 = 0, g_standX1 = 0;
+	bool g_maskRead = false;
+	unsigned g_mask = 0;
+	BYTE g_tabAlpha[8];                        // each tab mark's visibility (255; less while it fades out)
+	BYTE g_rowAlpha = 255;                     // the visibility of the row mark onQuad just found
+	int g_tabIdx = -1;                         // the tab icon onQuad just recognised
+	struct TabQuad { BYTE v[48]; BYTE idx[24]; D3DPRIMITIVETYPE type; D3DFORMAT fmt; UINT nv, prims; BYTE alpha; };
+	TabQuad g_tabs[8];
+	unsigned g_stored = 0;                     // bit i: g_tabs[i] holds tab i's drawn vertices, its mark still to draw
+	IDirect3DTexture9* g_tex = NULL;
+	bool g_texTried = false;
+	bool g_loggedStoreFail = false;
+
+	void newFrame() {
+		g_on = newItemMarkersActive();
+		g_rowsRead = false;
+		g_rows = 0;
+		g_stands = 0;
+		g_afterStand = false;
+		g_maskRead = false;
+		g_mask = 0;
+		g_stored = 0;
+	}
+
+	void release() {
+		SAFERELEASE(g_tex);
+		g_texTried = false;
+	}
+
+	bool texture(IDirect3DDevice9* dev) {
+		if (g_tex) return true;
+		if (g_texTried) return false;
+		g_texTried = true;
+		HRSRC r = FindResource(g_hModule, MAKEINTRESOURCE(IDR_TEX_NEWITEM), RT_RCDATA);
+		HGLOBAL hg = r ? LoadResource(g_hModule, r) : NULL;
+		const void* data = hg ? LockResource(hg) : NULL;
+		const DWORD size = r ? SizeofResource(g_hModule, r) : 0;
+		if (!data || !size) { SDLOG(0, "NewItemMarkers: NewItem.png is missing from the DLL, no marks are drawn\n"); return false; }
+		// all its smaller copies (box filter): the mark is drawn at about 40 pixels
+		if (FAILED(TrueD3DXCreateTextureFromFileInMemoryEx(dev, data, size, D3DX_DEFAULT, D3DX_DEFAULT, D3DX_DEFAULT, 0, D3DFMT_A8R8G8B8,
+			D3DPOOL_MANAGED, D3DX_FILTER_NONE, D3DX_FILTER_BOX, 0, NULL, NULL, &g_tex)) || !g_tex) {
+			g_tex = NULL;
+			SDLOG(0, "NewItemMarkers: NewItem.png could not be read, no marks are drawn\n");
+			return false;
+		}
+		return true;
+	}
+
+	void bounds(const INT16* v, int& minX, int& maxX, int& minY, int& maxY, int& minU, int& minV) {
+		minX = 32767; maxX = -32768; minY = 32767; maxY = -32768; minU = 32767; minV = 32767;
+		for (int i = 0; i < 4; ++i) {
+			const INT16* p = v + i * 6;
+			if (p[0] < minX) minX = p[0];
+			if (p[0] > maxX) maxX = p[0];
+			if (p[1] < minY) minY = p[1];
+			if (p[1] > maxY) maxY = p[1];
+			if (p[4] < minU) minU = p[4];
+			if (p[5] < minV) minV = p[5];
+		}
+	}
+
+	// a quad in the tab row (icon or frame): only these need the texture test
+	bool tabRow(const INT16* v) {
+		int minX, maxX, minY, maxY, minU, minV;
+		bounds(v, minX, maxX, minY, maxY, minU, minV);
+		return abs(minY - kTabY0) <= kTabTol && (maxY - minY) >= kTabH - kTabTol && (maxY - minY) <= kTabH + 48;
+	}
+
+	// The mark on the quad 'drawn' (its vertices as they were drawn), with the device's current states and the given
+	// indices. The colour of the vertices stays (the same fading as the picture), times 'alpha' (the mark's own fade out
+	// after the cursor left its row: 255 = fully shown).
+	void drawMark(IDirect3DDevice9* dev, D3DPRIMITIVETYPE type, UINT nv, UINT prims, const void* indices, D3DFORMAT indexFormat,
+		const void* drawn, BYTE alpha) {
+		using namespace NewMarkerLook;
+		if (!g_tex || !drawn || nv != 4) return;
+		BYTE mv[48];
+		memcpy(mv, drawn, sizeof(mv));
+		int minX = 32767, maxX = -32768, minY = 32767, maxY = -32768;
+		for (int i = 0; i < 4; ++i) {
+			const INT16* p = (const INT16*)(mv + i * 12);
+			if (p[0] < minX) minX = p[0];
+			if (p[0] > maxX) maxX = p[0];
+			if (p[1] < minY) minY = p[1];
+			if (p[1] > maxY) maxY = p[1];
+		}
+		const float w = (float)(maxX - minX), h = (float)(maxY - minY);
+		if (w < 4.0f || h < 4.0f) return;
+		const float mw = w * kSize, mh = mw;
+		const float x1 = maxX - w * kRight, x0 = x1 - mw;
+		const float y0 = minY + h * kTop, y1 = y0 + mh;
+		const float midX = (minX + maxX) * 0.5f, midY = (minY + maxY) * 0.5f;
+		for (int i = 0; i < 4; ++i) {
+			INT16* p = (INT16*)(mv + i * 12);
+			const bool right = p[0] > midX, bottom = p[1] > midY;
+			p[0] = (INT16)floorf((right ? x1 : x0) + 0.5f);
+			p[1] = (INT16)floorf((bottom ? y1 : y0) + 0.5f);
+			p[4] = (INT16)(right ? 4096 : 0);
+			p[5] = (INT16)(bottom ? 4096 : 0);
+			if (alpha < 255) {
+				BYTE* c = mv + i * 12 + 4;        // D3DCOLOR: alpha in its top byte
+				c[3] = (BYTE)((c[3] * alpha + 127) / 255);
+			}
+		}
+		// the alpha test keeps its cut at the same visibility while the mark fades (as the HUD opacity does)
+		AlphaRefGuard arg(dev, alpha / 255.0f);
+		IDirect3DBaseTexture9* saved = NULL;
+		dev->GetTexture(0, &saved);
+		DWORD mip = D3DTEXF_NONE;
+		dev->GetSamplerState(0, D3DSAMP_MIPFILTER, &mip);
+		const bool setMip = g_tex->GetLevelCount() > 1 && mip == D3DTEXF_NONE;
+		if (setMip) dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
+		dev->SetTexture(0, g_tex);
+		dev->DrawIndexedPrimitiveUP(type, 0, nv, prims, indices, indexFormat, mv, 12);
+		dev->SetTexture(0, saved);
+		if (saved) saved->Release();
+		if (setMip) dev->SetSamplerState(0, D3DSAMP_MIPFILTER, mip);
+	}
+
+	// the marks of the stored tab icons (after the selected tab's frame; or before the next quad if no frame came)
+	void flushTabs(IDirect3DDevice9* dev) {
+		const unsigned stored = g_stored;
+		g_stored = 0;
+		for (int i = 0; i < 8; ++i)
+			if (stored & (1u << i)) drawMark(dev, g_tabs[i].type, g_tabs[i].nv, g_tabs[i].prims, g_tabs[i].idx, g_tabs[i].fmt, g_tabs[i].v, g_tabs[i].alpha);
+	}
+
+	// Looks at one of the game's INT16 quads before it is drawn. catTex: it uses the CategoryIcons texture (tested only
+	// for quads in the tab row). Returns 1 when it is an item picture that gets the mark, 2 when it is a tab icon that gets
+	// it (storeTab after the draw), 3 when it is the selected tab's frame and tab marks wait (flushTabs after the draw).
+	int onQuad(IDirect3DDevice9* dev, const INT16* v, bool catTex) {
+		int minX, maxX, minY, maxY, minU, minV;
+		bounds(v, minX, maxX, minY, maxY, minU, minV);
+		const bool inTabRow = catTex && abs(minY - kTabY0) <= kTabTol && (maxY - minY) >= kTabH - kTabTol && (maxY - minY) <= kTabH + 48;
+		if (g_stored && !inTabRow) flushTabs(dev);   // no frame came after the icons: their marks now
+		if (inTabRow) {
+			if (minU == kFrameU && minV == kFrameV) return g_stored ? 3 : 0;
+			const int rel = minX - kTabX0;
+			if (rel < -kTabTol || abs((maxX - minX) - kTabW) > kTabTol || abs((maxY - minY) - kTabH) > kTabTol) return 0;
+			const int i = (rel + kTabPitch / 2) / kTabPitch;
+			if (i > 7 || abs(rel - i * kTabPitch) > kTabTol) return 0;
+			if (!g_maskRead) {
+				g_maskRead = true;
+				g_mask = newItemTabMask(g_tabAlpha);
+			}
+			if (!(g_mask & (1u << i)) || !texture(dev)) return 0;
+			g_tabIdx = i;
+			return 2;
+		}
+		if (minU == kStandU && minV == kStandV) {
+			g_afterStand = abs(minX - kListX0) <= kListTol && abs((maxX - minX) - kListW) <= kListTol;
+			if (g_afterStand) {
+				g_standX0 = minX;
+				g_standX1 = maxX;
+				g_standIdx = g_stands++;
+			}
+			return 0;
+		}
+		if (!g_afterStand) return 0;
+		g_afterStand = false;
+		if (abs(minX - g_standX0) > 16 || abs(maxX - g_standX1) > 16 || maxY - minY < 8) return 0;
+		if (!g_rowsRead) {
+			g_rowsRead = true;
+			g_rows = newItemMarkerRows(g_flags, kMaxRows);
+		}
+		if (g_standIdx >= g_rows || !g_flags[g_standIdx] || !texture(dev)) return 0;
+		g_rowAlpha = g_flags[g_standIdx];
+		return 1;
+	}
+
+	// a tab icon that gets the mark was drawn: its drawn vertices and indices are kept for flushTabs
+	void storeTab(D3DPRIMITIVETYPE type, UINT nv, UINT prims, const void* indices, D3DFORMAT indexFormat, const void* drawn) {
+		if (g_tabIdx < 0 || g_tabIdx > 7 || !drawn || !indices || nv != 4) return;
+		// a list, a strip or a fan: the mark moves each vertex to its corner, so any of them draws the same square
+		const UINT count = type == D3DPT_TRIANGLELIST ? prims * 3 :
+			((type == D3DPT_TRIANGLESTRIP || type == D3DPT_TRIANGLEFAN) ? prims + 2 : 0);
+		const UINT bytes = count * (indexFormat == D3DFMT_INDEX32 ? 4 : 2);
+		if (!count || bytes > sizeof(g_tabs[0].idx)) {
+			if (!g_loggedStoreFail) {
+				g_loggedStoreFail = true;
+				SDLOG(0, "NewItemMarkers: a tab icon is drawn in a way the mark does not know (type %d, %u prims, index format %d): no tab marks\n", (int)type, prims, (int)indexFormat);
+			}
+			return;
+		}
+		TabQuad& t = g_tabs[g_tabIdx];
+		memcpy(t.v, drawn, sizeof(t.v));
+		memcpy(t.idx, indices, bytes);
+		t.type = type;
+		t.fmt = indexFormat;
+		t.nv = nv;
+		t.prims = prims;
+		t.alpha = g_tabAlpha[g_tabIdx] ? g_tabAlpha[g_tabIdx] : 255;
+		g_stored |= 1u << g_tabIdx;
+	}
+}
+
 HRESULT RSManager::redirectSetTexture(DWORD Stage, IDirect3DBaseTexture9* pTexture) {
 	if (pTexture == NULL) return d3ddev->SetTexture(Stage, pTexture);
 	// DDTMControllerMappings: keyboard / mouse prompts (kbIcons above)
@@ -3710,6 +3942,18 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 	bool boxMark = false;
 	if (boxMarkers::g_on && VertexStreamZeroStride == 12 && NumVertices == 4 && PrimitiveCount == 2 && MinIndex == 0 && pVertexStreamZeroData)
 		boxMark = boxMarkers::onQuad(d3ddev, (const INT16*)pVertexStreamZeroData);
+	// NewItemMarkers: an item picture or a tab icon that gets the "!" (1 / 2), or the selected tab's frame (3)
+	int newMark = 0;
+	if (newMarks::g_on && VertexStreamZeroStride == 12 && NumVertices == 4 && PrimitiveCount == 2 && MinIndex == 0 && pVertexStreamZeroData) {
+		bool catTex = false;
+		if (newMarks::tabRow((const INT16*)pVertexStreamZeroData)) {
+			IDirect3DBaseTexture9* ct = NULL;
+			d3ddev->GetTexture(0, &ct);
+			catTex = ct && isTextureCategoryIconsHumanityCount(ct);
+			if (ct) ct->Release();
+		}
+		newMark = newMarks::onQuad(d3ddev, (const INT16*)pVertexStreamZeroData, catTex);
+	}
 	//if(onHudRT) {
 	//	SDLOG(0, "HUD render: primitive type: %d, MinIndex: %u, NumVertices: %u, PrimitiveCount: %u, IndexDataFormat: %s\n", PrimitiveType, MinIndex, NumVertices, PrimitiveCount, D3DFormatToString(IndexDataFormat));
 
@@ -4033,6 +4277,12 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		hr = d3ddev->DrawIndexedPrimitiveUP(PrimitiveType, MinIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, vdata, VertexStreamZeroStride);
 		// BottomlessBoxMarkers: the chest marker on top of the item picture, with its vertices
 		if (boxMark && SUCCEEDED(hr)) boxMarkers::draw(d3ddev, PrimitiveType, MinIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, vdata);
+		// NewItemMarkers: after the box marker, so the "!" is on top of it
+		if (newMark && SUCCEEDED(hr)) {
+			if (newMark == 1) newMarks::drawMark(d3ddev, PrimitiveType, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, vdata, newMarks::g_rowAlpha);
+			else if (newMark == 2) newMarks::storeTab(PrimitiveType, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, vdata);
+			else newMarks::flushTabs(d3ddev);
+		}
 	}
 	// weaponWearBars: watches the weapon slots' pictures and frames; right after a frame it draws the bar under it, into the
 	// same target with the same (possibly bottom-left scaled) viewport, and with the same opacity this draw got

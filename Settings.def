@@ -120,6 +120,10 @@ SETTING(bool, WeaponsArmorSort, "WeaponsArmorSort", true)
 // BottomlessBoxMarkers: in the Bottomless Box list, a small chest picture in the top-right corner of an item's picture
 // when nothing of it is held and all of it is in the box. 0 = off (nothing is patched)
 SETTING(bool, BottomlessBoxMarkers, "BottomlessBoxMarkers", false)
+// NewItemMarkers: a glowing orange "!" in the top-right corner of the items you got and have not looked at yet (Inventory,
+// Equipment lists, Bottomless Box), and on the tab icons whose tab has one. The mark fades out when the cursor leaves
+// its row. Kept per character in %LOCALAPPDATA%\NBGI\DarkSouls\DSfixNewItems.ini. 0 = off (nothing is patched, nothing is recorded)
+SETTING(bool, NewItemMarkers, "NewItemMarkers", true)
 // QuickSelectEstus: during play, hold D-pad Down for 350 ms to select the Estus Flask in your quick-item slots (with the
 // game's own animation and sound). A tap still switches to the next item at once, so a hold switches once, then jumps to
 // the Estus. With DDTMControllerFix, holding its SWITCH_ITEM key works the same. 0 = off (nothing is patched)

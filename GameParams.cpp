@@ -327,6 +327,7 @@ namespace wasort {
     bool g_xinputPatched = false;      // hook 5 is in place (WeaponsArmorSort or QuickSelectEstus put it there)
     bool g_tickPatched = false;        // hook 3 is in place (WeaponsArmorSort or the item list wheel put it there)
     void(__stdcall* g_wheelTick)(DWORD list) = NULL;   // the item list wheel (end of this file), when it is on
+    void(__stdcall* g_newTick)(DWORD list) = NULL;     // NewItemMarkers (end of this file), when it is on
     void(__stdcall* g_mapPad)(unsigned long idx, void* state) = NULL;   // gameMap (GameMap.h): sees every pad read first
     bool g_markersInstalled = false;   // BottomlessBoxMarkers
 
@@ -1619,6 +1620,7 @@ namespace wasort {
     void __stdcall listTick(DWORD list) {
         if (g_installed) sortOnListTick(list);
         if (g_wheelTick) g_wheelTick(list);
+        if (g_newTick) g_newTick(list);
     }
 
     __declspec(naked) void tick_stub() {
@@ -2251,3 +2253,658 @@ bool installGameMapInput(void(__stdcall* pad)(unsigned long idx, void* state), b
 // "Most recent" sorting: the look at what the hero gains, equips and attunes (WeaponsArmorSort, above). Called every frame
 // from RSManager::redirectPresent; it works 4 times a second, and does nothing when WeaponsArmorSort is off.
 void wasortFrameTick() { wasort::recentTick(); }
+
+// =====================================================================================================================
+// NewItemMarkers: a glowing orange "!" on the items the hero got and has not looked at yet, in the Inventory, the
+// Equipment "select item" lists and the Bottomless Box, and on the tab icons of the Inventory and the Bottomless Box
+// whose tab holds such an item (drawn by RenderstateManager.cpp, picture Resources\NewItem.png).
+//   - new: an inventory slot that is new, or holds more of its item (not the Estus Flask filling). Not when the same item
+//     left the Bottomless Box in that moment (taken out of the box). An upgrade or infusion keeps a mark it had.
+//   - seen: when the cursor leaves its row (selected, then deselected), a mark fades out over 1 s, then goes (also when
+//     the cursor comes back to the row meanwhile). Opening a list, changing tab and closing take no mark.
+//   - the marks are kept per character (save slot + name) in %LOCALAPPDATA%\NBGI\DarkSouls\DSfixNewItems.ini.
+// Own look at the inventory (4 times a second at Present), own file: nothing shared with WeaponsArmorSort but the two list
+// hooks (1 and 3), which it puts in place itself when they are not there yet.
+// =====================================================================================================================
+namespace wasort {
+namespace newitems {
+    struct NewSet {
+        int used;
+        wchar_t name[kNameLen];
+        BYTE flag[kPositions];                    // 1 = the item at this inventory position is new
+        DWORD kid[kPositions];                    // the kind | id it was new for
+    };
+    NewSet g_sets[kRecentSlots];
+    CRITICAL_SECTION g_lock;                      // the save thread copies the sets while the game changes them
+    bool g_lockReady = false;
+    bool g_installed = false;
+    volatile LONG g_loaded = 0;                   // the file was read: nothing is written before
+    volatile LONG g_dirty = 0;                    // marks changed since the last write
+    volatile LONG g_saveBusy = 0;
+    volatile LONG g_saveDirty = 0;
+    DWORD g_dirtySince = 0;
+    int g_active = -1;                            // the save slot of the character in play
+    signed char g_tab[kPositions];                // the tab of the marked item (-2 not known yet, -1 none); game thread
+    DWORD g_markTime[kPositions];                 // when the mark came (0: from the file)
+
+    // the look (own copies: independent of "Most recent")
+    BYTE g_inv[kInvMax * 28];
+    BYTE g_box[kBoxMax * 32];
+    Seen g_seen[kInvMax];
+    DWORD g_seenCount = 0;
+    DWORD g_boxKid[kBoxMax], g_boxCnt[kBoxMax];
+    DWORD g_boxSeenN = 0, g_boxN = 0;
+    bool g_have = false;
+    DWORD g_havePlayer = 0;
+    DWORD g_lastPoll = 0;
+
+    // the list with focus (hook 3, game thread)
+    volatile DWORD g_shownList = 0;
+    volatile unsigned g_tabMask = 0;              // bit i: tab i of the shown Inventory / Bottomless Box list has a mark
+    volatile BYTE g_tabAlpha[8];                  // the most visible mark of each tab (255; less while it fades)
+    DWORD g_lastList = 0, g_lastTick = 0;
+    int g_lastWindow = W_NONE, g_lastCategory = -99, g_lastIndex = -1, g_lastPos = -1;
+    DWORD g_lastKid = 0xFFFFFFFF;                 // the item of the row under the cursor (last tick)
+    // marks the cursor left: they fade out over 1 s, then go (so a mark passed while scrolling is still seen); with g_lock
+    const DWORD kSeenDelayMs = 1000;
+    struct Later { int pos; DWORD kid; DWORD due; };
+    Later g_later[64];
+    volatile int g_nLater = 0;
+    DWORD g_cleanAt = 0;                          // when the open Inventory tab is checked for marks it cannot show
+
+    void setDirty() {
+        if (!g_dirty) g_dirtySince = GetTickCount();
+        InterlockedExchange(&g_dirty, 1);
+    }
+
+    void mark(int pos, DWORD kid) {
+        if (g_active < 0 || pos < 0 || pos >= kPositions) return;
+        NewSet& s = g_sets[g_active];
+        if (s.flag[pos] && s.kid[pos] == kid) return;
+        EnterCriticalSection(&g_lock);
+        s.flag[pos] = 1;
+        s.kid[pos] = kid;
+        LeaveCriticalSection(&g_lock);
+        g_tab[pos] = -2;
+        g_markTime[pos] = GetTickCount() | 1;
+        setDirty();
+    }
+    void clear(int pos) {
+        if (g_active < 0 || pos < 0 || pos >= kPositions) return;
+        NewSet& s = g_sets[g_active];
+        if (!s.flag[pos]) return;
+        EnterCriticalSection(&g_lock);
+        s.flag[pos] = 0;
+        LeaveCriticalSection(&g_lock);
+        setDirty();
+    }
+    // the character in play: its block (an empty one when the slot has none or another name)
+    void activate(int slot, const wchar_t* name) {
+        NewSet& s = g_sets[slot];
+        if (!s.used || wcsncmp(s.name, name, kNameLen) != 0) {
+            s.used = 1;
+            wcsncpy_s(s.name, kNameLen, name, _TRUNCATE);
+            memset(s.flag, 0, sizeof(s.flag));
+            memset(s.kid, 0, sizeof(s.kid));
+        }
+        g_active = slot;
+        g_nLater = 0;
+        memset(g_tab, 0xFE, sizeof(g_tab));       // -2: not known
+        memset(g_markTime, 0, sizeof(g_markTime));
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // The file: Character=<save slot> <name>, then one New=<inventory position> <kind | id in hex> per mark.
+    // ---------------------------------------------------------------------------------------------------------------
+    bool filePath(wchar_t* dir1, wchar_t* dir2, wchar_t* file, wchar_t* tmp, DWORD size) {
+        wchar_t base[MAX_PATH];
+        const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
+        if (n == 0 || n >= MAX_PATH - 64) return false;
+        _snwprintf_s(dir1, size, _TRUNCATE, L"%s\\NBGI", base);
+        _snwprintf_s(dir2, size, _TRUNCATE, L"%s\\NBGI\\DarkSouls", base);
+        _snwprintf_s(file, size, _TRUNCATE, L"%s\\NBGI\\DarkSouls\\DSfixNewItems.ini", base);
+        _snwprintf_s(tmp, size, _TRUNCATE, L"%s\\NBGI\\DarkSouls\\DSfixNewItems.ini.tmp", base);
+        return true;
+    }
+
+    void writeFile() {
+        if (!g_loaded) return;
+        wchar_t dir1[MAX_PATH], dir2[MAX_PATH], file[MAX_PATH], tmp[MAX_PATH];
+        if (!filePath(dir1, dir2, file, tmp, MAX_PATH)) return;
+        HANDLE heap = GetProcessHeap();
+        NewSet* sets = (NewSet*)HeapAlloc(heap, 0, sizeof(g_sets));
+        if (!sets) return;
+        EnterCriticalSection(&g_lock);
+        memcpy(sets, g_sets, sizeof(g_sets));
+        LeaveCriticalSection(&g_lock);
+        size_t cap = 256;
+        for (int k = 0; k < kRecentSlots; ++k) if (sets[k].used) cap += 128 + (size_t)kPositions * 24;
+        char* text = (char*)HeapAlloc(heap, 0, cap);
+        if (!text) { HeapFree(heap, 0, sets); return; }
+        int len = 0;
+        text[0] = 0;
+        for (int k = 0; k < kRecentSlots && len >= 0; ++k) {
+            const NewSet& s = sets[k];
+            if (!s.used) continue;
+            char name[64] = { 0 };
+            if (!WideCharToMultiByte(CP_UTF8, 0, s.name, -1, name, sizeof(name), NULL, NULL)) name[0] = 0;
+            int m = _snprintf_s(text + len, cap - len, _TRUNCATE, "Character=%d %s\r\n", k, name);
+            len = m < 0 ? -1 : len + m;
+            for (int i = 0; i < kPositions && len >= 0; ++i) {
+                if (!s.flag[i]) continue;
+                m = _snprintf_s(text + len, cap - len, _TRUNCATE, "New=%d %08X\r\n", i, s.kid[i]);
+                len = m < 0 ? -1 : len + m;
+            }
+        }
+        HeapFree(heap, 0, sets);
+        if (len >= 0) {
+            CreateDirectoryW(dir1, NULL);
+            CreateDirectoryW(dir2, NULL);
+            HANDLE h = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (h != INVALID_HANDLE_VALUE) {
+                DWORD written = 0;
+                const BOOL ok = (len == 0 || WriteFile(h, text, (DWORD)len, &written, NULL)) && written == (DWORD)len;
+                CloseHandle(h);
+                if (!ok || !MoveFileExW(tmp, file, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) DeleteFileW(tmp);
+            }
+        }
+        HeapFree(heap, 0, text);
+    }
+
+    DWORD WINAPI saveThread(LPVOID) {
+        do {
+            while (InterlockedExchange(&g_saveDirty, 0)) writeFile();
+            InterlockedExchange(&g_saveBusy, 0);
+        } while (g_saveDirty && InterlockedCompareExchange(&g_saveBusy, 1, 0) == 0);
+        return 0;
+    }
+    void requestSave() {
+        InterlockedExchange(&g_saveDirty, 1);
+        if (InterlockedCompareExchange(&g_saveBusy, 1, 0) != 0) return;
+        HANDLE h = CreateThread(NULL, 0, saveThread, NULL, 0, NULL);
+        if (h) CloseHandle(h);
+        else InterlockedExchange(&g_saveBusy, 0);
+    }
+
+    // Returns false when the file is there but something in it is wrong (it is then written anew). With g_lock held.
+    bool readFile(int* marks) {
+        *marks = 0;
+        wchar_t dir1[MAX_PATH], dir2[MAX_PATH], file[MAX_PATH], tmp[MAX_PATH];
+        if (!filePath(dir1, dir2, file, tmp, MAX_PATH)) return true;
+        HANDLE h = CreateFileW(file, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h == INVALID_HANDLE_VALUE) return true;   // no file yet: nothing to write either
+        const DWORD size = GetFileSize(h, NULL);
+        if (size == INVALID_FILE_SIZE || size > 4 * 1024 * 1024) { CloseHandle(h); return false; }
+        HANDLE heap = GetProcessHeap();
+        char* text = (char*)HeapAlloc(heap, 0, (SIZE_T)size + 1);
+        if (!text) { CloseHandle(h); return false; }
+        DWORD got = 0;
+        const BOOL ok = ReadFile(h, text, size, &got, NULL);
+        CloseHandle(h);
+        if (!ok) { HeapFree(heap, 0, text); return false; }
+        text[got] = 0;
+        bool good = true;
+        int cur = -1;
+        char* line = text;
+        while (*line) {
+            char* end = line;
+            while (*end && *end != '\n' && *end != '\r') ++end;
+            const char keep = *end;
+            *end = 0;
+            if (*line) {
+                const char* v = NULL;
+                int value = -1;
+                unsigned int a = 0, b = 0;
+                char extra = 0;
+                if ((v = valueOf(line, "Character=")) != NULL) {
+                    const char* space = strchr(v, ' ');
+                    if (space && sscanf_s(v, "%d", &value) == 1 && value >= 0 && value < kRecentSlots) {
+                        NewSet& s = g_sets[value];
+                        s.used = 1;
+                        memset(s.flag, 0, sizeof(s.flag));
+                        memset(s.kid, 0, sizeof(s.kid));
+                        memset(s.name, 0, sizeof(s.name));
+                        if (!MultiByteToWideChar(CP_UTF8, 0, space + 1, -1, s.name, kNameLen)) memset(s.name, 0, sizeof(s.name));
+                        s.name[kNameLen - 1] = 0;
+                        cur = value;
+                    }
+                    else { good = false; cur = -1; }
+                }
+                else if ((v = valueOf(line, "New=")) != NULL) {
+                    if (cur >= 0 && sscanf_s(v, "%u %x%c", &a, &b, &extra, 1) == 2 && a < (unsigned)kPositions) {
+                        g_sets[cur].flag[a] = 1;
+                        g_sets[cur].kid[a] = b;
+                        ++*marks;
+                    }
+                    else good = false;
+                }
+                else good = false;
+            }
+            if (!keep) break;
+            line = end + 1;
+        }
+        HeapFree(heap, 0, text);
+        return good;
+    }
+
+    DWORD WINAPI loadThread(LPVOID) {
+        int marks = 0;
+        EnterCriticalSection(&g_lock);
+        const bool good = readFile(&marks);
+        LeaveCriticalSection(&g_lock);
+        InterlockedExchange(&g_loaded, 1);
+        if (!good) SDLOG(0, "NewItemMarkers: DSfixNewItems.ini had wrong lines, it is written anew\n");
+        if (!good) requestSave();
+        return 0;
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // The look (Present, 4 times a second)
+    // ---------------------------------------------------------------------------------------------------------------
+    void slotAt(DWORD i, DWORD count, Seen& out) {
+        if (i >= count) { out.kid = 0; out.count = 0; out.used = 0; return; }
+        const BYTE* s = g_inv + i * 28;
+        out.used = s[0x10] ? 1 : 0;
+        out.kid = *(const DWORD*)s | *(const DWORD*)(s + 4);
+        out.count = *(const DWORD*)(s + 8);
+    }
+    void boxAt(DWORD i, DWORD boxN, DWORD& kid, DWORD& cnt) {
+        const BYTE* e = g_box + i * 32;
+        const bool used = i < boxN && (e[0xA] & 1);
+        kid = used ? *(const DWORD*)e : 0;
+        cnt = used ? *(const WORD*)(e + 8) : 0;
+    }
+    // some of it is in the Bottomless Box (a slot can stay at 0 held after all of it went into the box)
+    bool inBox(DWORD kid) {
+        for (DWORD i = 0; i < g_boxN; ++i) {
+            DWORD k, c;
+            boxAt(i, g_boxN, k, c);
+            if (k == kid && c > 0) return true;
+        }
+        return false;
+    }
+
+    void runLater();
+    void frameTick() {
+        if (!g_installed || !g_loaded) return;
+        runLater();
+        const DWORD now = GetTickCount();
+        if (now - g_lastPoll < kPollMs) return;
+        g_lastPoll = now;
+        const DWORD player = playerData();
+        const DWORD mm = rd32(kMenuMan);
+        const int loading = mm ? (int)rd32(mm + 0x7EC) : 0;
+        const DWORD gm = rd32(kGameMan);
+        const DWORD saveSlot = gm ? rd32(gm + 0xA70) : 0xFFFFFFFF;
+        const DWORD wcm = rd32(kWorldChrMan);
+        const DWORD hero = wcm ? rd32(wcm + 0x3C) : 0;
+        const bool inPlay = player && hero && saveSlot < (DWORD)kRecentSlots && !(loading >= 1 && loading <= 4);
+        // the marks are written 10 s after a change, or at once when play stops (loading screen, title)
+        if (g_dirty && (!inPlay || now - g_dirtySince >= kFlushMs)) {
+            InterlockedExchange(&g_dirty, 0);
+            requestSave();
+        }
+        if (!inPlay) { g_have = false; return; }
+        wchar_t name[kNameLen];
+        memset(name, 0, sizeof(name));
+        if (!rdBlock(player + 0xA0, name, sizeof(wchar_t) * (kNameLen - 1)) || !name[0]) { g_have = false; return; }
+        if (g_active != (int)saveSlot || wcsncmp(g_sets[saveSlot].name, name, kNameLen) != 0) {
+            EnterCriticalSection(&g_lock);
+            activate((int)saveSlot, name);
+            LeaveCriticalSection(&g_lock);
+            g_have = false;
+        }
+        if (player != g_havePlayer) { g_have = false; g_havePlayer = player; }
+
+        const DWORD inv = player + 0x1B8;
+        DWORD count = rd32(inv + 0x110), split = rd32(inv + 0x118);
+        const DWORD blockA = rd32(inv + 0x120), blockB = rd32(inv + 0x124);
+        if (count > kInvMax) count = kInvMax;
+        if (split > count) split = count;
+        if (!blockA || (count > split && !blockB) || !rdBlock(blockA, g_inv, split * 28) ||
+            !rdBlock(blockB + split * 28, g_inv + split * 28, (count - split) * 28)) { g_have = false; return; }
+        const DWORD box = rd32(player + 0x420);
+        DWORD boxN = box ? rd32(box + 0x10008) + 1 : 0;
+        if (boxN > kBoxMax) boxN = kBoxMax;
+        if (boxN && !rdBlock(box + 8, g_box, boxN * 32)) boxN = 0;
+        g_boxN = boxN;
+        NewSet& s = g_sets[g_active];
+
+        if (!g_have) {
+            // the first look: a mark stays only where its item still is
+            for (int i = 0; i < kPositions; ++i) {
+                if (!s.flag[i]) continue;
+                Seen cur;
+                slotAt((DWORD)i, count, cur);
+                if (!cur.used || cur.kid != s.kid[i] || (cur.count == 0 && !inBox(cur.kid))) clear(i);
+            }
+            for (DWORD i = 0; i < kInvMax; ++i) slotAt(i, count, g_seen[i]);
+            g_seenCount = count;
+            for (DWORD i = 0; i < kBoxMax; ++i) boxAt(i, boxN, g_boxKid[i], g_boxCnt[i]);
+            g_boxSeenN = boxN;
+            g_have = true;
+            return;
+        }
+
+        // what left the box in this moment
+        DWORD leftBox[256];
+        int nLeft = 0;
+        const DWORD boxUpto = boxN > g_boxSeenN ? boxN : g_boxSeenN;
+        for (DWORD i = 0; i < boxUpto; ++i) {
+            DWORD kid, cnt;
+            boxAt(i, boxN, kid, cnt);
+            if (g_boxKid[i] && (kid != g_boxKid[i] || cnt < g_boxCnt[i]) && nLeft < 256) leftBox[nLeft++] = g_boxKid[i];
+            g_boxKid[i] = kid;
+            g_boxCnt[i] = cnt;
+        }
+        g_boxSeenN = boxN;
+
+        DWORD found[32];
+        int foundPos[32];
+        int nFound = 0, nGains = 0;
+        const DWORD upto = count > g_seenCount ? count : g_seenCount;
+        for (DWORD i = 0; i < upto; ++i) {
+            Seen cur;
+            slotAt(i, count, cur);
+            const Seen was = g_seen[i];
+            g_seen[i] = cur;
+            // a mark follows its item
+            if (i < (DWORD)kPositions && s.flag[i]) {
+                if (!cur.used) clear((int)i);
+                else if (cur.kid != s.kid[i]) {
+                    if (was.used && was.kid == s.kid[i]) {   // upgraded or infused: the mark stays
+                        EnterCriticalSection(&g_lock);
+                        s.kid[i] = cur.kid;
+                        LeaveCriticalSection(&g_lock);
+                        g_tab[i] = -2;
+                        setDirty();
+                    }
+                    else clear((int)i);
+                }
+                else if (cur.count == 0 && was.count > 0 && !inBox(cur.kid)) clear((int)i);
+            }
+            if (!cur.used) continue;
+            const bool gained = !was.used || (cur.kid == was.kid && cur.count > was.count && !isEstus(cur.kid));
+            if (!gained) continue;
+            bool fromBox = false;
+            for (int k = 0; k < nLeft; ++k) if (leftBox[k] == cur.kid) fromBox = true;
+            if (fromBox) continue;                    // taken out of the Bottomless Box: not new
+            ++nGains;
+            if (nFound < 32) { found[nFound] = cur.kid; foundPos[nFound] = (int)i; ++nFound; }
+        }
+        g_seenCount = count;
+        if (nGains > kMassGains) return;          // the game loading: not marked
+        for (int k = 0; k < nFound; ++k) mark(foundPos[k], found[k]);
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // The tab of an item, as the game's classifier (0x00C68390, normal branch) gives it: 0 consumables, 1 materials,
+    // 2 key items, 3 spells, 4 weapons and shields, 5 arrows / bolts, 6 armor, 7 rings, -1 none. Game thread only.
+    // ---------------------------------------------------------------------------------------------------------------
+    __declspec(naked) void __stdcall goodsLookup(DWORD id, DWORD* out) {
+        __asm {
+            pushad
+            mov edi, dword ptr[esp + 0x24]      // id (the lookup at 0x00D1E3A0 takes it in edi)
+            push dword ptr[esp + 0x28]          // out (the function removes it): +4 the goods row
+            mov eax, 0x00D1E3A0
+            call eax
+            popad
+            ret 8
+        }
+    }
+    int tabOf(DWORD kid) {
+        const DWORD kind = kid & 0xF0000000, id = kid & 0x0FFFFFFF;
+        if (kind == 0x10000000) return 6;
+        if (kind == 0x20000000) return 7;
+        if (kind == 0) {
+            DWORD out[8] = { 0 };
+            gameLookup(kFnWeaponLookup, id, out);
+            if (!out[1]) return 4;
+            const DWORD category = rd32(out[1] + kWepCategory) & 0xFF;
+            return (category == 13 || category == 14) ? 5 : 4;
+        }
+        if (kind == 0x40000000) {
+            DWORD out[8] = { 0 };
+            goodsLookup(id, out);
+            if (!out[1]) return -1;
+            switch (rd32(out[1] + 0x3A) & 0xFF) {
+            case 0: case 3: case 4: return 0;
+            case 2: return 1;
+            case 1: return 2;
+            case 5: return 3;
+            default: return -1;
+            }
+        }
+        return -1;
+    }
+
+    // the inventory position (-1: none) and kind | id of the row 'index' of a list
+    bool rowAt(DWORD list, int window, DWORD player, int index, int* pos, DWORD* kid) {
+        *pos = -1;
+        *kid = 0xFFFFFFFF;
+        const DWORD entriesVec = rd32(list + kListEntries);
+        const DWORD orderVec = rd32(list + kListOrder);
+        if (!player || !entriesVec || !orderVec || index < 0) return false;
+        const DWORD eBegin = rd32(entriesVec + 4), eEnd = rd32(entriesVec + 8);
+        const DWORD oBegin = rd32(orderVec + 4), oEnd = rd32(orderVec + 8);
+        if (!eBegin || !oBegin || eEnd < eBegin || oEnd < oBegin) return false;
+        const int entries = (int)((eEnd - eBegin) / 4);
+        const int n = (int)((oEnd - oBegin) / 4);
+        if (index >= n) return false;
+        const int e = (int)rd32(oBegin + 4 * (DWORD)index);
+        if (e < 0 || e >= entries) return false;
+        *kid = entryKid(window, player, rd32(eBegin + 4 * (DWORD)e), pos);
+        if (*pos >= kPositions) *pos = -1;
+        return true;
+    }
+
+    // the cursor left the row of a mark: it fades out over 1 s, then goes. A fade that started goes on to the end (the
+    // cursor coming back to the row does not stop it).
+    void seenLater(int pos, DWORD kid) {
+        if (g_active < 0 || pos < 0 || pos >= kPositions) return;
+        const NewSet& s = g_sets[g_active];
+        if (!s.flag[pos] || s.kid[pos] != kid) return;
+        const DWORD due = GetTickCount() + kSeenDelayMs;
+        bool full = false;
+        EnterCriticalSection(&g_lock);
+        int k = 0;
+        while (k < g_nLater && g_later[k].pos != pos) ++k;
+        if (k < g_nLater && g_later[k].kid == kid) {   // already fading: it keeps its end
+            LeaveCriticalSection(&g_lock);
+            return;
+        }
+        if (k < g_nLater || g_nLater < 64) {
+            g_later[k].pos = pos;
+            g_later[k].kid = kid;
+            g_later[k].due = due;
+            if (k == g_nLater) ++g_nLater;
+        }
+        else full = true;
+        LeaveCriticalSection(&g_lock);
+        if (full) clear(pos);
+    }
+    // the marks whose fade has ended (from the list tick and from Present, so also after the list closed)
+    void runLater() {
+        if (!g_nLater || g_active < 0) return;
+        const DWORD now = GetTickCount();
+        Later due[64];
+        int n = 0;
+        EnterCriticalSection(&g_lock);
+        for (int k = 0; k < g_nLater; )
+            if ((LONG)(now - g_later[k].due) >= 0) { due[n++] = g_later[k]; g_later[k] = g_later[--g_nLater]; }
+            else ++k;
+        LeaveCriticalSection(&g_lock);
+        const NewSet& s = g_sets[g_active];
+        for (int k = 0; k < n; ++k)
+            if (s.flag[due[k].pos] && s.kid[due[k].pos] == due[k].kid) clear(due[k].pos);
+    }
+    // how visible the mark at 'pos' is: 255, less while it fades out (a few entries at most; any thread)
+    BYTE alphaOf(int pos, DWORD now) {
+        const int n = g_nLater;
+        for (int k = 0; k < n && k < 64; ++k) {
+            if (g_later[k].pos != pos) continue;
+            const LONG left = (LONG)(g_later[k].due - now);
+            if (left <= 0) return 1;
+            if (left >= (LONG)kSeenDelayMs) return 255;
+            const DWORD a = (DWORD)left * 255 / kSeenDelayMs;
+            return (BYTE)(a < 1 ? 1 : a);
+        }
+        return 255;
+    }
+
+    // The open Inventory tab lists every item of it the hero holds: a mark on an item of that tab that is not in the list
+    // (an item the game hides) could never be seen, so it goes. Only for marks older than 3 s, half a second after the
+    // tab opened (the list is rebuilt by then).
+    void cleanTab(DWORD list, int category, DWORD now) {
+        const NewSet& s = g_sets[g_active];
+        const DWORD player = playerData();
+        const DWORD entriesVec = rd32(list + kListEntries);
+        if (!player || !entriesVec) return;
+        const DWORD eBegin = rd32(entriesVec + 4), eEnd = rd32(entriesVec + 8);
+        if (!eBegin || eEnd < eBegin) return;
+        const int entries = (int)((eEnd - eBegin) / 4);
+        if (entries <= 0 || entries > 4096) return;
+        for (int i = 0; i < kPositions; ++i) {
+            if (!s.flag[i] || g_tab[i] != category) continue;
+            if (g_markTime[i] && now - g_markTime[i] < 3000) continue;
+            const DWORD slot = inventorySlot(player, (DWORD)i);
+            if (!slot || rd32(slot + 8) == 0) continue;   // none held (all in the box): the Inventory does not list it
+            bool listed = false;
+            for (int e = 0; e < entries && !listed; ++e) if ((int)rd32(eBegin + 4 * (DWORD)e) == i) listed = true;
+            if (!listed) clear(i);
+        }
+    }
+
+    // hook 3: every frame the list with focus takes input (game thread)
+    void __stdcall tick(DWORD list) {
+        const int window = windowOf(list);
+        const DWORD mm = rd32(kMenuMan);
+        if (g_active < 0 || window == W_NONE || (window == W_INVENTORY && (!mm || rd32(mm + 0x1F0) != 0))) {
+            g_shownList = 0;                      // a shop or another list: no marks
+            g_tabMask = 0;
+            return;
+        }
+        const DWORD now = GetTickCount();
+        const int category = window == W_EQUIP ? (mm ? (int)rd32(mm + 0x134) : -1) : cachedCategory(list);
+        const int index = (int)rd32(list + kListCursor) + (int)rd32(list + kListScroll);
+        const DWORD player = playerData();
+        int pos = -1;
+        DWORD kid = 0xFFFFFFFF;
+        rowAt(list, window, player, index, &pos, &kid);
+        const bool open = list != g_lastList || window != g_lastWindow || category != g_lastCategory || now - g_lastTick > 150;
+        // a mark goes when the cursor leaves its row: the row was selected, then deselected (opening, changing tab and
+        // closing take nothing)
+        if (open) g_cleanAt = (now + 500) | 1;
+        else if (index != g_lastIndex) seenLater(g_lastPos, g_lastKid);
+        runLater();
+        g_lastList = list;
+        g_lastWindow = window;
+        g_lastCategory = category;
+        g_lastIndex = index;
+        g_lastPos = pos;
+        g_lastKid = kid;
+        g_lastTick = now;
+        g_shownList = list;
+
+        // the tab icons (Inventory and Bottomless Box)
+        if (window == W_EQUIP) { g_tabMask = 0; return; }
+        if (window == W_INVENTORY && g_cleanAt && now - g_cleanAt < 0x80000000u && category >= 0 && category <= 7) {
+            g_cleanAt = 0;
+            cleanTab(list, category, now);
+        }
+        unsigned mask = 0;
+        BYTE alpha[8] = { 0 };
+        const NewSet& s = g_sets[g_active];
+        const DWORD aNow = GetTickCount();
+        for (int i = 0; i < kPositions; ++i) {
+            if (!s.flag[i]) continue;
+            if (g_tab[i] == -2) g_tab[i] = (signed char)tabOf(s.kid[i]);
+            if (g_tab[i] < 0 || g_tab[i] > 7) continue;
+            mask |= 1u << g_tab[i];
+            const BYTE a = alphaOf(i, aNow);      // a tab's mark fades with the last mark of the tab
+            if (a > alpha[g_tab[i]]) alpha[g_tab[i]] = a;
+        }
+        for (int t = 0; t < 8; ++t) g_tabAlpha[t] = alpha[t];
+        g_tabMask = mask;
+    }
+}
+}
+
+bool installNewItemMarkers() {
+    using namespace wasort;
+    if (newitems::g_installed) return true;
+    if (!Settings::get().getNewItemMarkers()) return false;
+    const DWORD refreshSite = 0x00CA0985, tickSite = 0x00C8AFAA;
+    if ((!g_refreshPatched && memcmp((const void*)refreshSite, kExpRefresh, sizeof(kExpRefresh)) != 0) ||
+        (!g_tickPatched && memcmp((const void*)tickSite, kExpTick, sizeof(kExpTick)) != 0)) {
+        SDLOG(0, "NewItemMarkers: the game code is not what this build should have, markers stay off\n");
+        return false;
+    }
+    if (!newitems::g_lockReady) {
+        InitializeCriticalSection(&newitems::g_lock);
+        newitems::g_lockReady = true;
+    }
+    memset(newitems::g_tab, 0xFE, sizeof(newitems::g_tab));
+    g_newTick = &newitems::tick;                 // before the hooks: hook 3 may already be live
+    if (!g_refreshPatched) {
+        if (!writeJump(refreshSite, sizeof(kExpRefresh), (const void*)&refresh_stub)) {
+            g_newTick = NULL;
+            SDLOG(0, "NewItemMarkers: could not write at 0x%08X, markers stay off\n", refreshSite);
+            return false;
+        }
+        g_refreshPatched = true;
+    }
+    if (!g_tickPatched) {
+        if (!writeJump(tickSite, sizeof(kExpTick), (const void*)&tick_stub)) {
+            g_newTick = NULL;                    // hook 1 stays (it only notes the lists)
+            SDLOG(0, "NewItemMarkers: could not write at 0x%08X, markers stay off\n", tickSite);
+            return false;
+        }
+        g_tickPatched = true;
+    }
+    newitems::g_installed = true;
+    HANDLE h = CreateThread(NULL, 0, newitems::loadThread, NULL, 0, NULL);
+    if (h) CloseHandle(h);
+    else InterlockedExchange(&newitems::g_loaded, 1);
+    SDLOG(0, "NewItemMarkers: on\n");
+    return true;
+}
+
+bool newItemMarkersActive() {
+    return wasort::newitems::g_installed;
+}
+
+void newItemsFrameTick() { wasort::newitems::frameTick(); }
+
+int newItemMarkerRows(unsigned char* flags, int max) {
+    using namespace wasort;
+    namespace ni = wasort::newitems;
+    if (!ni::g_installed || !flags || max <= 0 || ni::g_active < 0) return 0;
+    const DWORD list = ni::g_shownList;
+    const int window = list ? windowOf(list) : W_NONE;
+    if (window == W_NONE || !(rd32(list + 0x98) & 0xFF)) return 0;   // +0x98: the list is shown
+    const DWORD player = playerData();
+    const int scroll = (int)rd32(list + kListScroll);
+    if (!player || scroll < 0) return 0;
+    const ni::NewSet& s = ni::g_sets[ni::g_active];
+    const DWORD now = GetTickCount();
+    int rows = 0;
+    for (; rows < max; ++rows) {
+        int pos = -1;
+        DWORD kid = 0xFFFFFFFF;
+        if (!ni::rowAt(list, window, player, scroll + rows, &pos, &kid)) break;
+        flags[rows] = (pos >= 0 && s.flag[pos] && s.kid[pos] == kid) ? ni::alphaOf(pos, now) : 0;
+    }
+    return rows;
+}
+
+unsigned newItemTabMask(unsigned char* alpha8) {
+    using namespace wasort;
+    namespace ni = wasort::newitems;
+    if (!ni::g_installed) return 0;
+    const DWORD list = ni::g_shownList;
+    const int window = list ? windowOf(list) : W_NONE;
+    if ((window != W_INVENTORY && window != W_BOX) || !(rd32(list + 0x98) & 0xFF)) return 0;
+    if (alpha8) for (int t = 0; t < 8; ++t) alpha8[t] = ni::g_tabAlpha[t];
+    return ni::g_tabMask;
+}

@@ -108,6 +108,9 @@ In the Bottomless Box list, a small chest icon in the top-right corner of an ite
 - Uses the game's own chest icon, so texture mods change it too.
 - Off by default. Turn it on with `BottomlessBoxMarkers 1` in DSfix.ini.
 ---
+* **New item markers**
+ – A glowing orange “!” appears on every item you pick up, buy or get more of, in the Inventory, the Equipment lists and the Bottomless Box. The tab icons show it too, so you always know where your new loot is. Move the cursor onto the item, and when you move away the “!” fades out. Marks are saved per character, so they survive quitting and loading. Turn it off with NewItemMarkers 0 in DSfix.ini.
+---
 * **Quick-Select Estus**
 Hold **D-pad Down** (350 ms) during play to jump straight to the Estus Flask in your quick-item slots, with the game's own animation and sound. A tap still switches to the next item as before.
 With DDTM Controller Fix, holding its SWITCH_ITEM key works the same.

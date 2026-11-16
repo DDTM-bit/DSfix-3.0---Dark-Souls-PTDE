@@ -41,6 +41,18 @@ bool bottomlessBoxMarkersActive();
 // were filled (0 = the box list is not on screen).
 int bottomlessBoxMarkerRows(unsigned char* flags, int max);
 
+// NewItemMarkers: a glowing orange "!" on the items got and not looked at yet (Inventory, Equipment lists, Bottomless Box)
+// and on the Inventory / Bottomless Box tab icons whose tab has one. Nothing is patched when the setting is off.
+bool installNewItemMarkers();
+bool newItemMarkersActive();
+// the look at the inventory (called every frame from RSManager::redirectPresent; it works 4 times a second)
+void newItemsFrameTick();
+// The rows of the list with focus on screen now, from the top: flags[k] != 0 when that row's item is new. Returns how many
+// rows were filled (0 = no Inventory / Equipment / Bottomless Box list on screen).
+int newItemMarkerRows(unsigned char* flags, int max);   // flags[k]: 0 none, 255 shown, less while it fades out
+// bit i set: tab i (0 consumables .. 7 rings) of the Inventory / Bottomless Box on screen has a new item (0 = none / not shown)
+unsigned newItemTabMask(unsigned char* alpha8);   // alpha8 (8 entries, may be NULL): each tab mark's visibility, as above
+
 // QuickSelectEstus: during play, holding D-pad Down (350 ms) selects the Estus Flask in the quick-item slots, with the
 // game's own animation and sound. A tap switches as before. Nothing is patched when the setting is off.
 bool installQuickSelectEstus();

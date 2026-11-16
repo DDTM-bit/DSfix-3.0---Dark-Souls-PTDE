@@ -375,6 +375,9 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
         // BottomlessBoxMarkers: a chest picture on the Bottomless Box rows that are all in the box
         if (Settings::get().getBottomlessBoxMarkers()) installBottomlessBoxMarkers();
 
+        // NewItemMarkers: an orange "!" on new items in the item lists and on their tab icons
+        if (Settings::get().getNewItemMarkers()) installNewItemMarkers();
+
         // QuickSelectEstus: hold D-pad Down during play to select the Estus Flask
         if (Settings::get().getQuickSelectEstus()) installQuickSelectEstus();
 
