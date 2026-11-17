@@ -204,12 +204,12 @@ Source code: https://github.com/DDTM-bit/DSfix-3.0---Dark-Souls-PTDE
 DSfix 3.0 also contains code from the projects below. Their notices are reproduced here
 as their licenses require.
 
-================================================================================
+---
 AMD FidelityFX CAS (Contrast Adaptive Sharpening)
 https://github.com/GPUOpen-Effects/FidelityFX-CAS
 Used for the sharpening (sharpenStrength).
 License: MIT
-================================================================================
+---
 
 Copyright (c) 2020 Advanced Micro Devices, Inc. All rights reserved.
 
@@ -231,11 +231,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
-================================================================================
+---
 SMAA (Enhanced Subpixel Morphological Antialiasing)
 Used for the anti-aliasing (aaType SMAA).
 License: BSD-style
-================================================================================
+---
 
 Uses SMAA. Copyright (C) 2011 by Jorge Jimenez, Jose I. Echevarria,
 Belen Masia, Fernando Navarro and Diego Gutierrez.
@@ -276,10 +276,10 @@ The views and conclusions contained in the software and documentation are
 those of the authors and should not be interpreted as representing official
 policies, either expressed or implied, of the copyright holders.
 
-================================================================================
+---
 NVIDIA FXAA 3.11 by Timothy Lottes
 Used for the anti-aliasing (aaType FXAA). The full notice is in dsfix\FXAA.h.
-================================================================================
+---
 
 COPYRIGHT (C) 2010, 2011 NVIDIA CORPORATION. ALL RIGHTS RESERVED.
 
@@ -294,11 +294,11 @@ OR ANY OTHER PECUNIARY LOSS) ARISING OUT OF THE USE OF OR INABILITY TO USE
 THIS SOFTWARE, EVEN IF NVIDIA HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH
 DAMAGES.
 
-================================================================================
+---
 SuperFastHash by Paul Hsieh
 Used to identify textures.
 License: BSD-style
-================================================================================
+---
 
 Copyright (c) 2010, Paul Hsieh
 All rights reserved.
@@ -325,12 +325,12 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-================================================================================
+---
 Microsoft Detours 4.0.1
 https://github.com/microsoft/Detours
 Used to hook system functions.
 License: MIT
-================================================================================
+---
 
 Copyright (c) Microsoft Corporation
 All rights reserved.
@@ -353,12 +353,12 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-================================================================================
+---
 High-Res UI and Subtitle fonts by backfoggen
 https://www.nexusmods.com/darksouls/mods/21
 The high-resolution font textures built into DSfix 3.0 are from this mod, used
 with credit under its Nexus "asset use" permission.
-================================================================================
+---
 
 ## Third-Party Licenses - DDTM Controller Fix
 DDTM Controller Fix (DDTMControllerFix.dll) is licensed under the GNU General
@@ -369,11 +369,11 @@ It uses the projects below.
 Their licenses are reproduced here as their terms require.
 All of them permit use in free and commercial software.
 
-================================================================================
+---
 SDL2 - Simple DirectMedia Layer
 https://www.libsdl.org - https://github.com/libsdl-org/SDL
 License: zlib
-================================================================================
+---
 
 Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
   
@@ -393,11 +393,11 @@ freely, subject to the following restrictions:
    misrepresented as being the original software.
 3. This notice may not be removed or altered from any source distribution.
 
-================================================================================
+---
 SDL2-CS (SDL2#) - C# wrapper for SDL2, by Ethan Lee, used through the ppy.SDL2-CS fork
 https://github.com/flibitijibibo/SDL2-CS - https://github.com/ppy/SDL2-CS
 License: zlib
-================================================================================
+---
 
 /* SDL2# - C# Wrapper for SDL2
  *
@@ -425,11 +425,11 @@ License: zlib
  *
  */
 
-================================================================================
+---
 MinHook.NET - C# port of MinHook, by CCob
 https://github.com/CCob/MinHook.NET
 License: BSD 3-Clause
-================================================================================
+---
 
 Copyright (c) 2022 CCob (@_EthicalChaos_), All rights reserved.
 
@@ -458,12 +458,12 @@ OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGEN
 OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
 OF THE POSSIBILITY OF SUCH DAMAGE.
 
-================================================================================
+---
 MinHook - The Minimalistic API Hooking Library for x64/x86
 (original C library that MinHook.NET is ported from)
 https://github.com/TsudaKageyu/minhook
 License: BSD 2-Clause
-================================================================================
+---
 
 MinHook - The Minimalistic API Hooking Library for x64/x86
 Copyright (C) 2009-2017 Tsuda Kageyu.
@@ -491,12 +491,12 @@ LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-================================================================================
+---
 SharpDisasm, by Justin Stenning (included in MinHook.NET)
 with portions ported from udis86, by Vivek Thampi
 https://github.com/spazzarama/SharpDisasm - https://github.com/vmt/udis86
 License: BSD 2-Clause
-================================================================================
+---
 
 Copyright (c) 2014-2015 Justin Stenning
 http://spazzarama.com
@@ -531,13 +531,13 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-================================================================================
+---
 .NET Runtime and Libraries (compiled into the DLL by Native AOT)
 https://github.com/dotnet/runtime
 Third-party notices of the .NET runtime:
 https://github.com/dotnet/runtime/blob/main/THIRD-PARTY-NOTICES.TXT
 License: MIT
-================================================================================
+---
 
 The MIT License (MIT)
 
