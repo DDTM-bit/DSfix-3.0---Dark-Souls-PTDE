@@ -88,6 +88,11 @@ namespace Look {
     const float kBonfireNameSize = 11.0f;
     const D3DCOLOR kBonfireName = D3DCOLOR_ARGB(240, 236, 214, 170);
     const D3DCOLOR kNameBack = D3DCOLOR_ARGB(200, 14, 11, 8), kNameLine = D3DCOLOR_ARGB(210, 176, 146, 92);
+    // a bonfire whose Fire Keeper is absent: a red X over the dimmed bonfire, its label in red
+    const D3DCOLOR kKeeperX = D3DCOLOR_ARGB(255, 214, 38, 30);
+    const D3DCOLOR kKeeperName = D3DCOLOR_ARGB(255, 236, 96, 80), kKeeperNameLine = D3DCOLOR_ARGB(210, 170, 50, 40);
+    const float kKeeperDark = 0.50f;                        // the bonfire under the X
+    const float kKeeperXSize = 0.78f;                       // the X, as a part of the bonfire icon
     const float kNamePadX = 4.0f, kNamePadY = 1.5f;
     const float kBonfireNameWorldZoom = 1.2f;              // world page: labels when zoomed in to this (metres per UI pixel) or closer
     const D3DCOLOR kUpMark = D3DCOLOR_ARGB(255, 240, 200, 110);
@@ -402,7 +407,13 @@ namespace Look {
 // Then the pins: "PINS", version 1, for each of the 10 slots a count and that many PinRec. An older DSfix reads the
 // slots and does not look further (it keeps working, without the pins).
 // =====================================================================================================================
-    struct SlotData { bool used; wchar_t name[16]; std::vector<CellRec> cells; std::vector<PinRec> pins; };
+    // the Fire Keepers seen by the character in play (see watchKeepers): 0 = not seen yet, 1 = there, 2 = absent
+    const int kKeepers = 3;
+    const DWORD kKeeperBonfire[kKeepers] = { 1021960, 1401960, 1511960 };   // Firelink Shrine, Daughter of Chaos, Anor Londo
+    const WORD kKeeperPlace[kKeepers] = { 1020, 1401, 1510 };                 // their areas: Firelink Shrine, Quelaag's Domain, Anor Londo
+    BYTE g_keepers[kKeepers] = { 0, 0, 0 };
+    DWORD g_keeperSince[kKeepers] = { 0, 0, 0 };   // its area loaded since (0: not loaded)
+    struct SlotData { bool used; wchar_t name[16]; std::vector<CellRec> cells; std::vector<PinRec> pins; BYTE keepers[3]; };
     SlotData g_file[10];
     bool g_fileRead = false;
     std::string g_filePath;                           // empty = no save folder found: kept only while the game runs
@@ -443,7 +454,10 @@ namespace Look {
 
     void readFile() {
         g_fileRead = true;
-        for (int s = 0; s < 10; ++s) { g_file[s].used = false; g_file[s].name[0] = 0; g_file[s].cells.clear(); g_file[s].pins.clear(); }
+        for (int s = 0; s < 10; ++s) {
+            g_file[s].used = false; g_file[s].name[0] = 0; g_file[s].cells.clear(); g_file[s].pins.clear();
+            memset(g_file[s].keepers, 0, sizeof(g_file[s].keepers));
+        }
         const std::string folder = findSaveFolder();
         if (folder.empty()) { SDLOG(0, "gameMap: no save folder found, the explored map is kept only while the game runs\n"); return; }
         g_filePath = folder + "\\DSfixMap.dat";
@@ -479,9 +493,10 @@ namespace Look {
             ++whole;
         }
         // the pins (after the 10 slots)
+        int pinSlots = 0;                            // slots whose pins were read completely
         if (whole == 10 && p + 8 <= d.size() && memcmp(&d[p], "PINS", 4) == 0 && *(const DWORD*)&d[p + 4] == 1) {
             p += 8;
-            for (int s = 0; s < 10; ++s) {
+            for (int s = 0; s < 10; ++s, ++pinSlots) {
                 if (p + 4 > d.size()) break;
                 const DWORD n = *(const DWORD*)&d[p]; p += 4;
                 if (n > (DWORD)kPinMax || p + (size_t)n * sizeof(PinRec) > d.size()) break;
@@ -496,6 +511,12 @@ namespace Look {
                 }
             }
         }
+        // the Fire Keepers seen (after the pins): "KEEP", version 1, 3 bytes per slot (0 not seen, 1 there, 2 absent)
+        if (pinSlots == 10 && p + 8 + 30 <= d.size() && memcmp(&d[p], "KEEP", 4) == 0 && *(const DWORD*)&d[p + 4] == 1) {
+            p += 8;
+            for (int s = 0; s < 10; ++s)
+                for (int k = 0; k < 3; ++k, ++p) g_file[s].keepers[k] = d[p] <= 2 ? d[p] : 0;
+        }
         SDLOG(0, "gameMap: %s read\n", g_filePath.c_str());
     }
 
@@ -506,6 +527,7 @@ namespace Look {
         sd.used = true;
         memcpy(sd.name, g_activeName, sizeof(sd.name));
         sd.pins = g_pins;
+        memcpy(sd.keepers, g_keepers, sizeof(sd.keepers));
         sd.cells.clear();
         sd.cells.reserve(g_cellCount);
         for (int p = 0; p < kPlaceCount; ++p)
@@ -545,6 +567,7 @@ namespace Look {
         for (int s = 0; s < 10; ++s) total += 40 + g_file[s].cells.size() * sizeof(CellRec);
         total += 8;                                  // the pins: "PINS", version, then a count and the pins of each slot
         for (int s = 0; s < 10; ++s) total += 4 + g_file[s].pins.size() * sizeof(PinRec);
+        total += 8 + 30;                             // the Fire Keepers: "KEEP", version, 3 bytes per slot
         j->data.resize(total);
         BYTE* p = &j->data[0];
         memcpy(p, "DSMP", 4); *(DWORD*)(p + 4) = 1; *(DWORD*)(p + 8) = 10; p += 12;
@@ -561,6 +584,8 @@ namespace Look {
             *(DWORD*)p = n; p += 4;
             if (n) { memcpy(p, &g_file[s].pins[0], n * sizeof(PinRec)); p += n * sizeof(PinRec); }
         }
+        memcpy(p, "KEEP", 4); *(DWORD*)(p + 4) = 1; p += 8;
+        for (int s = 0; s < 10; ++s) { memcpy(p, g_file[s].keepers, 3); p += 3; }
         HANDLE t = CreateThread(NULL, 0, writerThread, j, 0, NULL);
         if (!t) { delete j; InterlockedExchange(&g_writing, 0); return false; }
         CloseHandle(t);
@@ -578,6 +603,8 @@ namespace Look {
         }
         clearCells();
         g_pins.clear();
+        memset(g_keepers, 0, sizeof(g_keepers));
+        memset(g_keeperSince, 0, sizeof(g_keeperSince));
         g_activeSlot = slot;
         memcpy(g_activeName, name, sizeof(g_activeName));
         g_activeName[15] = 0;
@@ -585,6 +612,7 @@ namespace Look {
         bool same = sd.used && wcsncmp(sd.name, g_activeName, 16) == 0;
         if (same) {
             g_pins = sd.pins;
+            memcpy(g_keepers, sd.keepers, sizeof(g_keepers));
             for (size_t i = 0; i < sd.cells.size(); ++i) {
                 const CellRec& c = sd.cells[i];
                 const int p = placeIndex(c.place);
@@ -663,6 +691,46 @@ namespace Look {
                     }
             if (!rdD(node, node)) return;
         }
+    }
+
+    // ---- Fire Keepers: a bonfire whose Fire Keeper is dead ("Fire Keeper is absent. Cannot light bonfire.") ----
+    // The bonfire list's entry: +0xD = 1 while the keeper is there, but only while its area is loaded (+0xE != 0; the game
+    // sets both together and clears both when the area unloads). So, about once a second, and only while the hero is in one
+    // of the three keepers' areas (the area the game names, as on the map), the bonfire list is read. The last state seen
+    // there is kept per character in DSfixMap.dat: the map shows it anywhere.
+    DWORD g_keeperTick = 0;
+    void watchKeepers(DWORD now) {
+        if (now - g_keeperTick < 1000) return;
+        g_keeperTick = now;
+        bool here = false;
+        if (g_heroPlace >= 0)
+            for (int k = 0; k < kKeepers; ++k) if (kPlaces[g_heroPlace].id == kKeeperPlace[k]) here = true;
+        if (!here) { memset(g_keeperSince, 0, sizeof(g_keeperSince)); return; }   // elsewhere: nothing more is read
+        bool seen[kKeepers] = { false, false, false };
+        DWORD root = 0, db = 0, head = 0, node = 0;
+        if (!rdD(kBonfireRoot, root) || !root || !rdD(root + 0xB48, db) || !db || !rdD(db + 0x24, head) || !head) return;
+        if (!rdD(head, node)) return;
+        for (int n = 0; node && node != head && n < 256; ++n) {
+            DWORD item = 0, e = 0, f = 0;
+            if (!rdD(node + 8, item)) return;
+            if (item && rdD(item + 4, e))
+                for (int k = 0; k < kKeepers; ++k) {
+                    if (e != kKeeperBonfire[k] || !rdD(item + 0xC, f)) continue;
+                    if (((f >> 16) & 0xFF) == 0) continue;                 // its area is not loaded: +0xD says nothing
+                    seen[k] = true;
+                    if (!g_keeperSince[k]) g_keeperSince[k] = now | 1;
+                    if (now - g_keeperSince[k] < 3000) continue;          // just loaded: the game may not be done
+                    const BYTE st = ((f >> 8) & 0xFF) ? 1 : 2;
+                    if (st != g_keepers[k]) { g_keepers[k] = st; g_dirty = true; }
+                }
+            if (!rdD(node, node)) return;
+        }
+        for (int k = 0; k < kKeepers; ++k) if (!seen[k]) g_keeperSince[k] = 0;
+    }
+    // the bonfire (table index) has no Fire Keeper (the map's red X)
+    bool keeperAbsent(int b) {
+        for (int k = 0; k < kKeepers; ++k) if (kBonfires[b].entity == kKeeperBonfire[k]) return g_keepers[k] == 2;
+        return false;
     }
 
     // the areas with something to show, in page order
@@ -861,8 +929,8 @@ namespace Look {
     IDirect3DTexture9* g_blob = NULL;           // soft round spot (icons)
     IDirect3DTexture9* g_bump = NULL;           // the ground spot: alpha = smooth bump, colour white inside the circle
     IDirect3DTexture9* g_bonfireTex = NULL;
-    enum { SHAPE_HERO, SHAPE_UP, SHAPE_STAIN_ARROW, SHAPE_COUNT };
-    IDirect3DTexture9* g_shape[SHAPE_COUNT] = { NULL, NULL, NULL };
+    enum { SHAPE_HERO, SHAPE_UP, SHAPE_STAIN_ARROW, SHAPE_X, SHAPE_COUNT };
+    IDirect3DTexture9* g_shape[SHAPE_COUNT] = { NULL, NULL, NULL, NULL };
     bool g_bonfireTried = false;
     IDirect3DTexture9* g_pinTex = NULL;         // the 8 medallions (4 x 2), premultiplied, with smaller copies
     bool g_pinTried = false;
@@ -971,9 +1039,21 @@ namespace Look {
     bool makeShapes(IDirect3DDevice9* dev) {
         static const float arrow[8] = { 0.50f, 0.08f, 0.86f, 0.90f, 0.50f, 0.70f, 0.14f, 0.90f };   // tip, right, notch, left
         static const float up[6] = { 0.50f, 0.14f, 0.88f, 0.82f, 0.12f, 0.82f };
+        // the red X (a Fire Keeper is absent): a plus with arms 0.09 wide, turned 45 degrees
+        float x[24];
+        {
+            const float h = 0.085f, L = 0.40f, c = 0.70710678f;
+            const float plus[24] = { -h, -L, h, -L, h, -h, L, -h, L, h, h, h, h, L, -h, L, -h, h, -L, h, -L, -h, -h, -h };
+            for (int i = 0; i < 12; ++i) {
+                const float px = plus[2 * i], py = plus[2 * i + 1];
+                x[2 * i] = 0.5f + (px - py) * c;
+                x[2 * i + 1] = 0.5f + (px + py) * c;
+            }
+        }
         return makeShape(dev, SHAPE_HERO, arrow, 4, Look::kHero, Look::kHeroOutline, 0.045f) &&
             makeShape(dev, SHAPE_UP, up, 3, Look::kUpMark, Look::kHeroOutline, 0.06f) &&
-            makeShape(dev, SHAPE_STAIN_ARROW, arrow, 4, Look::kStain, Look::kHeroOutline, 0.05f);
+            makeShape(dev, SHAPE_STAIN_ARROW, arrow, 4, Look::kStain, Look::kHeroOutline, 0.05f) &&
+            makeShape(dev, SHAPE_X, x, 12, Look::kKeeperX, Look::kHeroOutline, 0.035f);
     }
     // a textured square turned so that the texture's top points along (dx, dy) (screen, unit length)
     void quadDir(float cx, float cy, float half, float dx, float dy, D3DCOLOR c) {
@@ -1861,6 +1941,7 @@ namespace Look {
             const wchar_t* lText[64];
             wchar_t lBuf[64][96];                               // "name (K:n)": n = the Estus the bonfire gives, 5 / 10 / 15 / 20
             LRect lRect[64];
+            bool lRed[64];
             if (g_page == 0 || g_zoom[1] <= Look::kBonfireNameWorldZoom) {
                 const float lh = Look::kBonfireNameSize * s * 1.2f, px_ = Look::kNamePadX * s, py_ = Look::kNamePadY * s;
                 for (int i = 0; i < nb; ++i) {
@@ -1878,7 +1959,7 @@ namespace Look {
                     const LRect* pick = labelSpot(bx[i], by[i], bsz[i] * 0.32f, by[i] - bsz[i] * 0.5f, by[i] + bsz[i] * 0.45f, w, h, &spot);
                     if (!pick) continue;
                     addObst(*pick);
-                    lText[nl] = name; lRect[nl] = *pick; ++nl;
+                    lText[nl] = name; lRect[nl] = *pick; lRed[nl] = keeperAbsent(b); ++nl;
                 }
             }
             // pin labels (up to two lines of 17): under the medallion, else above, right or left of it, else left out
@@ -1906,10 +1987,18 @@ namespace Look {
             if (g_bonfireTex) setDrawStates(dev, g_bonfireTex, false);
             else setDrawStates(dev, g_blob, false);
             for (int i = 0; i < nb; ++i) {
-                const float k = bBelow[i] ? Look::kBonfireBelowDark : 1.0f, sz = bsz[i];
+                const float k = (bBelow[i] ? Look::kBonfireBelowDark : 1.0f) * (keeperAbsent(bi[i]) ? Look::kKeeperDark : 1.0f), sz = bsz[i];
                 const DWORD a = (DWORD)(fade * 255.0f + 0.5f), c = (DWORD)(fade * k * 255.0f + 0.5f);
                 const D3DCOLOR col = g_bonfireTex ? D3DCOLOR_ARGB(a, c, c, c) : pm(D3DCOLOR_ARGB(255, 255, 150, 50), fade * k);
                 quad(bx[i] - sz * 0.5f, by[i] - sz * 0.5f, bx[i] + sz * 0.5f, by[i] + sz * 0.5f, col);
+            }
+            flush(dev);
+            setDrawStates(dev, g_shape[SHAPE_X], false);
+            for (int i = 0; i < nb; ++i) {                      // the red X: its Fire Keeper is absent
+                if (!keeperAbsent(bi[i])) continue;
+                const float m = bsz[i] * Look::kKeeperXSize * 0.5f;
+                const DWORD f8 = (DWORD)(fade * 255.0f + 0.5f);
+                quad(bx[i] - m, by[i] - m, bx[i] + m, by[i] + m, D3DCOLOR_ARGB(f8, f8, f8, f8));
             }
             flush(dev);
             setDrawStates(dev, g_shape[SHAPE_UP], false);
@@ -1944,7 +2033,7 @@ namespace Look {
                 for (int i = 0; i < nl; ++i) {
                     const LRect& r = lRect[i];
                     quad(r.l, r.t, r.r, r.b, pm(Look::kNameBack, fade));
-                    const D3DCOLOR c = pm(Look::kNameLine, fade);
+                    const D3DCOLOR c = pm(lRed[i] ? Look::kKeeperNameLine : Look::kNameLine, fade);
                     quad(r.l, r.t, r.r, r.t + lw, c); quad(r.l, r.b - lw, r.r, r.b, c);
                     quad(r.l, r.t + lw, r.l + lw, r.b - lw, c); quad(r.r - lw, r.t + lw, r.r, r.b - lw, c);
                 }
@@ -1967,7 +2056,7 @@ namespace Look {
             }
             for (int i = 0; i < na; ++i) text(1, aText[i], ax[i], ay[i], Look::kLabel, DT_CENTER | DT_TOP, fade);
             for (int i = 0; i < nl; ++i)
-                text(3, lText[i], (lRect[i].l + lRect[i].r) * 0.5f, lRect[i].t + Look::kNamePadY * s, Look::kBonfireName, DT_CENTER | DT_TOP, fade);
+                text(3, lText[i], (lRect[i].l + lRect[i].r) * 0.5f, lRect[i].t + Look::kNamePadY * s, lRed[i] ? Look::kKeeperName : Look::kBonfireName, DT_CENTER | DT_TOP, fade);
 
             // soul remains: a green spot, or an arrow on the edge pointing to it
             if (g_stainHas && onPage(g_stainPlace)) {
@@ -2537,6 +2626,7 @@ namespace Look {
             }
         }
         if (now - g_stainCheckTick > 500) { g_stainCheckTick = now; readStain(true); }
+        watchKeepers(now);                              // the Fire Keepers: once a second, and only in their 3 areas
         if (g_dirty && now - g_lastSaveTick > 60000) { g_lastSaveTick = now; saveFile(); }
         if (g_writing == 2) { InterlockedExchange(&g_writing, 0); SDLOG(0, "gameMap: could not write %s\n", g_filePath.c_str()); }
 

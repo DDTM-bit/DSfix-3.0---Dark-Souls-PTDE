@@ -41,30 +41,9 @@ To ensure maximum stability on modern machines, configure your environment using
 * **Multiple Covenant Offerings:** `covenantOfferings` (off by default) turns the "Offer ...?" question at a covenant altar or leader into the game's own number picker, so many Sunlight Medals, Dragon Scales, Eyes of Death, Souvenirs of Reprisal, or many Humanity, can be handed over in one step instead of answering Yes once per item. Six covenants take offerings and all six are covered: Warriors of Sunlight, Darkwraith, Path of the Dragon, Gravelord Servant, Blade of the Darkmoon and Chaos Servant. Forest Hunter ranks up by killing invaders rather than by offerings, and Way of White and Princess's Guard have no ranks. The picker never offers enough to reach the next covenant rank, so the offering that ranks you up is always the game's own unchanged single question and its reward arrives exactly as it always did; below rank 1 the picker stops at 9, between the first two ranks at 29, between the next two at 79, and after the last rank it goes up to 100. The number offered is never more than you hold, the game's own question is kept word for word so it reads correctly in all ten languages, and the window follows the `menuScale` setting. The items taken and the devotion gained are written in the same single step, so the two can never disagree, and if anything does not add up the offering is simply left as a normal single one. Before anything is patched, both places in the game's code are compared against the bytes this build should have, and if either differs nothing is changed and the feature stays off. The addresses and the technique come from the Dark Souls Overhaul team's research (metal-crow and Sean Pesce, "Multi-Tribute"); the implementation here is DSfix 3.0's own code.
 * **Durability Bars for weapons:** Shows a thin Dark Souls 3 style bar under each weapon slot. The dark red part shrinks as the weapon loses durability, and the dark background stays. An empty hand has no bar. While two-handing, the bar fades together with the other hand's weapon icon. If a bow or crossbow is equipped, the arrow/bolt box and its count move down so they stay below the bar. The bars are part of the bottom-left HUD, so every scaling option apply to them.
 ### In-game map (gameMap)
-Open the gesture window (Back) while you play and a map appears next to it, a little see-through
-(the game is not paused; the bottom-left HUD fades out meanwhile).
-
-- Shows only the ground you have explored; it is revealed as you walk and saved per character
-  in `DSfixMap.dat`, next to your save file.
-- Shows height by brightness: ground at your level is bright, lower ground is darker, higher ground
-  is fainter, so floors stacked above each other stay readable.
-- Area pages (Firelink Shrine, Undead Burg, ...) and a world page of all Lordran, with area names.
-  Anor Londo is at the top.
-- Your lit bonfires (read from the game, so loading an older save shows that save's bonfires),
-  with their names and their kindle level, for example `Anor Londo (K:10)`: K is the number of
-  Estus Flask charges the bonfire gives (5 lit, 10 / 15 / 20 kindled). Lower or higher bonfires are marked.
-- Your soul remains (green spot, or an arrow on the edge when off the map) and your direction.
-- **Map pins:** put your own markers on the map ("Come back with Master Key", "Merchant", "Hard enemy").
-  Choose one of 8 medallions and write up to 34 letters (shown in two lines under the pin).
-  Pins go only on the ground you have explored, never on top of each other or a bonfire, and they
-  zoom, move and change page with the map like bonfires. Saved per character in `DSfixMap.dat`.
- 
-- No fast travel: the map only shows.
-- Controls: pad RS move, LT/RT zoom, LB/RB area, R3 area/world. Mouse drag move, wheel zoom,
-  `,` / `.` area, `M` area/world.
-- Characters you played before using the map start with an empty map (their lit bonfires show anyway).
-
-`gameMap 1` in DSfix.ini to turn it on (default 0 = off, nothing installed).
+Opening the gesture menu displays a semi-transparent in-game map that reveals the world as you explore, with separate views for individual areas and all of Lordran. 
+It uses brightness to show elevation and tracks your direction, lost souls, and lit bonfires—including their kindle levels and whether a Fire Keeper has died. 
+You can also place custom labeled pins on explored ground.
 
 * **Camera Distance: Set how far the camera is from your character while you play: closer than vanilla (down to 0.5×) or farther (up to 2×). By default, the lock-on camera keeps the vanilla distance and moves in smoothly when you lock on. Set cameraDistanceLockOn 1 to keep your distance during lock-on too. A key in DSfixKeys.ini (toggleCameraDistance) switches between your distance and vanilla at any time, with a smooth move. Wall collision works as before, and cutscenes and bow aiming are not changed. At cameraDistance 1.0 the feature is off and nothing is patched.
 * **Sun/Moon & Water Issue Fixed:** Now they render perfectly at their intended screen-space locations. For resolution 1440p or 4K, DoF Override Resolution must not be 0 otherwise the water stays at vanilla quality.
