@@ -407,13 +407,11 @@ namespace Look {
 // Then the pins: "PINS", version 1, for each of the 10 slots a count and that many PinRec. An older DSfix reads the
 // slots and does not look further (it keeps working, without the pins).
 // =====================================================================================================================
-    // the Fire Keepers seen by the character in play (see watchKeepers): 0 = not seen yet, 1 = there, 2 = absent
+    // the Fire Keepers (see readKeepers): true = absent (her bonfire gets the red X)
     const int kKeepers = 3;
     const DWORD kKeeperBonfire[kKeepers] = { 1021960, 1401960, 1511960 };   // Firelink Shrine, Daughter of Chaos, Anor Londo
-    const WORD kKeeperPlace[kKeepers] = { 1020, 1401, 1510 };                 // their areas: Firelink Shrine, Quelaag's Domain, Anor Londo
-    BYTE g_keepers[kKeepers] = { 0, 0, 0 };
-    DWORD g_keeperSince[kKeepers] = { 0, 0, 0 };   // its area loaded since (0: not loaded)
-    struct SlotData { bool used; wchar_t name[16]; std::vector<CellRec> cells; std::vector<PinRec> pins; BYTE keepers[3]; };
+    bool g_keepers[kKeepers] = { false, false, false };
+    struct SlotData { bool used; wchar_t name[16]; std::vector<CellRec> cells; std::vector<PinRec> pins; };
     SlotData g_file[10];
     bool g_fileRead = false;
     std::string g_filePath;                           // empty = no save folder found: kept only while the game runs
@@ -454,10 +452,7 @@ namespace Look {
 
     void readFile() {
         g_fileRead = true;
-        for (int s = 0; s < 10; ++s) {
-            g_file[s].used = false; g_file[s].name[0] = 0; g_file[s].cells.clear(); g_file[s].pins.clear();
-            memset(g_file[s].keepers, 0, sizeof(g_file[s].keepers));
-        }
+        for (int s = 0; s < 10; ++s) { g_file[s].used = false; g_file[s].name[0] = 0; g_file[s].cells.clear(); g_file[s].pins.clear(); }
         const std::string folder = findSaveFolder();
         if (folder.empty()) { SDLOG(0, "gameMap: no save folder found, the explored map is kept only while the game runs\n"); return; }
         g_filePath = folder + "\\DSfixMap.dat";
@@ -493,10 +488,9 @@ namespace Look {
             ++whole;
         }
         // the pins (after the 10 slots)
-        int pinSlots = 0;                            // slots whose pins were read completely
         if (whole == 10 && p + 8 <= d.size() && memcmp(&d[p], "PINS", 4) == 0 && *(const DWORD*)&d[p + 4] == 1) {
             p += 8;
-            for (int s = 0; s < 10; ++s, ++pinSlots) {
+            for (int s = 0; s < 10; ++s) {
                 if (p + 4 > d.size()) break;
                 const DWORD n = *(const DWORD*)&d[p]; p += 4;
                 if (n > (DWORD)kPinMax || p + (size_t)n * sizeof(PinRec) > d.size()) break;
@@ -511,12 +505,6 @@ namespace Look {
                 }
             }
         }
-        // the Fire Keepers seen (after the pins): "KEEP", version 1, 3 bytes per slot (0 not seen, 1 there, 2 absent)
-        if (pinSlots == 10 && p + 8 + 30 <= d.size() && memcmp(&d[p], "KEEP", 4) == 0 && *(const DWORD*)&d[p + 4] == 1) {
-            p += 8;
-            for (int s = 0; s < 10; ++s)
-                for (int k = 0; k < 3; ++k, ++p) g_file[s].keepers[k] = d[p] <= 2 ? d[p] : 0;
-        }
         SDLOG(0, "gameMap: %s read\n", g_filePath.c_str());
     }
 
@@ -527,7 +515,6 @@ namespace Look {
         sd.used = true;
         memcpy(sd.name, g_activeName, sizeof(sd.name));
         sd.pins = g_pins;
-        memcpy(sd.keepers, g_keepers, sizeof(sd.keepers));
         sd.cells.clear();
         sd.cells.reserve(g_cellCount);
         for (int p = 0; p < kPlaceCount; ++p)
@@ -567,7 +554,6 @@ namespace Look {
         for (int s = 0; s < 10; ++s) total += 40 + g_file[s].cells.size() * sizeof(CellRec);
         total += 8;                                  // the pins: "PINS", version, then a count and the pins of each slot
         for (int s = 0; s < 10; ++s) total += 4 + g_file[s].pins.size() * sizeof(PinRec);
-        total += 8 + 30;                             // the Fire Keepers: "KEEP", version, 3 bytes per slot
         j->data.resize(total);
         BYTE* p = &j->data[0];
         memcpy(p, "DSMP", 4); *(DWORD*)(p + 4) = 1; *(DWORD*)(p + 8) = 10; p += 12;
@@ -584,8 +570,6 @@ namespace Look {
             *(DWORD*)p = n; p += 4;
             if (n) { memcpy(p, &g_file[s].pins[0], n * sizeof(PinRec)); p += n * sizeof(PinRec); }
         }
-        memcpy(p, "KEEP", 4); *(DWORD*)(p + 4) = 1; p += 8;
-        for (int s = 0; s < 10; ++s) { memcpy(p, g_file[s].keepers, 3); p += 3; }
         HANDLE t = CreateThread(NULL, 0, writerThread, j, 0, NULL);
         if (!t) { delete j; InterlockedExchange(&g_writing, 0); return false; }
         CloseHandle(t);
@@ -604,7 +588,6 @@ namespace Look {
         clearCells();
         g_pins.clear();
         memset(g_keepers, 0, sizeof(g_keepers));
-        memset(g_keeperSince, 0, sizeof(g_keeperSince));
         g_activeSlot = slot;
         memcpy(g_activeName, name, sizeof(g_activeName));
         g_activeName[15] = 0;
@@ -612,7 +595,6 @@ namespace Look {
         bool same = sd.used && wcsncmp(sd.name, g_activeName, 16) == 0;
         if (same) {
             g_pins = sd.pins;
-            memcpy(g_keepers, sd.keepers, sizeof(g_keepers));
             for (size_t i = 0; i < sd.cells.size(); ++i) {
                 const CellRec& c = sd.cells[i];
                 const int p = placeIndex(c.place);
@@ -694,42 +676,43 @@ namespace Look {
     }
 
     // ---- Fire Keepers: a bonfire whose Fire Keeper is dead ("Fire Keeper is absent. Cannot light bonfire.") ----
-    // The bonfire list's entry: +0xD = 1 while the keeper is there, but only while its area is loaded (+0xE != 0; the game
-    // sets both together and clears both when the area unloads). So, about once a second, and only while the hero is in one
-    // of the three keepers' areas (the area the game names, as on the map), the bonfire list is read. The last state seen
-    // there is kept per character in DSfixMap.dat: the map shows it anywhere.
-    DWORD g_keeperTick = 0;
-    void watchKeepers(DWORD now) {
-        if (now - g_keeperTick < 1000) return;
-        g_keeperTick = now;
-        bool here = false;
-        if (g_heroPlace >= 0)
-            for (int k = 0; k < kKeepers; ++k) if (kPlaces[g_heroPlace].id == kKeeperPlace[k]) here = true;
-        if (!here) { memset(g_keeperSince, 0, sizeof(g_keeperSince)); return; }   // elsewhere: nothing more is read
-        bool seen[kKeepers] = { false, false, false };
-        DWORD root = 0, db = 0, head = 0, node = 0;
-        if (!rdD(kBonfireRoot, root) || !root || !rdD(root + 0xB48, db) || !db || !rdD(db + 0x24, head) || !head) return;
-        if (!rdD(head, node)) return;
-        for (int n = 0; node && node != head && n < 256; ++n) {
-            DWORD item = 0, e = 0, f = 0;
-            if (!rdD(node + 8, item)) return;
-            if (item && rdD(item + 4, e))
-                for (int k = 0; k < kKeepers; ++k) {
-                    if (e != kKeeperBonfire[k] || !rdD(item + 0xC, f)) continue;
-                    if (((f >> 16) & 0xFF) == 0) continue;                 // its area is not loaded: +0xD says nothing
-                    seen[k] = true;
-                    if (!g_keeperSince[k]) g_keeperSince[k] = now | 1;
-                    if (now - g_keeperSince[k] < 3000) continue;          // just loaded: the game may not be done
-                    const BYTE st = ((f >> 8) & 0xFF) ? 1 : 2;
-                    if (st != g_keepers[k]) { g_keepers[k] = st; g_dirty = true; }
-                }
-            if (!rdD(node, node)) return;
+    // The game keeps each keeper's state in event flags (in the character's save, right anywhere in the game), read with
+    // the game's own reader (0x00D38C40: eax = the flag manager, cl = 0, argument: the flag) when the map opens.
+    // Anastacia: 1310 = her normal state (off once she is dead, by Lautrec or by you); Daughter of Chaos: 1272 = dead;
+    // Darkmoon Knightess: 1034 = dead.
+    const DWORD kFlagMan = 0x0137D7D4;
+    const DWORD kKeeperFlag[kKeepers] = { 1310, 1272, 1034 };
+    const bool kKeeperAbsentWhenOn[kKeepers] = { false, true, true };
+    __declspec(naked) DWORD __stdcall flagGetCall(DWORD man, DWORD flag) {
+        __asm {
+            pushad
+            mov eax, dword ptr[esp + 0x24]
+            push dword ptr[esp + 0x28]
+            xor ecx, ecx
+            mov edx, 0x00D38C40
+            call edx
+            movzx eax, al
+            mov dword ptr[esp + 0x1C], eax
+            popad
+            ret 8
         }
-        for (int k = 0; k < kKeepers; ++k) if (!seen[k]) g_keeperSince[k] = 0;
+    }
+    bool flagRead(DWORD man, DWORD flag, bool& on) {
+        __try { on = flagGetCall(man, flag) != 0; return true; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+    void readKeepers() {
+        DWORD man = 0;
+        BYTE ready = 0;
+        if (!rdD(kFlagMan, man) || !man || !rdBlock(man + 0x114, &ready, 1) || !ready) return;   // not ready: as before
+        for (int k = 0; k < kKeepers; ++k) {
+            bool on = false;
+            if (flagRead(man, kKeeperFlag[k], on)) g_keepers[k] = on == kKeeperAbsentWhenOn[k];
+        }
     }
     // the bonfire (table index) has no Fire Keeper (the map's red X)
     bool keeperAbsent(int b) {
-        for (int k = 0; k < kKeepers; ++k) if (kBonfires[b].entity == kKeeperBonfire[k]) return g_keepers[k] == 2;
+        for (int k = 0; k < kKeepers; ++k) if (kBonfires[b].entity == kKeeperBonfire[k]) return g_keepers[k];
         return false;
     }
 
@@ -2626,7 +2609,6 @@ namespace Look {
             }
         }
         if (now - g_stainCheckTick > 500) { g_stainCheckTick = now; readStain(true); }
-        watchKeepers(now);                              // the Fire Keepers: once a second, and only in their 3 areas
         if (g_dirty && now - g_lastSaveTick > 60000) { g_lastSaveTick = now; saveFile(); }
         if (g_writing == 2) { InterlockedExchange(&g_writing, 0); SDLOG(0, "gameMap: could not write %s\n", g_filePath.c_str()); }
 
@@ -2634,6 +2616,7 @@ namespace Look {
         const int gw = menuDword(0xEC);
         const bool shownNow = gw != 0 && gw != 7 && gw != 9;
         if (shownNow && !g_shown) {
+            readKeepers();                              // the Fire Keepers (their flags), once per map opening
             readLitBonfires();
             for (int b = 0; b < kBonfireCount; ++b) {
                 g_bonfirePlace[b] = placeIndex(kBonfires[b].place);
