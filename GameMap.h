@@ -1586,7 +1586,7 @@ namespace Look {
         if (g_pm == PM_PICK) {
             help = padHelp ? (g_pinSel >= 0 ? L"D-pad  Choose     A  Change     B  Back" : L"D-pad  Choose     A  Place     B  Back")
                            : L"Click  Choose     Esc  Back";
-            title = g_pinSel >= 0 ? L"Change medallion" : (g_pickFull ? L"100 pins: delete one first" : L"New pin");
+            title = g_pinSel >= 0 ? L"Change pin" : (g_pickFull ? L"100 pins: delete one first" : L"New pin");
             bw = 4 * cell + 3 * gap + 2 * pad;
             bh = pad + th + 2 * cell + gap + hh + pad * 1.5f;
         }
@@ -1679,7 +1679,7 @@ namespace Look {
         // texts
         text(1, title, (l + r) * 0.5f, t + pad * 0.7f, Look::kBoxText, DT_CENTER | DT_TOP, fade);
         if (g_pm == PM_MENU) {
-            const wchar_t* items[4] = { L"Edit text", L"Change medallion", L"Delete", L"Back" };
+            const wchar_t* items[4] = { L"Edit text", L"Change pin", L"Delete", L"Back" };
             for (int i = 0; i < 4; ++i) text(1, items[i], (l + r) * 0.5f, g_itemT[i] + (ih - fy) * 0.5f, Look::kBoxText, DT_CENTER | DT_TOP, fade);
         }
         else if (g_pm == PM_TEXT) {
