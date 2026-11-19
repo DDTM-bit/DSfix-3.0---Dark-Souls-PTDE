@@ -11,6 +11,9 @@
 #define TIMESTAMP_LENGTH 12
 #define TIMESTAMP_LENGTH_STR EXPAND_AND_QUOTE(TIMESTAMP_LENGTH)
 
+// gameMap's file next to the save; backed up with the save files, as "[timestamp]_DSfixMap.dat.bak"
+#define MAP_FILE "DSfixMap.dat"
+
 SaveManager SaveManager::instance;
 
 void SaveManager::init() {
@@ -82,6 +85,10 @@ void SaveManager::tick() {
 						}
 					}
 				}
+				struct _stat mapInfo;
+				if (!shouldBackup && _stat((userSaveFolder + "\\" MAP_FILE).c_str(), &mapInfo) == 0 && mapInfo.st_mtime > lastBackup) {
+					shouldBackup = true;
+				}
 			}
 
 			if (shouldBackup) {
@@ -99,7 +106,7 @@ void SaveManager::tick() {
 
 time_t SaveManager::getLastBackupTime() {
 	if(lastBackupTime == 0) {
-		vector<string> backupFiles = getSaveFiles(".bak");
+		vector<string> backupFiles = getSaveFiles(".sl2.bak");
 		if(!backupFiles.empty()) {
 			string fn = getFileNameFromPath(backupFiles.front());
 			unsigned long tempTime = 0;
@@ -152,15 +159,24 @@ void SaveManager::backup(const time_t curTime) {
 			SDLOG(0, "ERROR: SaveManager failed to back up file! (Copying %s to %s)\n", saveFiles[i].c_str(), buffer);
 		}
 	}
+	// the map file (gameMap), with the same timestamp, if it is there
+	const string mapPath = userSaveFolder + "\\" MAP_FILE;
+	if (GetFileAttributes(mapPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+		sprintf_s(buffer, "%s\\%0" TIMESTAMP_LENGTH_STR "lu_" MAP_FILE ".bak", userSaveFolder.c_str(), (unsigned long)curTime);
+		CopyFile(mapPath.c_str(), buffer, false);
+	}
 	removeOldBackups();
 }
 
 void SaveManager::removeOldBackups() {
-	// Clean up standard .bak files
-	vector<string> backupFiles = getSaveFiles(".bak");
-	if (Settings::get().getMaxBackups() < backupFiles.size()) {
-		for (size_t i = Settings::get().getMaxBackups(); i < backupFiles.size(); ++i) {
-			DeleteFile(backupFiles[i].c_str());
+	// Clean up standard .bak files (the save files, and the map files on their own: maxBackups of each)
+	const char* kinds[2] = { ".sl2.bak", "_" MAP_FILE ".bak" };
+	for (int k = 0; k < 2; ++k) {
+		vector<string> backupFiles = getSaveFiles(kinds[k]);
+		if (Settings::get().getMaxBackups() < backupFiles.size()) {
+			for (size_t i = Settings::get().getMaxBackups(); i < backupFiles.size(); ++i) {
+				DeleteFile(backupFiles[i].c_str());
+			}
 		}
 	}
 

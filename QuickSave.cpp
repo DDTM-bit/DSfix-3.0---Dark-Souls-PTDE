@@ -12,6 +12,10 @@
 #include <algorithm>
 #pragma comment(lib, "advapi32.lib")
 
+// gameMap (RenderstateManager.cpp, GameMap.h): the map file as it is now, and one character's map put back from a copy
+bool gameMapSnapshot(int slot, std::vector<BYTE>& out);
+bool gameMapQuickLoad(const std::vector<BYTE>& qs, int slot, const wchar_t* name);
+
 // =====================================================================================================================
 // LOOK OF THE QUICK SAVE / QUICK LOAD MESSAGES - everything that decides how they look is in this block. Sizes and
 // places are parts of the screen (height for sizes, width / height for the place), so they look the same at every
@@ -54,6 +58,9 @@ namespace QuickSaveLook {
 // The quickSaveKey makes the game save the current character exactly as it does on its own (the same request its event
 // scripts make with "SaveRequest"), waits until the game has written its save file, then copies that character - and
 // only that character - into QuickSave\QS_DRAKS0005 next to the save file. Every quick save overwrites that file.
+// With gameMap on, the map file as it is at that moment (all 10 slots, the character in play up to date) goes into
+// QuickSave\DSfixMap.dat next to it, overwritten the same way; without a map, an older QuickSave\DSfixMap.dat is
+// removed, so a quick load never takes the map of another quick save.
 // Nothing in the game's save file is changed.
 //
 // THE GAME'S SAVE (checked in DARKSOULS.exe)
@@ -119,6 +126,8 @@ namespace QuickSaveLook {
 //      from the quick save, the slot is marked used and the menu data's MD5 is computed again. The other nine slots
 //      and the rest of the menu data stay exactly as the game wrote them. The game reads a character from the file when
 //      it is loaded, so "Load Game" then starts the quick save.
+//      Then, if QuickSave\DSfixMap.dat is there and holds this character in this slot, only that slot of the map goes
+//      back into DSfixMap.dat (the other nine stay); the map file is not backed up for a quick load.
 //   4. The automatic load: DSfix then does on the title screen what you would do - "Load Game", then the character:
 //      - The title menu (FrpgMenuDlgTitle) is found through its per-frame update: its vtable slot 16 (0x011C2914, the
 //        update 0x00C77D90) is pointed at a small stub that notes the dialog and jumps on to the game's update.
@@ -273,7 +282,7 @@ namespace {
     // worker result (written by the copy thread, read by the render thread)
     volatile LONG g_workDone = 0;      // 0 = running, 1 = success, 2 = failed
     char g_workMsg[256] = "";
-    struct Job { std::string savePath; int slot; };
+    struct Job { std::string savePath; int slot; bool hasMap; std::vector<BYTE> map; };
 
     // message on screen
     const char* g_msgText = NULL;
@@ -493,6 +502,10 @@ namespace {
             const std::string dir = job->savePath.substr(0, cut) + "\\QuickSave";
             CreateDirectoryA(dir.c_str(), NULL);
             if (!writeFileReplace(dir + "\\QS_DRAKS0005", qs, why, sizeof(why))) continue;
+            // the map (gameMap) of this quick save; none (or not written): no older one is left there
+            const std::string mapPath = dir + "\\DSfixMap.dat";
+            char mapWhy[256];
+            if (!job->hasMap || !writeFileReplace(mapPath, job->map, mapWhy, sizeof(mapWhy))) DeleteFileA(mapPath.c_str());
             char nm[64] = "";
             WideCharToMultiByte(CP_UTF8, 0, name.c_str(), -1, nm, sizeof(nm), NULL, NULL);
             sprintf_s(why, "slot %d (\"%s\") copied to %s\\QS_DRAKS0005", job->slot, nm, dir.c_str());
@@ -623,6 +636,7 @@ namespace {
                         Job* job = new Job;
                         job->savePath = g_candidates[i].path;
                         job->slot = g_slot;
+                        job->hasMap = gameMapSnapshot(g_slot, job->map);
                         g_workDone = 0;
                         HANDLE th = CreateThread(NULL, 0, copyThread, job, 0, NULL);
                         if (!th) {
@@ -847,6 +861,9 @@ namespace {
         // 3. read it back
         std::vector<BYTE> back;
         if (!readWholeFile(g_qlSavePath, back, err) || back != d) { retry = false; sprintf_s(why, whyLen, "the save file does not read back as written - restore it from the BeforeQuickLoad file in %s", dir.c_str()); return false; }
+        // 4. the character's map (gameMap) from the quick save's map file, if there is one: only this slot, no backup
+        std::vector<BYTE> map;
+        if (readWholeFile(dir + "\\DSfixMap.dat", map, err)) gameMapQuickLoad(map, g_qlSlot, g_qlName.c_str());
         sprintf_s(why, whyLen, "slot %d (\"%s\") put back into %s", g_qlSlot, narrow(g_qlName).c_str(), g_qlSavePath.c_str());
         return true;
     }

@@ -450,39 +450,23 @@ namespace Look {
         return best;
     }
 
-    void readFile() {
-        g_fileRead = true;
-        for (int s = 0; s < 10; ++s) { g_file[s].used = false; g_file[s].name[0] = 0; g_file[s].cells.clear(); g_file[s].pins.clear(); }
-        const std::string folder = findSaveFolder();
-        if (folder.empty()) { SDLOG(0, "gameMap: no save folder found, the explored map is kept only while the game runs\n"); return; }
-        g_filePath = folder + "\\DSfixMap.dat";
-        HANDLE f = CreateFileA(g_filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (f == INVALID_HANDLE_VALUE) { SDLOG(0, "gameMap: %s (new)\n", g_filePath.c_str()); return; }
-        LARGE_INTEGER size;
-        std::vector<BYTE> d;
-        DWORD got = 0;
-        if (GetFileSizeEx(f, &size) && size.QuadPart > 12 && size.QuadPart < 256 * 1024 * 1024) {
-            d.resize((size_t)size.QuadPart);
-            if (!ReadFile(f, &d[0], (DWORD)d.size(), &got, NULL) || got != d.size()) d.clear();
-        }
-        CloseHandle(f);
+    // the slots of a map file (the one next to the save, or the quick save's copy) into 'out'. False = not a map file.
+    bool parseFile(const std::vector<BYTE>& d, SlotData out[10]) {
+        for (int s = 0; s < 10; ++s) { out[s].used = false; out[s].name[0] = 0; out[s].cells.clear(); out[s].pins.clear(); }
         size_t p = 12;
-        if (d.size() < 12 || memcmp(&d[0], "DSMP", 4) != 0 || *(const DWORD*)&d[4] != 1 || *(const DWORD*)&d[8] != 10) {
-            SDLOG(0, "gameMap: %s is not a map file of this DSfix, it will be written new\n", g_filePath.c_str());
-            return;
-        }
+        if (d.size() < 12 || memcmp(&d[0], "DSMP", 4) != 0 || *(const DWORD*)&d[4] != 1 || *(const DWORD*)&d[8] != 10) return false;
         int whole = 0;                               // slots read completely
         for (int s = 0; s < 10; ++s) {
             if (p + 4 + 32 + 4 > d.size()) break;
             const DWORD used = *(const DWORD*)&d[p]; p += 4;
-            memcpy(g_file[s].name, &d[p], 32); p += 32;
-            g_file[s].name[15] = 0;
+            memcpy(out[s].name, &d[p], 32); p += 32;
+            out[s].name[15] = 0;
             const DWORD n = *(const DWORD*)&d[p]; p += 4;
             if (p + (size_t)n * sizeof(CellRec) > d.size()) break;
-            g_file[s].used = used != 0;
+            out[s].used = used != 0;
             if (n) {
-                g_file[s].cells.resize(n);
-                memcpy(&g_file[s].cells[0], &d[p], (size_t)n * sizeof(CellRec));
+                out[s].cells.resize(n);
+                memcpy(&out[s].cells[0], &d[p], (size_t)n * sizeof(CellRec));
             }
             p += (size_t)n * sizeof(CellRec);
             ++whole;
@@ -501,9 +485,32 @@ namespace Look {
                     bool ok = true;
                     for (int k = 0; k < r.len; ++k) if (!pinCharOk(r.text[k])) ok = false;
                     if (!ok) continue;
-                    g_file[s].pins.push_back(r);
+                    out[s].pins.push_back(r);
                 }
             }
+        }
+        return true;
+    }
+
+    void readFile() {
+        g_fileRead = true;
+        for (int s = 0; s < 10; ++s) { g_file[s].used = false; g_file[s].name[0] = 0; g_file[s].cells.clear(); g_file[s].pins.clear(); }
+        const std::string folder = findSaveFolder();
+        if (folder.empty()) { SDLOG(0, "gameMap: no save folder found, the explored map is kept only while the game runs\n"); return; }
+        g_filePath = folder + "\\DSfixMap.dat";
+        HANDLE f = CreateFileA(g_filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (f == INVALID_HANDLE_VALUE) { SDLOG(0, "gameMap: %s (new)\n", g_filePath.c_str()); return; }
+        LARGE_INTEGER size;
+        std::vector<BYTE> d;
+        DWORD got = 0;
+        if (GetFileSizeEx(f, &size) && size.QuadPart > 12 && size.QuadPart < 256 * 1024 * 1024) {
+            d.resize((size_t)size.QuadPart);
+            if (!ReadFile(f, &d[0], (DWORD)d.size(), &got, NULL) || got != d.size()) d.clear();
+        }
+        CloseHandle(f);
+        if (!parseFile(d, g_file)) {
+            SDLOG(0, "gameMap: %s is not a map file of this DSfix, it will be written new\n", g_filePath.c_str());
+            return;
         }
         SDLOG(0, "gameMap: %s read\n", g_filePath.c_str());
     }
@@ -542,20 +549,14 @@ namespace Look {
         return 0;
     }
 
-    // writes the whole file in the background (the game does not wait). False = not started (still writing, or no
-    // save folder): the data stays in memory and is written next time.
-    bool saveFile() {
-        if (g_filePath.empty() || g_activeSlot < 0) return false;
-        if (InterlockedCompareExchange(&g_writing, 1, 0) != 0) return false; // still writing: next time
-        storeActive();
-        WriteJob* j = new WriteJob();
-        j->path = g_filePath;
+    // the whole file from g_file
+    void buildFile(std::vector<BYTE>& out) {
         size_t total = 12;
         for (int s = 0; s < 10; ++s) total += 40 + g_file[s].cells.size() * sizeof(CellRec);
         total += 8;                                  // the pins: "PINS", version, then a count and the pins of each slot
         for (int s = 0; s < 10; ++s) total += 4 + g_file[s].pins.size() * sizeof(PinRec);
-        j->data.resize(total);
-        BYTE* p = &j->data[0];
+        out.resize(total);
+        BYTE* p = &out[0];
         memcpy(p, "DSMP", 4); *(DWORD*)(p + 4) = 1; *(DWORD*)(p + 8) = 10; p += 12;
         for (int s = 0; s < 10; ++s) {
             *(DWORD*)p = g_file[s].used ? 1 : 0; p += 4;
@@ -570,6 +571,17 @@ namespace Look {
             *(DWORD*)p = n; p += 4;
             if (n) { memcpy(p, &g_file[s].pins[0], n * sizeof(PinRec)); p += n * sizeof(PinRec); }
         }
+    }
+
+    // writes the whole file in the background (the game does not wait). False = not started (still writing, or no
+    // save folder): the data stays in memory and is written next time.
+    bool saveFile() {
+        if (g_filePath.empty() || g_activeSlot < 0) return false;
+        if (InterlockedCompareExchange(&g_writing, 1, 0) != 0) return false; // still writing: next time
+        storeActive();
+        WriteJob* j = new WriteJob();
+        j->path = g_filePath;
+        buildFile(j->data);
         HANDLE t = CreateThread(NULL, 0, writerThread, j, 0, NULL);
         if (!t) { delete j; InterlockedExchange(&g_writing, 0); return false; }
         CloseHandle(t);
@@ -2683,6 +2695,46 @@ namespace Look {
         }
     }
 
+// =====================================================================================================================
+// Quick save / quick load (QuickSave.cpp): the map goes with the character
+// =====================================================================================================================
+    // quickSave (QuickSave.cpp): the whole map file as it is right now, with the character in play stored first, for
+    // QuickSave\DSfixMap.dat. False = no map for that slot (gameMap 0, or another character is in play).
+    bool snapshotFile(int slot, std::vector<BYTE>& out) {
+        if (!g_on || !g_fileRead || slot < 0 || slot > 9 || g_activeSlot != slot) return false;
+        storeActive();
+        buildFile(out);
+        return true;
+    }
+
+    // quick load (QuickSave.cpp), on the title screen after the save file was put back: the character's slot from the
+    // quick save's map file 'qs' replaces its slot here; the other nine stay. The file is written at once (no character
+    // is in play), and the character's map is read from g_file again when it is in the world. False = nothing changed
+    // (gameMap 0, not a map file, or that slot is not this character in it).
+    bool quickLoadSlot(const std::vector<BYTE>& qs, int slot, const wchar_t* name) {
+        if (!g_on || slot < 0 || slot > 9 || !name) return false;
+        SlotData q[10];
+        if (!parseFile(qs, q) || !q[slot].used || wcsncmp(q[slot].name, name, 15) != 0) return false;
+        // the writer of the quit (it started when the hero left the world, over a second ago): wait for it, at most 1 s
+        LONG w = 0;
+        for (int i = 0; (w = InterlockedCompareExchange(&g_writing, 1, 0)) == 1 && i < 100; ++i) Sleep(10);
+        if (w == 1) return false;
+        if (w == 2) InterlockedExchange(&g_writing, 1);
+        if (!g_fileRead) readFile();
+        if (g_activeSlot >= 0) storeActive();        // the character of before stays in g_file (when it is another slot)
+        g_file[slot] = q[slot];
+        clearCells();
+        g_pins.clear();
+        g_activeSlot = -1;                           // read again from g_file when the character is in the world
+        g_activeName[0] = 0;
+        g_dirty = false;
+        if (g_filePath.empty()) { InterlockedExchange(&g_writing, 0); return true; }
+        WriteJob* j = new WriteJob();
+        j->path = g_filePath;
+        buildFile(j->data);
+        writerThread(j);                             // here, not in a thread; it frees j and sets g_writing to 0 or 2
+        return true;
+    }
 } // namespace gameMap
 
 bool installGameMap() {

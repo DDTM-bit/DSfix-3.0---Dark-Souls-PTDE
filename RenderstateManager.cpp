@@ -2909,6 +2909,9 @@ float gameMapHudBottomLeftFactor() { return gameMap::hudBottomLeftFactor(); }
 bool gameMapTyping() { return gameMap::pinBoxOpen(); }
 // for main.cpp (its GetKeyboardState hook): the game's mouse buttons while a map pin box is open
 void gameMapFilterKeyState(BYTE* s) { gameMap::filterKeyState(s); }
+// for QuickSave.cpp: the map file as it is now (quick save), and the character's map put back from it (quick load)
+bool gameMapSnapshot(int slot, std::vector<BYTE>& out) { return gameMap::snapshotFile(slot, out); }
+bool gameMapQuickLoad(const std::vector<BYTE>& qs, int slot, const wchar_t* name) { return gameMap::quickLoadSlot(qs, slot, name); }
 
 // ---- WeaponsArmorSort prompt (the sorting itself is in GameParams.cpp) ----
 // LOOK OF THE PROMPT - everything that decides how it looks is in this block. Sizes are in the game's UI pixels
