@@ -18,6 +18,24 @@ void applyDisplayOverrides(IDirect3D9* d3d, UINT adapter, D3DPRESENT_PARAMETERS*
 
 using namespace std;
 
+// A shadow map larger than the game's own 2048 (another mod's shadow map resolution, 4096 or 8192): the game draws it
+// in four slices, each with a scissor rectangle around it. SetScissorRect below discards the rectangles it does not
+// know, so only the nearest slice got shadows (a hard line ahead of the hero). While render target 0 is such a map, a
+// rectangle inside it is passed on. The game's own 2048 map is not affected (its rectangles are passed as before).
+namespace largeShadowMap {
+	UINT g_size = 0;                            // side of render target 0 when it is a square 4096 / 8192 map, else 0
+	void noteRenderTarget(IDirect3DSurface9* rt) {
+		UINT size = 0;
+		D3DSURFACE_DESC d;
+		if (rt && SUCCEEDED(rt->GetDesc(&d)) && d.Width == d.Height && (d.Width == 4096 || d.Width == 8192)) size = d.Width;
+		g_size = size;
+	}
+	bool passes(const RECT& r) {
+		return g_size && r.left >= 0 && r.top >= 0 && r.left < r.right && r.top < r.bottom
+			&& r.right <= (LONG)g_size && r.bottom <= (LONG)g_size;
+	}
+}
+
 hkIDirect3DDevice9::hkIDirect3DDevice9(IDirect3DDevice9 **ppReturnedDeviceInterface, D3DPRESENT_PARAMETERS *pPresentParam, IDirect3D9 *pIDirect3D9) {
 	m_pD3Ddev = *ppReturnedDeviceInterface;
 	*ppReturnedDeviceInterface = this;
@@ -74,6 +92,7 @@ HRESULT APIENTRY hkIDirect3DDevice9::SetVertexShaderConstantF(UINT StartRegister
 HRESULT APIENTRY hkIDirect3DDevice9::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9* pRenderTarget) {
 	if(RenderTargetIndex != 0) return D3D_OK; // rendertargets > 0 are not actually used by the game - this makes the log shorter 
 	SDLOG(3, "SetRenderTarget %5d, %p\n", RenderTargetIndex, pRenderTarget);
+	largeShadowMap::noteRenderTarget(pRenderTarget);
 	return RSManager::get().redirectSetRenderTarget(RenderTargetIndex, pRenderTarget);
 }
 
@@ -653,7 +672,10 @@ HRESULT APIENTRY hkIDirect3DDevice9::SetScissorRect(CONST RECT* pRect) {
 		return m_pD3Ddev->SetScissorRect(pRect);
 	}
 
-	// 2. Discard everything else (including UI text bounds) to prevent letterboxing and clipping
+	// 2. The slices of a larger shadow map (see largeShadowMap above)
+	if (largeShadowMap::passes(*pRect)) return m_pD3Ddev->SetScissorRect(pRect);
+
+	// 3. Discard everything else (including UI text bounds) to prevent letterboxing and clipping
 	SDLOG(5, " - Lyrical Tokarev, kill them all!\n", RectToString(pRect));
 	return D3D_OK;
 }
