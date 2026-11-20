@@ -128,6 +128,12 @@ SETTING(bool, NewItemMarkers, "NewItemMarkers", true)
 // game's own animation and sound). A tap still switches to the next item at once, so a hold switches once, then jumps to
 // the Estus. With DDTMControllerFix, holding its SWITCH_ITEM key works the same. 0 = off (nothing is patched)
 SETTING(bool, QuickSelectEstus, "QuickSelectEstus", false)
+// EquipmentLoadouts: 5 builds per character in the Equipment window (the slot grid): weapons, arrows / bolts, armor,
+// rings and quick items. Hold RS (keyboard: LALT): D-pad left / right (arrows) browse Build 1..5 (the slots show the
+// build: what would change on a blue background), D-pad down held 1 s puts it on, D-pad up held 1.5 s saves what you
+// wear now as that build, LB (keyboard: Delete) held 1.5 s deletes it. Kept per character in
+// %LOCALAPPDATA%\NBGI\DarkSouls\DSfixLoadouts.ini. 0 = off (nothing is patched, read or written)
+SETTING(bool, EquipmentLoadouts, "EquipmentLoadouts", false)
 // BonfireCovenants: the bonfire list gets "Enter Covenant" (after Attune Magic): switch to a covenant you already joined
 // in this playthrough, with the leaders' own Yes/No question and their vanilla result (the devotion of the covenant you
 // leave is halved). Broken covenants (leader dead or hostile, banished, ...) are not offered. 0 = off (nothing is patched)

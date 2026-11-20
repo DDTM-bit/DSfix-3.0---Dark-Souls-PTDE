@@ -20,6 +20,8 @@ bool weaponMaxDurability(uint32_t weaponId, uint32_t* maxDurability);
 // when the setting is off.
 bool installWeaponsArmorSort();
 bool weaponsArmorSortActive();
+// called at Present: one more frame shown (the sort prompt shows only in frames where its list took input)
+void weaponsArmorSortNewFrame();
 
 // What the sort prompt shows. False when no sortable list has focus (then nothing is drawn).
 struct SortPromptInfo {
@@ -61,6 +63,30 @@ bool installQuickSelectEstus();
 // a wheel notch selects the first item below / above the visible rows, so the list scrolls row by row. Installed only
 // when DDTMControllerFix is set up; it acts only once that DLL is loaded. Elsewhere the wheel is the game's own.
 bool installListWheelScroll();
+
+// EquipmentLoadouts: 5 builds per character in the Equipment window's slot grid. Hold RS (keyboard: LALT): D-pad / arrows
+// left / right browse (the slots show the build: what would change on a blue background), down held 1 s puts it on,
+// up held 1.5 s saves the equipment worn now, LB (keyboard: Delete) held 1.5 s deletes the build. Kept in
+// DSfixLoadouts.ini. Nothing is patched when the setting is off.
+bool installEquipmentLoadouts();
+bool equipmentLoadoutsActive();
+// called at Present: one more frame shown (the prompt shows only while the slot grid is updated in the last frames)
+void equipmentLoadoutsNewFrame();
+// What the loadouts prompt shows. False when the slot grid has no focus (then nothing is drawn).
+struct LoadoutPromptInfo {
+    int held;         // 0 nothing held (only the hint on the help bar), 1 RS held, 2 LALT held
+    int ownKeyboard;  // without DDTM: 1 = keyboard / mouse used last
+    int build;        // the build shown (0..4)
+    unsigned saved;   // bit i: build i is saved
+    int worn;         // the build worn now (-1: none)
+    int state;        // 0 browsing, 1 apply bar, 2 save bar, 3 "saved" message, 4 "applied" message, 5 delete bar,
+                      // 6 "deleted" message
+    float progress;   // bar fill 0..1 (states 1, 2, 5); messages: 1 .. 0 while they show
+};
+bool equipmentLoadoutsPrompt(LoadoutPromptInfo* out);
+// bit s: equipment slot s shows an item that would not change (it is dimmed); shown: bit s = slot s shows an item
+// picture; fill: bit s = slot s would change (full brightness, the blue background behind it)
+unsigned equipmentLoadoutsDimMask(unsigned* shown, unsigned* fill);
 
 // gameMap (DSfix.ini gameMap): the in-game map with the gesture window. All of it is in GameMap.h (included by
 // RenderstateManager.cpp); installGameMap is called from main.cpp. Nothing is patched when the setting is off.

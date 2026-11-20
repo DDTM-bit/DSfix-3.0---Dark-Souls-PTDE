@@ -49,6 +49,15 @@ namespace newMarks {
 	void newFrame();
 	void release();
 }
+// EquipmentLoadouts: the same (defined right after sortPrompt)
+namespace loadoutPrompt {
+	void newFrame();
+	void release();
+}
+namespace loadoutDim {
+	void newFrame();
+	void release();
+}
 // Menu cursor drawn by DSfix (defined right after kbIcons)
 namespace swCursor {
 	void draw(IDirect3DDevice9* dev);
@@ -1297,6 +1306,8 @@ void RSManager::releaseResources() {
 	sortPrompt::release();
 	boxMarkers::release();
 	newMarks::release();
+	loadoutPrompt::release();
+	loadoutDim::release();
 	if (g_hudBufOwn) {
 		SAFERELEASE(g_hudBufSurf);
 		SAFERELEASE(g_hudBufTex);
@@ -1367,9 +1378,10 @@ void RSManager::releaseResources() {
 
 HRESULT RSManager::redirectPresent(CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion) {
 	weaponWearBarsNewFrame();
-	if (weaponsArmorSortActive()) sortPrompt::newFrame();
+	if (weaponsArmorSortActive()) { sortPrompt::newFrame(); weaponsArmorSortNewFrame(); }
 	if (bottomlessBoxMarkersActive()) boxMarkers::newFrame();
 	if (newItemMarkersActive()) newMarks::newFrame();
+	if (equipmentLoadoutsActive()) { equipmentLoadoutsNewFrame(); loadoutPrompt::newFrame(); loadoutDim::newFrame(); }
 	capturing = false;
 	if (captureNextFrame) {
 		capturing = true;
@@ -3418,6 +3430,546 @@ namespace sortPrompt {
 	}
 }
 
+// ---- EquipmentLoadouts prompt and dimming (the builds themselves are in GameParams.cpp) ----
+// LOOK - sizes in the game's UI pixels (1280 x 720), so everything follows menuScale and every resolution.
+namespace LoadoutLook {
+	const float kTextScale = 1.00f;          // text height as a part of the line it is drawn on (1.0 = the game's line)
+	const float kArrowScale = 0.80f;         // the D-pad arrows (a part of the text height)
+	const float kDotScale = 0.55f;           // the five build dots
+	const float kDotWornScale = 0.85f;       // the dot of the build worn now: bigger (its white ring too, so thicker)
+	const float kGapAfterHelp = 19.0f;       // after the game's last help bar prompt (its own spacing)
+	const float kGapGroup = 16.0f;           // between two controls of the help bar
+	const float kGapSmall = 3.0f;            // between an arrow and its text, between dots
+	const float kGapDots = 12.0f;            // between the build's name and the dots
+	const float kTopRight = 0.639f;          // the title line: right end (part of the screen width, the title's rule ends there)
+	const float kBarHeight = 3.0f;           // the apply / save bar under the build's name, on the title's rule
+	const D3DCOLOR kTextColor = 0xFFFFFFFF;
+	const D3DCOLOR kIconColor = 0xFFF0F0F0;
+	const D3DCOLOR kDotOther = 0x8CF0F0F0;   // the rings of the empty builds not shown
+	const D3DCOLOR kDotSaved = 0xFF1C4869;   // a saved build's dot: rgb(28, 72, 105); the build shown gets a white ring on it
+	const D3DCOLOR kBarTrack = 0x40FFFFFF;
+	const D3DCOLOR kBarFill = 0xF0FFFFFF;
+	const float kDim = 0.45f;                // brightness of a picture that would not change, in the preview
+	// the background of a slot the build would change: rgb(28, 72, 105), stronger at the bottom, soft rounded edges
+	const DWORD kFillRGB = 0x001C4869;
+	// a soft disc: stronger in the middle, fading to its rim
+	const float kFillCenter = 0.75f, kFillRim = 0.35f;   // opacity in the middle / near the rim
+	const float kFillFeather = 0.18f;        // the last part of the radius where it fades out
+	const float kFillDiameter = 0.86f;       // the disc's size (part of the frame's width)
+	const float kFillCenterY = 0.40f;        // its centre below the frame's top (part of the frame's height): the picture's centre
+	const wchar_t* const kFontName = L"Palatino Linotype";
+	const int kFontWeight = FW_SEMIBOLD;
+	// the text pieces (a line is put together from them)
+	const wchar_t* const kTexts[] = {
+		L"Build ", L"1", L"2", L"3", L"4", L"5", L" \x2013 empty", L"Save to ", L" \x2013 replaces it", L" saved",
+		L" applied", L"Apply ", L"RS/R3  Builds", L"L ALT  Builds", L" Choose", L" Apply", L" Save",
+		L"LB/L1", L"Del", L" Delete", L"Delete ", L" deleted",
+	};
+}
+
+namespace loadoutPrompt {
+	using sortPrompt::Vtx;
+	using sortPrompt::Piece;
+	enum {
+		T_BUILD, T_D1, T_D2, T_D3, T_D4, T_D5, T_EMPTY, T_SAVETO, T_REPLACES, T_SAVED, T_APPLIED, T_APPLY_, T_HINT_PAD,
+		T_HINT_KB, T_CHOOSE, T_APPLY, T_SAVE, T_LB, T_DELKEY, T_DELETEW, T_DELETE_, T_DELETED, T_COUNT
+	};
+	enum { S_LEFT, S_RIGHT, S_UP, S_DOWN, S_DOT, S_RING, S_SOLID, S_COUNT };
+	const int kMaxPieces = 16;
+	// Every piece has 16 clear pixels around it: drawn smaller, the texture's smaller copies blend a few pixels beyond a
+	// piece's edge, and without the gap the row above showed through (the "pp" of "applied" / "Apply" above the hint).
+	const int kRowPx = 64, kColW = 512, kTexW = 1024, kTexH = 1024;
+	const int kStride = 80, kPad = 16;         // text rows: 64 high, every 80 pixels, starting 16 down (11 rows: to 880)
+	const int kTextX = 16;                     // text starts 16 pixels into its column
+	const int kSymY = 912, kSymStride = 96;    // the drawn symbols: 64 x 64 cells, every 96 pixels (to 976)
+
+	IDirect3DTexture9* g_tex = NULL;
+	bool g_failed = false;
+	float g_textW[T_COUNT];                    // width of each text piece in texture pixels
+
+	// the help bar (as WeaponsArmorSort's prompt follows it): its right end in the last frame, its left end now
+	float g_helpMaxX = 0.0f, g_helpMaxXPrev = 0.0f, g_helpX0 = 0.0f;
+	const float kHelpChainGap = 60.0f;
+	bool g_helpTriggered = false, g_titleDone = false;
+	// what beforeDraw found for the piece being drawn: 0 nothing, 1 the help bar's first piece, 2 the window's title
+	int g_kind = 0;
+	const void* g_kindData = NULL;
+
+	void textCell(int i, float* uv) {
+		const int col = i % 2, row = i / 2;
+		uv[0] = (float)(col * kColW + kTextX - 4) / kTexW;
+		uv[1] = (float)(row * kStride + kPad) / kTexH;
+		uv[2] = (float)(col * kColW + kTextX - 4 + g_textW[i]) / kTexW;
+		uv[3] = (float)(row * kStride + kPad + kRowPx) / kTexH;
+	}
+	void symCell(int i, float* uv) {
+		// the solid cell: well inside, so it never samples its surroundings
+		const float x0 = (float)(i * kSymStride + kPad), y0 = (float)kSymY;
+		const float in = i == S_SOLID ? 16.0f : 0.0f;
+		uv[0] = (x0 + in) / kTexW; uv[1] = (y0 + in) / kTexH;
+		uv[2] = (x0 + kRowPx - in) / kTexW; uv[3] = (y0 + kRowPx - in) / kTexH;
+	}
+
+	// white text and symbols with their own alpha, drawn once with GDI
+	bool build(IDirect3DDevice9* dev) {
+		using namespace LoadoutLook;
+		if (g_tex) return true;
+		if (g_failed) return false;
+		g_failed = true;
+		BITMAPINFO bi = {};
+		bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+		bi.bmiHeader.biWidth = kTexW;
+		bi.bmiHeader.biHeight = -kTexH;
+		bi.bmiHeader.biPlanes = 1;
+		bi.bmiHeader.biBitCount = 32;
+		bi.bmiHeader.biCompression = BI_RGB;
+		void* bits = NULL;
+		HDC dc = CreateCompatibleDC(NULL);
+		HBITMAP bmp = dc ? CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0) : NULL;
+		HFONT font = CreateFontW(kRowPx, 0, 0, 0, kFontWeight, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS,
+			CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_ROMAN, kFontName);
+		HPEN ring = CreatePen(PS_SOLID, 5, RGB(255, 255, 255));
+		bool ok = false;
+		if (dc && bmp && bits && font && ring) {
+			HGDIOBJ oldBmp = SelectObject(dc, bmp);
+			HGDIOBJ oldFont = SelectObject(dc, font);
+			memset(bits, 0, (size_t)kTexW * kTexH * 4);
+			SetTextColor(dc, RGB(255, 255, 255));
+			SetBkMode(dc, TRANSPARENT);
+			for (int i = 0; i < T_COUNT; ++i) {
+				const int len = (int)wcslen(kTexts[i]);
+				SIZE sz = { 0, 0 };
+				GetTextExtentPoint32W(dc, kTexts[i], len, &sz);
+				TextOutW(dc, (i % 2) * kColW + kTextX, (i / 2) * kStride + kPad, kTexts[i], len);
+				g_textW[i] = (float)(sz.cx + 8);
+				if (g_textW[i] > kColW - 2 * kTextX) g_textW[i] = (float)(kColW - 2 * kTextX);
+			}
+			// the symbols: 64 x 64 cells in one row
+			HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+			HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(WHITE_BRUSH));
+			const int y = kSymY;
+			for (int i = 0; i < S_COUNT; ++i) {
+				const int x = i * kSymStride + kPad, cx = x + 32, cy = y + 32;
+				if (i == S_LEFT) { POINT p[3] = { { x + 16, cy }, { x + 48, cy - 18 }, { x + 48, cy + 18 } }; Polygon(dc, p, 3); }
+				else if (i == S_RIGHT) { POINT p[3] = { { x + 48, cy }, { x + 16, cy - 18 }, { x + 16, cy + 18 } }; Polygon(dc, p, 3); }
+				else if (i == S_UP) { POINT p[3] = { { cx, y + 16 }, { cx - 18, y + 48 }, { cx + 18, y + 48 } }; Polygon(dc, p, 3); }
+				else if (i == S_DOWN) { POINT p[3] = { { cx, y + 48 }, { cx - 18, y + 16 }, { cx + 18, y + 16 } }; Polygon(dc, p, 3); }
+				else if (i == S_DOT) Ellipse(dc, x + 10, y + 10, x + 55, y + 55);
+				else if (i == S_RING) {
+					SelectObject(dc, ring);
+					SelectObject(dc, GetStockObject(NULL_BRUSH));
+					Ellipse(dc, x + 12, y + 12, x + 53, y + 53);
+					SelectObject(dc, GetStockObject(NULL_PEN));
+					SelectObject(dc, GetStockObject(WHITE_BRUSH));
+				}
+				else if (i == S_SOLID) { RECT r = { x, y, x + kRowPx, y + kRowPx }; FillRect(dc, &r, (HBRUSH)GetStockObject(WHITE_BRUSH)); }
+			}
+			SelectObject(dc, oldBrush);
+			SelectObject(dc, oldPen);
+			GdiFlush();
+			IDirect3DTexture9* t = NULL;
+			if (SUCCEEDED(dev->CreateTexture(kTexW, kTexH, 0, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &t, NULL)) && t) {
+				D3DLOCKED_RECT lr;
+				if (SUCCEEDED(t->LockRect(0, &lr, NULL, 0))) {
+					for (int yy = 0; yy < kTexH; ++yy) {
+						const UINT32* src = (const UINT32*)bits + (size_t)yy * kTexW;
+						UINT32* dst = (UINT32*)((BYTE*)lr.pBits + (size_t)yy * lr.Pitch);
+						for (int xx = 0; xx < kTexW; ++xx) {
+							const UINT32 p = src[xx];
+							UINT32 a = p & 0xFF;
+							if (((p >> 8) & 0xFF) > a) a = (p >> 8) & 0xFF;
+							if (((p >> 16) & 0xFF) > a) a = (p >> 16) & 0xFF;
+							dst[xx] = (a << 24) | 0x00FFFFFF;
+						}
+					}
+					t->UnlockRect(0);
+					D3DXFilterTexture(t, NULL, 0, D3DX_FILTER_BOX);
+					g_tex = t;
+					ok = true;
+				}
+				else t->Release();
+			}
+			SelectObject(dc, oldFont);
+			SelectObject(dc, oldBmp);
+		}
+		if (ring) DeleteObject(ring);
+		if (font) DeleteObject(font);
+		if (bmp) DeleteObject(bmp);
+		if (dc) DeleteDC(dc);
+		if (ok) { g_failed = false; SDLOG(0, "EquipmentLoadouts: prompt text ready\n"); }
+		else SDLOG(0, "EquipmentLoadouts: the prompt text could not be made\n");
+		return ok;
+	}
+
+	void newFrame() {
+		g_helpMaxXPrev = g_helpMaxX;
+		g_helpMaxX = 0.0f;
+		g_helpTriggered = false;
+		g_titleDone = false;
+		g_kind = 0;
+		g_kindData = NULL;
+	}
+	void release() {
+		SAFERELEASE(g_tex);
+		g_failed = false;
+	}
+
+	struct Elem { float uv[4]; float w, h; D3DCOLOR c; float gapBefore; };
+
+	D3DCOLOR fade(D3DCOLOR c, float a) {
+		if (a >= 0.999f) return c;
+		return (c & 0x00FFFFFF) | ((DWORD)((c >> 24) * a + 0.5f) << 24);
+	}
+
+	// Before the game draws one of its 24-byte prompt / text pieces: notes the help bar (its first piece and the pieces
+	// that follow it) and the Equipment window's title. True: the piece is not drawn - a help bar piece while RS / LALT
+	// is held in the slot grid (the game's prompts do nothing then; the loadout controls take the whole bar).
+	bool gridOnScreen();
+	bool beforeDraw(const void* data, UINT nv) {
+		g_kind = 0;
+		g_kindData = data;
+		float x0, y0, x1, y1;
+		if (!textBox(data, 24, nv, x0, y0, x1, y1)) return false;
+		const bool help = !(y0 < 0.875f * 720.0f || y0 > 0.900f * 720.0f || y1 < 0.910f * 720.0f || y1 > 0.940f * 720.0f);
+		const bool title = x0 >= 160.0f && x0 <= 205.0f && y0 >= 49.0f && y0 <= 66.0f && y1 >= 81.0f && y1 <= 98.0f;
+		if (help) {
+			if (g_helpTriggered) {
+				if (!(x0 <= g_helpMaxX + kHelpChainGap && x1 > g_helpMaxX)) return false;   // not part of the help bar
+				g_helpMaxX = x1;
+			}
+			else {
+				if (x0 > 0.15f * 1280.0f) return false;   // not the help bar's first piece (the soul counter, for example)
+				g_helpTriggered = true;
+				g_helpMaxX = x1;
+				g_helpX0 = x0;
+				g_kind = 1;
+			}
+			LoadoutPromptInfo info;
+			return gridOnScreen() && equipmentLoadoutsPrompt(&info) && info.held != 0;
+		}
+		if (title && !g_titleDone) {
+			g_titleDone = true;
+			g_kind = 2;
+		}
+		return false;
+	}
+
+	// After the game's piece (beforeDraw looked at it first): the help bar's first piece gets the hint after the game's
+	// prompts, or (RS / LALT held) the controls in their place; the title gets the build line at the right end of its
+	// line. Returns how many pieces to draw.
+	int onDraw(IDirect3DDevice9* dev, const void* data, UINT nv, Piece* out) {
+		using namespace LoadoutLook;
+		if (data != g_kindData || !g_kind) return 0;
+		const bool help = g_kind == 1, title = g_kind == 2;
+		g_kind = 0;
+		float x0, y0, x1, y1;
+		if (!textBox(data, 24, nv, x0, y0, x1, y1)) return 0;
+		LoadoutPromptInfo info;
+		if (!gridOnScreen() || !equipmentLoadoutsPrompt(&info)) return 0;
+		if (title && !info.held) return 0;
+		if (help && !info.held && g_helpMaxXPrev <= 0.0f) return 0;   // the help bar's end is known from the next frame on
+		if (!build(dev)) return 0;
+		// the game's own alpha of the piece (the window fading in or out)
+		const D3DCOLOR gc = *(const D3DCOLOR*)((const BYTE*)data + 20);
+		const float ga = (float)(gc >> 24) / 255.0f;
+
+		const float rowH = y1 - y0, textH = rowH * kTextScale;
+		Elem e[kMaxPieces];
+		int n = 0;
+		auto text = [&](int id, float gap) {
+			if (n >= kMaxPieces) return;
+			Elem& el = e[n++];
+			textCell(id, el.uv);
+			el.h = textH;
+			el.w = textH * g_textW[id] / kRowPx;
+			el.c = kTextColor;
+			el.gapBefore = gap;
+		};
+		auto sym = [&](int id, float scale, D3DCOLOR c, float gap) {
+			if (n >= kMaxPieces) return;
+			Elem& el = e[n++];
+			symCell(id, el.uv);
+			el.h = el.w = textH * scale;
+			el.c = c;
+			el.gapBefore = gap;
+		};
+		const int b = info.build < 0 || info.build > 4 ? 0 : info.build;
+		const bool saved = (info.saved >> b) & 1;
+		int textEnd = 0;                          // pieces of the build's name (the bar goes under them)
+		if (help) {
+			bool keyboard;
+			if (info.held == 2) keyboard = true;
+			else if (info.held == 1) keyboard = false;
+			else {
+				const kbIcons::Shared* s = kbIcons::shared();
+				keyboard = s ? s->kbmActive != 0 : info.ownKeyboard != 0;
+			}
+			if (!info.held) text(keyboard ? T_HINT_KB : T_HINT_PAD, 0.0f);
+			else {
+				sym(S_LEFT, kArrowScale, kIconColor, 0.0f);
+				sym(S_RIGHT, kArrowScale, kIconColor, 0.0f);
+				text(T_CHOOSE, 0.0f);
+				if (saved) {
+					sym(S_DOWN, kArrowScale, kIconColor, kGapGroup);
+					text(T_APPLY, 0.0f);
+				}
+				sym(S_UP, kArrowScale, kIconColor, kGapGroup);
+				text(T_SAVE, 0.0f);
+				if (saved) {
+					text(keyboard ? T_DELKEY : T_LB, kGapGroup);
+					text(T_DELETEW, 0.0f);
+				}
+			}
+		}
+		else {
+			if (info.state == 2) {                 // the save bar: "Save to Build n" ( - replaces it)
+				text(T_SAVETO, 0.0f);
+				text(T_BUILD, 0.0f);
+				text(T_D1 + b, 0.0f);
+				if (saved) text(T_REPLACES, 0.0f);
+			}
+			else if (info.state == 1) {            // the apply bar: "Apply Build n"
+				text(T_APPLY_, 0.0f);
+				text(T_BUILD, 0.0f);
+				text(T_D1 + b, 0.0f);
+			}
+			else if (info.state == 5) {            // the delete bar: "Delete Build n"
+				text(T_DELETE_, 0.0f);
+				text(T_BUILD, 0.0f);
+				text(T_D1 + b, 0.0f);
+			}
+			else if (info.state == 3 || info.state == 4 || info.state == 6) {
+				text(T_BUILD, 0.0f);
+				text(T_D1 + b, 0.0f);
+				text(info.state == 3 ? T_SAVED : (info.state == 4 ? T_APPLIED : T_DELETED), 0.0f);
+			}
+			else {                                 // browsing: < Build n > ( - empty)
+				sym(S_LEFT, kArrowScale, kIconColor, 0.0f);
+				text(T_BUILD, kGapSmall);
+				text(T_D1 + b, 0.0f);
+				if (!saved) text(T_EMPTY, 0.0f);
+				sym(S_RIGHT, kArrowScale, kIconColor, kGapSmall);
+			}
+			textEnd = n;
+			for (int i = 0; i < 5; ++i) {
+				const bool on = (info.saved >> i) & 1;
+				// saved: a filled dot in the background's blue; empty: a ring. The build shown: white (a white ring on its dot).
+				// the build worn now: a bigger, bold dot
+				const float ds = i == info.worn ? kDotWornScale : kDotScale;
+				sym(on ? S_DOT : S_RING, ds, on ? kDotSaved : (i == b ? kIconColor : kDotOther), i == 0 ? kGapDots : kGapSmall);
+				if (on && i == b) sym(S_RING, ds, kIconColor, -textH * ds);   // on top of the dot, same place
+			}
+		}
+		if (!n) return 0;
+
+		float total = 0.0f;
+		for (int i = 0; i < n; ++i) total += e[i].gapBefore + e[i].w;
+		// the hint after the game's prompts; the controls (the game's prompts hidden) from the help bar's left end
+		float x = help ? (info.held ? g_helpX0 : g_helpMaxXPrev + kGapAfterHelp) : kTopRight * 1280.0f - total;
+		const float cy = (y0 + y1) * 0.5f;
+		const float z = ((const float*)data)[2];
+		float nameX0 = x, nameX1 = x;
+		int k = 0;
+		for (int i = 0; i < n; ++i) {
+			x += e[i].gapBefore;
+			if (i == 0) nameX0 = x;
+			sortPrompt::quad(out[k++], g_tex, x, cy - e[i].h * 0.5f, x + e[i].w, cy + e[i].h * 0.5f, e[i].uv, z, fade(e[i].c, ga));
+			x += e[i].w;
+			if (i == textEnd - 1) nameX1 = x;
+		}
+		// the bar under the build's name, on the title's rule (track and fill; after a save / apply a fading flash)
+		if (!help && info.state != 0 && k + 2 <= kMaxPieces) {
+			float uv[4];
+			symCell(S_SOLID, uv);
+			const float by1 = y1 + 1.0f, by0 = by1 - kBarHeight;
+			if (info.state == 1 || info.state == 2 || info.state == 5) {
+				sortPrompt::quad(out[k++], g_tex, nameX0, by0, nameX1, by1, uv, z, fade(kBarTrack, ga));
+				const float fx = nameX0 + (nameX1 - nameX0) * info.progress;
+				if (fx > nameX0 + 0.5f) sortPrompt::quad(out[k++], g_tex, nameX0, by0, fx, by1, uv, z, fade(kBarFill, ga));
+			}
+			else sortPrompt::quad(out[k++], g_tex, nameX0, by0, nameX1, by1, uv, z, fade(kBarFill, ga * info.progress));
+		}
+		return k;
+	}
+}
+
+// EquipmentLoadouts preview: a picture that would not change is drawn darker; a slot the build would change gets a blue
+// background drawn right after its frame (the frames come before the stands and pictures, so it lies behind them).
+// Slots are known by their place in the Equipment window (the game's UI coordinates, before DSfix scales the window),
+// so DSfix's window scaling, menuScale and enableHudMod do not change it. The background uses the frame's vertices as
+// they were drawn: it follows the window scaling and the fading.
+namespace loadoutDim {
+	// the centre of each slot's item picture (part of the screen; -1 = no picture: slot 12)
+	const float kSlotX[20] = { 0.165f, 0.165f, 0.243f, 0.243f, 0.3685f, 0.547f, 0.428f, 0.6065f, 0.167f, 0.245f, 0.323f, 0.4015f,
+		-1.0f, 0.547f, 0.6065f, 0.3685f, 0.428f, 0.4875f, 0.547f, 0.6065f };
+	const float kSlotY[20] = { 0.443f, 0.264f, 0.443f, 0.264f, 0.422f, 0.422f, 0.422f, 0.422f, 0.6175f, 0.6175f, 0.6175f, 0.6175f,
+		-1.0f, 0.611f, 0.611f, 0.2415f, 0.2415f, 0.2415f, 0.2415f, 0.2415f };
+	const float kTolX = 0.025f, kTolY = 0.035f;
+	// the slot frames: a corner's UV in their texture (1/4096; large slots, small slots, each in two variants)
+	const int kFrameUv[4][2] = { { 2848, 2860 }, { 3284, 2868 }, { 3552, 3352 }, { 3208, 3352 } };
+	unsigned g_dim = 0, g_fill = 0, g_shown = 0;   // from the game side, at Present
+	// The slot grid's frames drawn in this frame and the last one, and their lowest opacity. The prompt shows only when
+	// the last frame drew the whole grid at full opacity: never on another window (LB / RB to the Inventory, the grid
+	// can still be updated while the windows change), nor while the window fades in or out.
+	int g_framesNow = 0, g_framesLast = 0;
+	int g_alphaNow = 255, g_alphaLast = 255;
+	const int kGridFrames = 19;                  // the grid's slot frames (every slot but 12)
+	bool gridDrawn() { return g_framesLast >= kGridFrames && g_alphaLast >= 0xF0; }
+	IDirect3DTexture9* g_fillTex = NULL;
+	bool g_fillFailed = false;
+
+	// the slot whose picture or frame this is (-1: none)
+	int slotOf(const INT16* v, int* box) {
+		int minX = 32767, maxX = -32768, minY = 32767, maxY = -32768;
+		for (int i = 0; i < 4; ++i) {
+			const INT16* p = v + i * 6;
+			if (p[0] < minX) minX = p[0];
+			if (p[0] > maxX) maxX = p[0];
+			if (p[1] < minY) minY = p[1];
+			if (p[1] > maxY) maxY = p[1];
+		}
+		if (box) { box[0] = minX; box[1] = minY; box[2] = maxX; box[3] = maxY; }
+		const float w = (maxX - minX) / 10240.0f, h = (maxY - minY) / 5760.0f;
+		if (w < 0.04f || w > 0.09f || h < 0.08f || h > 0.17f) return -1;   // a slot's picture or frame: about 0.06 x 0.12
+		const float cx = (minX + maxX) * 0.5f / 10240.0f, cy = (minY + maxY) * 0.5f / 5760.0f;
+		for (int s = 0; s < 20; ++s)
+			if (kSlotX[s] >= 0.0f && fabsf(cx - kSlotX[s]) < kTolX && fabsf(cy - kSlotY[s]) < kTolY) return s;
+		return -1;
+	}
+	// a slot frame: one of its corners has a frame UV
+	bool isFrame(const INT16* v) {
+		for (int i = 0; i < 4; ++i)
+			for (int k = 0; k < 4; ++k)
+				if (abs(v[i * 6 + 4] - kFrameUv[k][0]) <= 4 && abs(v[i * 6 + 5] - kFrameUv[k][1]) <= 4) return true;
+		return false;
+	}
+
+	void newFrame() {
+		g_framesLast = g_framesNow;
+		g_alphaLast = g_alphaNow;
+		g_framesNow = 0;
+		g_alphaNow = 255;
+		g_dim = equipmentLoadoutsDimMask(&g_shown, &g_fill);
+	}
+	void release() {
+		SAFERELEASE(g_fillTex);
+		g_fillFailed = false;
+	}
+
+	// One of the game's INT16 quads before it is drawn. iconTex: drawn with an item icon texture.
+	// Returns 1: an item picture to draw darker, 2: a slot frame that gets the background after it, 0: nothing.
+	int onQuad(const INT16* v, bool iconTex) {
+		int box[4];
+		if (!iconTex && isFrame(v) && slotOf(v, box) >= 0) {
+			++g_framesNow;
+			const int a = ((const BYTE*)v)[7];     // the first vertex's colour: its alpha
+			if (a < g_alphaNow) g_alphaNow = a;
+		}
+		if (!g_dim && !g_fill) return 0;
+		if (iconTex) {
+			const int s = slotOf(v, box);
+			return s >= 0 && ((g_dim >> s) & 1) ? 1 : 0;
+		}
+		if (!g_fill || !isFrame(v)) return 0;
+		const int s = slotOf(v, box);
+		const bool fill = s >= 0 && ((g_fill >> s) & 1);
+		return fill ? 2 : 0;
+	}
+
+	// a copy of the quad's vertices with the colour darker (stride 12: the colour at +4)
+	const void* darken(std::vector<BYTE>& copy, const void* data, UINT minIndex, UINT nv) {
+		const size_t size = (size_t)(minIndex + nv) * 12;
+		if (copy.empty() || data != (const void*)&copy[0]) copy.assign((const BYTE*)data, (const BYTE*)data + size);
+		for (UINT i = minIndex; i < minIndex + nv; ++i) {
+			BYTE* c = &copy[(size_t)i * 12 + 4];
+			for (int k = 0; k < 3; ++k) c[k] = (BYTE)(c[k] * LoadoutLook::kDim + 0.5f);
+		}
+		return &copy[0];
+	}
+
+	// the background picture: a white disc with its opacity (stronger in the middle, soft rim), made once; the colour
+	// comes from the vertices
+	bool buildFill(IDirect3DDevice9* dev) {
+		using namespace LoadoutLook;
+		if (g_fillTex) return true;
+		if (g_fillFailed) return false;
+		g_fillFailed = true;
+		const int N = 128;
+		IDirect3DTexture9* t = NULL;
+		if (FAILED(dev->CreateTexture(N, N, 0, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &t, NULL)) || !t) return false;
+		D3DLOCKED_RECT lr;
+		if (FAILED(t->LockRect(0, &lr, NULL, 0))) { t->Release(); return false; }
+		const float c = N * 0.5f;
+		for (int y = 0; y < N; ++y) {
+			UINT32* row = (UINT32*)((BYTE*)lr.pBits + (size_t)y * lr.Pitch);
+			for (int x = 0; x < N; ++x) {
+				const float dx = (x + 0.5f - c) / c, dy = (y + 0.5f - c) / c;
+				const float r = sqrtf(dx * dx + dy * dy);   // 0 in the middle, 1 at the rim
+				float e = (1.0f - r) / kFillFeather;        // the soft rim
+				if (e < 0.0f) e = 0.0f;
+				if (e > 1.0f) e = 1.0f;
+				e = e * e * (3.0f - 2.0f * e);
+				const float rr = r > 1.0f ? 1.0f : r;
+				const float a = (kFillCenter + (kFillRim - kFillCenter) * rr) * e;
+				row[x] = ((UINT32)(a * 255.0f + 0.5f) << 24) | 0x00FFFFFF;
+			}
+		}
+		t->UnlockRect(0);
+		D3DXFilterTexture(t, NULL, 0, D3DX_FILTER_BOX);
+		g_fillTex = t;
+		g_fillFailed = false;
+		return true;
+	}
+
+	// The background for the frame just drawn. 'drawn' = the frame's vertices as they were drawn; the same index data
+	// and render states are used. Its opacity follows the frame's (the window fading in or out).
+	void drawFill(IDirect3DDevice9* dev, D3DPRIMITIVETYPE type, UINT minIndex, UINT nv, UINT prims, const void* indices,
+		D3DFORMAT indexFormat, const void* drawn) {
+		using namespace LoadoutLook;
+		if (!drawn || nv != 4 || minIndex != 0 || !buildFill(dev)) return;
+		BYTE mv[48];
+		memcpy(mv, drawn, sizeof(mv));
+		int minX = 32767, maxX = -32768, minY = 32767, maxY = -32768;
+		for (int i = 0; i < 4; ++i) {
+			const INT16* p = (const INT16*)(mv + i * 12);
+			if (p[0] < minX) minX = p[0];
+			if (p[0] > maxX) maxX = p[0];
+			if (p[1] < minY) minY = p[1];
+			if (p[1] > maxY) maxY = p[1];
+		}
+		const float w = (float)(maxX - minX), h = (float)(maxY - minY);
+		if (w < 4.0f || h < 4.0f) return;
+		// a disc (UI units are the same size across and down: 8 per UI pixel), centred on the item's picture
+		const float d = w * kFillDiameter, cx = (minX + maxX) * 0.5f, cy = minY + h * kFillCenterY;
+		const float x0 = cx - d * 0.5f, x1 = cx + d * 0.5f, y0 = cy - d * 0.5f, y1 = cy + d * 0.5f;
+		const float midX = (minX + maxX) * 0.5f, midY = (minY + maxY) * 0.5f;
+		for (int i = 0; i < 4; ++i) {
+			INT16* p = (INT16*)(mv + i * 12);
+			const bool right = p[0] > midX, bottom = p[1] > midY;
+			p[0] = (INT16)floorf((right ? x1 : x0) + 0.5f);
+			p[1] = (INT16)floorf((bottom ? y1 : y0) + 0.5f);
+			DWORD* c = (DWORD*)(mv + i * 12 + 4);
+			*c = (*c & 0xFF000000) | kFillRGB;      // the frame's opacity, the background's colour
+			p[4] = (INT16)(right ? 4096 : 0);
+			p[5] = (INT16)(bottom ? 4096 : 0);
+		}
+		IDirect3DBaseTexture9* saved = NULL;
+		dev->GetTexture(0, &saved);
+		DWORD mip = D3DTEXF_NONE;
+		dev->GetSamplerState(0, D3DSAMP_MIPFILTER, &mip);
+		const bool setMip = mip == D3DTEXF_NONE;
+		if (setMip) dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
+		dev->SetTexture(0, g_fillTex);
+		dev->DrawIndexedPrimitiveUP(type, minIndex, nv, prims, indices, indexFormat, mv, 12);
+		dev->SetTexture(0, saved);
+		if (saved) saved->Release();
+		if (setMip) dev->SetSamplerState(0, D3DSAMP_MIPFILTER, mip);
+	}
+}
+
+// the loadouts prompt shows only on the Equipment window itself (see loadoutDim::gridDrawn)
+bool loadoutPrompt::gridOnScreen() { return loadoutDim::gridDrawn(); }
+
 // BottomlessBoxMarkers. The box screen is known by its chest picture above "Storage" (drawn before the list). In the list,
 // every item picture comes right after its stand (a quad of the frame texture with its own UV), at the same x. The k-th
 // picture of the frame is the k-th row on screen; the game side says which rows get the marker. The marker is the
@@ -3957,6 +4509,16 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 	bool boxMark = false;
 	if (boxMarkers::g_on && VertexStreamZeroStride == 12 && NumVertices == 4 && PrimitiveCount == 2 && MinIndex == 0 && pVertexStreamZeroData)
 		boxMark = boxMarkers::onQuad(d3ddev, (const INT16*)pVertexStreamZeroData);
+	// EquipmentLoadouts preview: 1 = a picture drawn darker, 2 = a slot frame that gets the blue background after it
+	int loadDim = 0;
+	if (equipmentLoadoutsActive() && VertexStreamZeroStride == 12 && NumVertices == 4 && PrimitiveCount == 2 && MinIndex == 0 && pVertexStreamZeroData) {
+		IDirect3DBaseTexture9* lt = NULL;
+		d3ddev->GetTexture(0, &lt);
+		const bool iconTex = lt && (isTextureWeaponIcons(lt) || isTextureWeaponIcons2HudBack(lt) || isTextureArmorIcons1(lt) ||
+			isTextureArmorIcons2(lt) || isTextureArmorIcons3(lt) || isTextureRingIcons(lt) || isTextureItemIcons(lt) || isTextureKeyIcons(lt));
+		if (lt) lt->Release();
+		loadDim = loadoutDim::onQuad((const INT16*)pVertexStreamZeroData, iconTex);
+	}
 	// NewItemMarkers: an item picture or a tab icon that gets the "!" (1 / 2), or the selected tab's frame (3)
 	int newMark = 0;
 	if (newMarks::g_on && VertexStreamZeroStride == 12 && NumVertices == 4 && PrimitiveCount == 2 && MinIndex == 0 && pVertexStreamZeroData) {
@@ -4288,8 +4850,12 @@ HRESULT RSManager::redirectDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType
 		if (winK < 0 && VertexStreamZeroStride == 12) op *= mapBottomLeftOpacity(hud && doHud, VertexStreamZeroStride, srcData, MinIndex, NumVertices);
 		std::vector<BYTE> vcopy;
 		const void* vdata = applyVertexOpacity(vcopy, srcData, VertexStreamZeroStride, MinIndex, NumVertices, 4, op, d3ddev);
+		std::vector<BYTE> dimCopy;
+		if (loadDim == 1) vdata = loadoutDim::darken(dimCopy, vdata, MinIndex, NumVertices);
 		AlphaRefGuard arg(d3ddev, op);
 		hr = d3ddev->DrawIndexedPrimitiveUP(PrimitiveType, MinIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, vdata, VertexStreamZeroStride);
+		// EquipmentLoadouts: the background of a slot the build would change, on its frame (behind its stand and picture)
+		if (loadDim == 2 && SUCCEEDED(hr)) loadoutDim::drawFill(d3ddev, PrimitiveType, MinIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, vdata);
 		// BottomlessBoxMarkers: the chest marker on top of the item picture, with its vertices
 		if (boxMark && SUCCEEDED(hr)) boxMarkers::draw(d3ddev, PrimitiveType, MinIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, vdata);
 		// NewItemMarkers: after the box marker, so the "!" is on top of it
@@ -4531,6 +5097,10 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 			swapButtonIcons(&textCopy[0], primNv, PrimitiveType, swapAB, swapXY);
 		}
 	}
+	// EquipmentLoadouts: while RS / LALT is held in the slot grid, the game's help bar pieces are not drawn (the loadout
+	// controls take the whole bar). They are still looked at, so the controls are placed where the bar is.
+	const bool loadHide = !onHudRT && !pausedHudRT && equipmentLoadoutsActive() && VertexStreamZeroStride == 24 && primNv &&
+		pVertexStreamZeroData && loadoutPrompt::beforeDraw(pVertexStreamZeroData, primNv);
 	if (textDirect) pauseHudRendering();
 	HRESULT hr;
 	{
@@ -4545,7 +5115,7 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 		}
 		if (op < 0.999f) drawData = applyVertexOpacity(textCopy, drawData, VertexStreamZeroStride, 0, primNv, colOff, op, d3ddev);
 		AlphaRefGuard arg(d3ddev, op);
-		hr = d3ddev->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, drawData, VertexStreamZeroStride);
+		hr = loadHide ? D3D_OK : d3ddev->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, drawData, VertexStreamZeroStride);
 		// keyboard icons: how big the screen shows a keyboard copy (only while one exists; see kbIcons::watchFit)
 		if (VertexStreamZeroStride == 24 && primNv && drawData && kbIcons::fitWatch()) {
 			IDirect3DBaseTexture9* ft = NULL;
@@ -4583,6 +5153,30 @@ HRESULT RSManager::redirectDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT 
 			d3ddev->GetRenderState(D3DRS_CULLMODE, &oldCull);
 			d3ddev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
 			// the game's own sampling settings are kept: the keys are made to be sampled exactly like the game's
+			for (int i = 0; i < n; ++i) {
+				d3ddev->SetTexture(0, pieces[i].tex);
+				d3ddev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, pieces[i].v, sizeof(sortPrompt::Vtx));
+			}
+			d3ddev->SetRenderState(D3DRS_CULLMODE, oldCull);
+			d3ddev->SetTexture(0, oldTex);
+			if (oldTex) oldTex->Release();
+			if (promptScChanged) d3ddev->SetScissorRect(&promptSc);
+		}
+	}
+	// EquipmentLoadouts: the same way, after the help bar's first piece (the hint / the controls) and after the Equipment
+	// window's title (the build line, while RS / LALT is held)
+	if (!onHudRT && !pausedHudRT && equipmentLoadoutsActive() && VertexStreamZeroStride == 24 && primNv && pVertexStreamZeroData && drawData) {
+		sortPrompt::Piece pieces[loadoutPrompt::kMaxPieces];
+		const int n = loadoutPrompt::onDraw(d3ddev, pVertexStreamZeroData, primNv, pieces);
+		if (n > 0) {
+			sortPrompt::followPiece(pieces, n, pVertexStreamZeroData, drawData, primNv);
+			RECT promptSc;
+			const bool promptScChanged = winK >= 0 && scaleWindowScissor(d3ddev, windowScale(winK), g_win[winK].ax, g_win[winK].ay, promptSc);
+			IDirect3DBaseTexture9* oldTex = NULL;
+			d3ddev->GetTexture(0, &oldTex);
+			DWORD oldCull = D3DCULL_NONE;
+			d3ddev->GetRenderState(D3DRS_CULLMODE, &oldCull);
+			d3ddev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
 			for (int i = 0; i < n; ++i) {
 				d3ddev->SetTexture(0, pieces[i].tex);
 				d3ddev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, pieces[i].v, sizeof(sortPrompt::Vtx));

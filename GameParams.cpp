@@ -329,6 +329,9 @@ namespace wasort {
     void(__stdcall* g_wheelTick)(DWORD list) = NULL;   // the item list wheel (end of this file), when it is on
     void(__stdcall* g_newTick)(DWORD list) = NULL;     // NewItemMarkers (end of this file), when it is on
     void(__stdcall* g_mapPad)(unsigned long idx, void* state) = NULL;   // gameMap (GameMap.h): sees every pad read first
+    void(__stdcall* g_loadPad)(DWORD idx, void* state) = NULL;          // EquipmentLoadouts (end of this file): second
+    void(__stdcall* g_loadKeyboard)(LONG hr, DWORD reader) = NULL;      // EquipmentLoadouts: every keyboard read
+    bool g_keyboardPatched = false;    // hook 4 is in place (WeaponsArmorSort or EquipmentLoadouts put it there)
     bool g_markersInstalled = false;   // BottomlessBoxMarkers
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -805,6 +808,10 @@ namespace wasort {
     volatile int g_focusCategory = -1;
     volatile DWORD g_focusTime = 0;
     const DWORD kFocusMs = 120;                   // no input step for this long: the list has lost focus
+    // Frames shown (counted at Present, after the prompt's look) and the frame of the list's last input step: the prompt
+    // shows only in frames where its list took input, so it never stays a frame on the next window (from the Inventory
+    // to the Equipment with LB / RB, the Equipment's help bar showed the sort prompt for one frame).
+    volatile LONG g_sortFrame = 0, g_focusFrame = -100;
 
     int focusedKind() {
         if (!g_focusKind) return 0;
@@ -927,6 +934,7 @@ namespace wasort {
         const DWORD r = real(idx, s);
         if (r == ERROR_SUCCESS && s && idx < 4) {
             if (g_mapPad) g_mapPad(idx, s);        // gameMap: while the map shows it takes RS, R3, LB / RB, LT / RT
+            if (g_loadPad) g_loadPad(idx, s);      // EquipmentLoadouts: RS held in the Equipment window's slot grid
             if (g_installed) padFilter(idx, s);
             estus::padSeen(idx, s->buttons);       // what the game sees (after the sort's filter)
         }
@@ -991,6 +999,12 @@ namespace wasort {
         if (g_kbMode || (g_kbWaitUp & 2)) keys[kDikRight] = 0;
         if (g_kbMode || (g_kbWaitUp & 4)) keys[kDikUp] = 0;
         if (g_kbMode || (g_kbWaitUp & 8)) keys[kDikDown] = 0;
+    }
+
+    // hook 4 calls this: the sorting (when on) and EquipmentLoadouts (when on) each see the key read
+    void __stdcall keyboardRead(LONG hr, DWORD reader) {
+        if (g_installed) sortOnKeyboard(hr, reader);
+        if (g_loadKeyboard) g_loadKeyboard(hr, reader);
     }
 
     bool rdBlock(DWORD a, void* out, DWORD n) {
@@ -1573,6 +1587,7 @@ namespace wasort {
         g_focusCategory = cachedCategory(list);
         g_focusKind = kind;
         g_focusTime = GetTickCount();
+        g_focusFrame = g_sortFrame;
         if (g_resortKind == kind) {
             g_resortKind = 0;
             g_toTopList = list;
@@ -1659,7 +1674,7 @@ namespace wasort {
             pushfd
             push esi                            // the keyboard reader (buffer at +0xDC)
             push eax                            // result of the read
-            call sortOnKeyboard
+            call keyboardRead
             popfd
             popad
             cmp eax, 0x8007001E                 // the instruction the jump replaced; the game's jne follows
@@ -1740,6 +1755,7 @@ bool installWeaponsArmorSort() {
     for (int i = 0; i < kSites; ++i) {
         if (i == 0 && g_refreshPatched) continue;   // already put there by BottomlessBoxMarkers
         if (i == 2 && g_tickPatched) continue;      // already put there by the item list wheel
+        if (i == 3 && g_keyboardPatched) continue;  // already put there by EquipmentLoadouts
         if (i == 4 && g_xinputPatched) continue;    // already put there by QuickSelectEstus
         if (memcmp((const void*)sites[i].address, sites[i].expected, sites[i].length) != 0) {
             SDLOG(0, "WeaponsArmorSort: the code for '%s' at 0x%08X is not what this build should have, sorting stays off\n",
@@ -1750,6 +1766,7 @@ bool installWeaponsArmorSort() {
     for (int i = 0; i < kSites; ++i) {
         if (i == 0 && g_refreshPatched) continue;
         if (i == 2 && g_tickPatched) continue;
+        if (i == 3 && g_keyboardPatched) continue;
         if (i == 4 && g_xinputPatched) continue;
         if (!writeJump(sites[i].address, sites[i].length, sites[i].target, sites[i].opcode)) {
             SDLOG(0, "WeaponsArmorSort: could not write at 0x%08X, sorting stays off\n", sites[i].address);
@@ -1759,6 +1776,7 @@ bool installWeaponsArmorSort() {
     g_installed = true;
     g_refreshPatched = true;
     g_tickPatched = true;
+    g_keyboardPatched = true;
     g_xinputPatched = true;
     HANDLE h = CreateThread(NULL, 0, loadThread, NULL, 0, NULL);
     if (h) CloseHandle(h);
@@ -1770,11 +1788,17 @@ bool weaponsArmorSortActive() {
     return wasort::g_installed;
 }
 
+// for RenderstateManager (at Present, after the prompt's look for the next frame): one more frame shown
+void weaponsArmorSortNewFrame() {
+    InterlockedIncrement(&wasort::g_sortFrame);
+}
+
 bool weaponsArmorSortPrompt(SortPromptInfo* out) {
     using namespace wasort;
     if (!g_installed || !out) return false;
     const int kind = focusedKind();
     if (!kind) return false;
+    if (g_focusFrame != g_sortFrame) return false;   // its list took no input this frame (LB / RB to another window)
     const bool held = (g_padMode || g_kbMode) && g_modeKind == kind;
     out->window = g_focusWindow == W_BOX ? 2 : 1;
     out->kind = kind;
@@ -2249,6 +2273,940 @@ bool installGameMapInput(void(__stdcall* pad)(unsigned long idx, void* state), b
     }
     return true;
 }
+
+// =====================================================================================================================
+// EquipmentLoadouts: 5 builds per character, in the Equipment window's slot grid. A build is the whole equipment:
+// weapons (left / right 1 and 2), arrows and bolts 1 and 2, head, chest, hands, legs, rings 1 and 2, quick items 1..5.
+// Hold RS (keyboard: LALT) while the slot grid has focus:
+//   - D-pad left / right (arrows): browse Build 1..5. The slots show the build's items: what would not change is
+//     dimmed, what would change is at full brightness on a blue background (a slot the build empties: the background
+//     alone). A slot whose item is not held any more keeps the current item (dimmed). Let go of RS: the real equipment.
+//   - D-pad down (arrow down) held 1 s: the build is put on. D-pad up (arrow up) held 1.5 s: the equipment worn now
+//     is saved as the build (it replaces what was there). LB (keyboard: Delete) held 1.5 s: the build is deleted.
+//   - Every action needs its bar to fill; two of its buttons held together start nothing. Holding RS starts on the
+//     build worn now (when one is), else on the build shown last.
+// All timing is in milliseconds of the clock, so the frame rate (30, 60, 300 fps, an fps unlock mod) changes nothing.
+// While RS / LALT is held the game sees no controller input and no arrow keys (as for WeaponsArmorSort).
+// The same item at any upgrade or infusion counts (two copies: the saved one, else the highest upgrade). An empty slot
+// of a build empties the slot. An item no longer held, or one the game would refuse or ask about, leaves the slot as it is.
+//
+// How (DARKSOULS.exe, Steam build):
+//   FrpgMenuDlgEquip (vtable 0x011B9054) is the slot grid. Its method 36 (0x00CA6420) runs every frame the grid has
+//   focus and gives each slot picture its item: widget = 0x00784690(grid, widget id table 0x012DEBB0[slot]), then
+//   widget->vtable[0x60](0x1388, {kind | id, 2}) and (0x1394, {count, 2}). DSfix's method 36 calls the game's one and,
+//   during the preview, gives the slots the build's items the same way right after it. The equipment does not change.
+//   Putting an item on is the game's own "picked from the list" step 0x00CA38B0(list, slot, inventory position): it
+//   takes the item out of another slot that has it, then 0x00CA37E0 sets the slot, the stats and the character model.
+//   The list it reads is a small block of DSfix's own holding the slot's remembered cursor / scroll (0x012DEB60), so
+//   the slot's list still opens where it did. Emptying a slot is the grid's own "remove" 0x00CA6C10(grid, slot, 0).
+//   The game's checks come first: 0x00CA5E20 (the equipment can change now), for armor 0x00CA1600 (gender, covenant),
+//   for rings 0x00C9F520 (taking the ring off asks something: max HP / equip load, attunement slots, the Ring of Favor
+//   and Protection breaks) and no second copy of a worn ring. All of it runs inside the grid's own frame update.
+// Builds are kept per character (save slot + name) in %LOCALAPPDATA%\NBGI\DarkSouls\DSfixLoadouts.ini. A missing,
+// broken or read-only file is never shown in the game: the builds then live while the game runs.
+// =====================================================================================================================
+namespace loadouts {
+    using wasort::rd32;
+    using wasort::rdBlock;
+    using wasort::kNameLen;
+    using wasort::kRecentSlots;
+    using wasort::PadState;
+    using wasort::kPadUp;
+    using wasort::kPadDown;
+    using wasort::kPadLeft;
+    using wasort::kPadRight;
+    using wasort::kPadRS;
+    using wasort::kDikUp;
+    using wasort::kDikDown;
+    using wasort::kDikLeft;
+    using wasort::kDikRight;
+
+    const DWORD kVtGrid = 0x011B9054;            // FrpgMenuDlgEquip (the slot grid)
+    const int kFillMethod = 36;                  // its "fill the slot pictures" method (every frame it has focus)
+    const DWORD kFillOriginal = 0x00CA6420;
+    DWORD g_fnFill = 0x00CA6420;
+    DWORD g_fnFindWidget = 0x00784690;           // thiscall (grid, widget id) -> widget
+    DWORD g_fnEquip = 0x00CA38B0;                // stdcall (list, slot, inventory position) -> al
+    DWORD g_fnRemove = 0x00CA6C10;               // stdcall (grid, slot, 0)
+    DWORD g_fnRingCheck = 0x00C9F520;            // ecx = new position, eax = old position -> 0 = nothing to ask
+    DWORD g_fnArmorCheck = 0x00CA1600;           // eax = kind, ecx = id, stack: list -> 0 = allowed
+    DWORD g_fnCanChange = 0x00CA5E20;            // -> al: the equipment can change now
+    DWORD g_fnCounted = 0x00EA70E0;              // ecx = kind, edx = id -> al: the slot shows a count
+    DWORD g_fnSound = 0x00C267E0;                // stdcall (sound, 2): 0x64 = the equip sound of the lists
+    struct Code { DWORD address; BYTE bytes[8]; };
+    const Code kCode[9] = {
+        { 0x00CA6420, { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8, 0x83, 0xEC } },
+        { 0x00784690, { 0x51, 0x56, 0x8B, 0x71, 0x24, 0x85, 0xF6, 0x74 } },
+        { 0x00CA38B0, { 0x83, 0xEC, 0x18, 0x53, 0x55, 0x8B, 0x6C, 0x24 } },
+        { 0x00CA6C10, { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8, 0x51, 0xA1 } },
+        { 0x00C9F520, { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8, 0x83, 0xEC } },
+        { 0x00CA1600, { 0x83, 0xEC, 0x1C, 0x53, 0x55, 0x56, 0x57, 0x8B } },
+        { 0x00CA5E20, { 0x8B, 0x0D, 0x44, 0xD6, 0x37, 0x01, 0x57, 0x8B } },
+        { 0x00EA70E0, { 0xC1, 0xF9, 0x1C, 0x83, 0xE1, 0x0F, 0x83, 0xEC } },
+        { 0x00C267E0, { 0x6A, 0xFF, 0x68, 0xB3, 0x4E, 0x05, 0x01, 0x64 } },
+    };
+    const DWORD kWidgetIds = 0x012DEBB0;         // per slot: the widget id of its picture
+    const DWORD kListMemory = 0x012DEB60;        // per slot: (scroll << 16) | cursor of its "select item" list
+    const DWORD kMenuMan = 0x013786D0;           // +0x138: the last position picked from a list (the equip step sets it)
+    const DWORD kGameMan = 0x013784A0;           // +0xA70: the save slot in play
+    const DWORD kWorldChrMan = 0x0137D644;       // +0x3C: the hero
+    const DWORD kPropItem = 0x1388, kPropCount = 0x1394;
+    // player data: +0x1D4 the slots' inventory positions, +0x24C their item ids (no kind), +0x1B8 the inventory
+    const DWORD kSlotPos = 0x1D4, kSlotId = 0x24C;
+    const int kSlots = 20, kHair = 12, kBuilds = 5;
+    const DWORD kEmpty = 0xFFFFFFFF;
+    const DWORD kInvMax = 2048;
+    const DWORD kFocusMs = 300;                  // no fill call for this long: the grid has no focus (any frame rate)
+    const DWORD kApplyMs = 1000, kSaveMs = 1500, kDeleteMs = 1500, kMessageMs = 1500, kLookMs = 250, kWornMs = 500;
+    const WORD kPadLB = 0x0100;
+    const int kDikDelete = 0xD3;
+
+    struct Build { int used; DWORD kid[kSlots]; int pos[kSlots]; };   // kind | id and inventory position (empty: kEmpty, -1)
+    struct CharSet { int used; wchar_t name[kNameLen]; Build b[kBuilds]; };
+    CharSet g_sets[kRecentSlots];
+    CRITICAL_SECTION g_lock;                     // the save thread copies the sets while a build is saved
+    bool g_lockReady = false;
+    bool g_installed = false;
+    volatile LONG g_loaded = 0;                  // the file was read (or there is none): nothing happens before
+    volatile LONG g_saveBusy = 0, g_saveDirty = 0;
+    volatile int g_active = -1;                  // the save slot of the character in play (-1: none)
+
+    // ---- input side (XInput / keyboard hooks) ----
+    volatile bool g_padMode = false, g_kbMode = false;
+    DWORD g_padIdx = 0;
+    WORD g_padPrev[4] = { 0, 0, 0, 0 };
+    WORD g_padWaitUp = 0;                        // buttons still held when RS was let go: hidden until released
+    bool g_kbPrevLeft = false, g_kbPrevRight = false;
+    int g_kbWaitUp = 0;                          // bits: 1 left, 2 right, 4 up, 8 down, 16 Delete
+    volatile int g_sel = 0;                      // the build browsed (0..4)
+    volatile bool g_holdApply = false, g_holdSave = false, g_holdDelete = false;   // D-pad down / up, LB held (in the mode)
+    volatile bool g_lastKeyboard = true;         // without DDTM: keyboard / mouse used last (for the prompt)
+    volatile DWORD g_gridTime = 0;               // the last fill call of the grid
+
+    // ---- game side (the fill hook) -> prompt ----
+    volatile bool g_applyOn = false, g_saveOn = false, g_deleteOn = false;   // a bar is running
+    volatile DWORD g_applyStart = 0, g_saveStart = 0, g_deleteStart = 0;   // since when
+    volatile int g_msg = 0;                      // 1 "saved", 2 "applied", 3 "deleted" (shown for kMessageMs from g_msgTime)
+    volatile int g_msgBuild = 0;
+    volatile DWORD g_msgTime = 0;
+    volatile unsigned g_savedMask = 0;           // bit i: build i is saved
+    volatile int g_worn = -1;                    // the build worn now (-1: none)
+    volatile bool g_previewOn = false;
+    volatile unsigned g_dimMask = 0;             // bit s: slot s shows an item that would not change (dimmed)
+    volatile unsigned g_fillMask = 0;            // bit s: slot s would change (full brightness, blue background)
+    volatile unsigned g_shownMask = 0;           // bit s: slot s shows an item picture (preview or real)
+    struct Shown { int on; DWORD kid; DWORD count; };
+    Shown g_pv[kSlots];
+    int g_lastSel = -1;
+    bool g_applyDone = false, g_saveDone = false, g_deleteDone = false;
+    bool g_wasMode = false;
+    DWORD g_nextLook = 0, g_lastCharLook = 0, g_nextWorn = 0;
+    bool g_faultLogged = false;
+    BYTE g_fakeList[0x400];                      // the "list" the equip step reads (+0x100 cursor, +0x108 scroll)
+
+    bool gridFocused() { return g_installed && GetTickCount() - g_gridTime < kFocusMs; }
+    // Frames shown (counted at Present) and the frame of the grid's last fill: the prompt and the start of the mode need
+    // the grid in this frame or the last two, so nothing of it is left over on the next window (LB / RB to the
+    // Inventory). gridFocused (300 ms) only keeps a mode running that already started.
+    volatile LONG g_frame = 0, g_fillFrame = -100;
+    bool modeOn() { return g_padMode || g_kbMode; }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // The game's functions
+    // ---------------------------------------------------------------------------------------------------------------
+    typedef void(__fastcall* FillFn)(DWORD self, DWORD unused);
+    typedef DWORD(__fastcall* FindWidgetFn)(DWORD self, DWORD unused, DWORD id);
+    typedef void(__fastcall* SetPropFn)(DWORD self, DWORD unused, DWORD prop, DWORD value, DWORD type);
+    typedef BYTE(__stdcall* EquipFn)(DWORD list, DWORD slot, DWORD pos);
+    typedef void(__stdcall* RemoveFn)(DWORD grid, DWORD slot, DWORD flag);
+    typedef BYTE(__cdecl* CanChangeFn)();
+    typedef BYTE(__fastcall* CountedFn)(DWORD kind, DWORD id);
+    typedef void(__stdcall* SoundFn)(DWORD sound, DWORD type);
+
+    __declspec(naked) DWORD __stdcall ringCheck(DWORD newPos, DWORD oldPos) {
+        __asm {
+            mov ecx, dword ptr[esp + 4]
+            mov eax, dword ptr[esp + 8]
+            call dword ptr[g_fnRingCheck]
+            ret 8
+        }
+    }
+    __declspec(naked) DWORD __stdcall armorCheck(DWORD kind, DWORD id, DWORD list) {
+        __asm {
+            mov eax, dword ptr[esp + 4]
+            mov ecx, dword ptr[esp + 8]
+            push dword ptr[esp + 12]
+            call dword ptr[g_fnArmorCheck]     // it removes the list argument (ret 4)
+            ret 12
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // The look at the equipment and the inventory (a copy, so the searches read no game memory)
+    // ---------------------------------------------------------------------------------------------------------------
+    struct Snap { DWORD player; DWORD count; DWORD pos[kSlots]; DWORD id[kSlots]; BYTE inv[kInvMax * 28]; };
+    Snap g_snap;
+
+    bool takeSnap(Snap& s) {
+        s.player = wasort::playerData();
+        if (!s.player) return false;
+        const DWORD inv = s.player + 0x1B8;
+        DWORD count = rd32(inv + 0x110), split = rd32(inv + 0x118);
+        const DWORD blockA = rd32(inv + 0x120), blockB = rd32(inv + 0x124);
+        if (count > kInvMax) count = kInvMax;
+        if (split > count) split = count;
+        if (!blockA || (count > split && !blockB)) return false;
+        if (!rdBlock(blockA, s.inv, split * 28) || !rdBlock(blockB + split * 28, s.inv + split * 28, (count - split) * 28)) return false;
+        if (!rdBlock(s.player + kSlotPos, s.pos, sizeof(s.pos)) || !rdBlock(s.player + kSlotId, s.id, sizeof(s.id))) return false;
+        s.count = count;
+        return true;
+    }
+    DWORD snapKid(const Snap& s, DWORD i) { const BYTE* e = s.inv + i * 28; return *(const DWORD*)e | *(const DWORD*)(e + 4); }
+    DWORD snapCount(const Snap& s, DWORD i) { return *(const DWORD*)(s.inv + i * 28 + 8); }
+    bool snapUsed(const Snap& s, DWORD i) { return i < s.count && s.inv[i * 28 + 0x10] != 0; }
+
+    // a slot with nothing in it: no position, or the game's stand-ins (Fists, no armor)
+    bool emptySlot(int slot, DWORD id, DWORD pos) {
+        if ((int)pos < 0 || id == kEmpty) return true;
+        if (slot <= 3) return id == 900000;
+        if (slot >= 8 && slot <= 11) return id >= 900000 && id < 904000;
+        return false;
+    }
+    // the picture value of an empty slot (what the game itself has there)
+    DWORD emptyValue(int slot) {
+        if (slot <= 3) return 900000;
+        if (slot >= 8 && slot <= 11) return 0x10000000 | (DWORD)(900000 + (slot - 8) * 1000);
+        return kEmpty;
+    }
+    bool isAmmo(DWORD kid) { const DWORD id = kid & 0x0FFFFFFF; return (kid & 0xF0000000) == 0 && id >= 2000000 && id < 2200000; }
+    // the same item at any level: weapons (not ammo) and armor without upgrade / infusion, the Estus Flask at any level
+    DWORD itemKey(DWORD kid) {
+        const DWORD kind = kid & 0xF0000000, id = kid & 0x0FFFFFFF;
+        if ((kind == 0 && !isAmmo(kid)) || kind == 0x10000000) return kind | (id / 1000 * 1000);
+        if (kind == 0x40000000 && id >= 200 && id <= 215) return kind | 200;
+        return kid;
+    }
+    int upgradeOf(DWORD kid) {
+        const DWORD kind = kid & 0xF0000000;
+        if ((kind == 0 && !isAmmo(kid)) || kind == 0x10000000) return (int)((kid & 0x0FFFFFFF) % 100);
+        return 0;
+    }
+    // the item can go in the slot (arrows 4 / 6, bolts 5 / 7; ammo and items need some held, the Estus Flask not)
+    bool fits(int slot, DWORD kid, DWORD count) {
+        const DWORD kind = kid & 0xF0000000, id = kid & 0x0FFFFFFF;
+        if (slot <= 3) return kind == 0 && !isAmmo(kid);
+        if (slot <= 7) return isAmmo(kid) && count > 0 && ((slot == 4 || slot == 6) ? id < 2100000 : id >= 2100000);
+        if (slot <= 11) return kind == 0x10000000;
+        if (slot == 13 || slot == 14) return kind == 0x20000000;
+        if (slot >= 15) return kind == 0x40000000 && (count > 0 || (id >= 200 && id <= 215));
+        return false;
+    }
+
+    // What the build puts in each slot: an inventory position, -1 empty, -2 leave the slot (the item is not held).
+    void resolve(const Build& b, const Snap& s, int* target) {
+        DWORD claimed[kSlots];
+        int nClaimed = 0;
+        for (int slot = 0; slot < kSlots; ++slot) {
+            target[slot] = -2;
+            if (slot == kHair || !b.used) continue;
+            const DWORD kid = b.kid[slot];
+            if (kid == kEmpty) { target[slot] = -1; continue; }
+            int best = -1;
+            const DWORD p = (DWORD)b.pos[slot];
+            bool taken = false;
+            for (int k = 0; k < nClaimed; ++k) if (claimed[k] == p) taken = true;
+            if (!taken && snapUsed(s, p) && snapKid(s, p) == kid && fits(slot, kid, snapCount(s, p))) best = (int)p;
+            else {
+                const DWORD key = itemKey(kid);
+                int bestUp = -1;
+                bool bestHere = false;
+                for (DWORD i = 0; i < s.count; ++i) {
+                    if (!snapUsed(s, i)) continue;
+                    const DWORD k = snapKid(s, i);
+                    if (itemKey(k) != key || !fits(slot, k, snapCount(s, i))) continue;
+                    bool used = false;
+                    for (int c = 0; c < nClaimed; ++c) if (claimed[c] == i) used = true;
+                    if (used) continue;
+                    const int up = upgradeOf(k);
+                    const bool here = s.pos[slot] == i;
+                    if (up > bestUp || (up == bestUp && here && !bestHere)) { best = (int)i; bestUp = up; bestHere = here; }
+                }
+            }
+            if (best >= 0) { target[slot] = best; claimed[nClaimed++] = (DWORD)best; }
+        }
+        // two copies of one ring: the game refuses the second
+        if (target[13] >= 0 && target[14] >= 0 && snapKid(s, (DWORD)target[13]) == snapKid(s, (DWORD)target[14])) target[14] = -2;
+    }
+
+    // applying the build would change nothing
+    bool isWorn(const Build& b, const Snap& s) {
+        if (!b.used) return false;
+        int t[kSlots];
+        resolve(b, s, t);
+        for (int slot = 0; slot < kSlots; ++slot) {
+            if (slot == kHair || t[slot] == -2) continue;
+            if (t[slot] == -1) { if (!emptySlot(slot, s.id[slot], s.pos[slot])) return false; }
+            else if (s.pos[slot] != (DWORD)t[slot]) return false;
+        }
+        return true;
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // The character in play and its builds
+    // ---------------------------------------------------------------------------------------------------------------
+    void refreshCharacter() {
+        const DWORD player = wasort::playerData();
+        const DWORD gm = rd32(kGameMan);
+        const DWORD saveSlot = gm ? rd32(gm + 0xA70) : 0xFFFFFFFF;
+        const DWORD wcm = rd32(kWorldChrMan);
+        const DWORD hero = wcm ? rd32(wcm + 0x3C) : 0;
+        if (!player || !hero || saveSlot >= (DWORD)kRecentSlots) { g_active = -1; return; }
+        wchar_t name[kNameLen];
+        memset(name, 0, sizeof(name));
+        if (!rdBlock(player + 0xA0, name, sizeof(wchar_t) * (kNameLen - 1)) || !name[0]) { g_active = -1; return; }
+        CharSet& c = g_sets[saveSlot];
+        if (g_active != (int)saveSlot || !c.used || wcsncmp(c.name, name, kNameLen) != 0) {
+            EnterCriticalSection(&g_lock);
+            if (!c.used || wcsncmp(c.name, name, kNameLen) != 0) {
+                // another character in this save slot (or none yet): it starts with no builds
+                memset(&c, 0, sizeof(c));
+                c.used = 1;
+                wcsncpy_s(c.name, kNameLen, name, _TRUNCATE);
+            }
+            LeaveCriticalSection(&g_lock);
+            g_active = (int)saveSlot;
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // The file: Character=<save slot> <name>, then Build=<1..5> and 20 times <kind | id in hex>:<inventory position>
+    // ---------------------------------------------------------------------------------------------------------------
+    bool filePath(wchar_t* dir1, wchar_t* dir2, wchar_t* file, wchar_t* tmp, DWORD size) {
+        wchar_t base[MAX_PATH];
+        const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
+        if (n == 0 || n >= MAX_PATH - 64) return false;
+        _snwprintf_s(dir1, size, _TRUNCATE, L"%s\\NBGI", base);
+        _snwprintf_s(dir2, size, _TRUNCATE, L"%s\\NBGI\\DarkSouls", base);
+        _snwprintf_s(file, size, _TRUNCATE, L"%s\\NBGI\\DarkSouls\\DSfixLoadouts.ini", base);
+        _snwprintf_s(tmp, size, _TRUNCATE, L"%s\\NBGI\\DarkSouls\\DSfixLoadouts.ini.tmp", base);
+        return true;
+    }
+
+    void writeFile() {
+        if (!g_loaded) return;
+        wchar_t dir1[MAX_PATH], dir2[MAX_PATH], file[MAX_PATH], tmp[MAX_PATH];
+        if (!filePath(dir1, dir2, file, tmp, MAX_PATH)) return;
+        HANDLE heap = GetProcessHeap();
+        CharSet* sets = (CharSet*)HeapAlloc(heap, 0, sizeof(g_sets));
+        if (!sets) return;
+        EnterCriticalSection(&g_lock);
+        memcpy(sets, g_sets, sizeof(g_sets));
+        LeaveCriticalSection(&g_lock);
+        const size_t cap = (size_t)kRecentSlots * (128 + kBuilds * (16 + kSlots * 20));
+        char* text = (char*)HeapAlloc(heap, 0, cap);
+        if (!text) { HeapFree(heap, 0, sets); return; }
+        int len = 0;
+        for (int k = 0; k < kRecentSlots && len >= 0; ++k) {
+            const CharSet& c = sets[k];
+            bool any = false;
+            for (int i = 0; i < kBuilds; ++i) if (c.b[i].used) any = true;
+            if (!c.used || !any) continue;
+            char name[64] = { 0 };
+            if (!WideCharToMultiByte(CP_UTF8, 0, c.name, -1, name, sizeof(name), NULL, NULL)) name[0] = 0;
+            int m = _snprintf_s(text + len, cap - len, _TRUNCATE, "Character=%d %s\r\n", k, name);
+            len = m < 0 ? -1 : len + m;
+            for (int i = 0; i < kBuilds && len >= 0; ++i) {
+                if (!c.b[i].used) continue;
+                m = _snprintf_s(text + len, cap - len, _TRUNCATE, "Build=%d", i + 1);
+                len = m < 0 ? -1 : len + m;
+                for (int s = 0; s < kSlots && len >= 0; ++s) {
+                    m = _snprintf_s(text + len, cap - len, _TRUNCATE, " %08X:%d", c.b[i].kid[s], c.b[i].pos[s]);
+                    len = m < 0 ? -1 : len + m;
+                }
+                if (len >= 0) {
+                    m = _snprintf_s(text + len, cap - len, _TRUNCATE, "\r\n");
+                    len = m < 0 ? -1 : len + m;
+                }
+            }
+        }
+        HeapFree(heap, 0, sets);
+        bool written = false;
+        if (len >= 0) {
+            CreateDirectoryW(dir1, NULL);
+            CreateDirectoryW(dir2, NULL);
+            HANDLE h = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (h != INVALID_HANDLE_VALUE) {
+                DWORD done = 0;
+                const BOOL ok = (len == 0 || WriteFile(h, text, (DWORD)len, &done, NULL)) && done == (DWORD)len;
+                CloseHandle(h);
+                if (ok && MoveFileExW(tmp, file, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) written = true;
+                else DeleteFileW(tmp);
+            }
+        }
+        HeapFree(heap, 0, text);
+    }
+
+    DWORD WINAPI saveThread(LPVOID) {
+        do {
+            while (InterlockedExchange(&g_saveDirty, 0)) writeFile();
+            InterlockedExchange(&g_saveBusy, 0);
+        } while (g_saveDirty && InterlockedCompareExchange(&g_saveBusy, 1, 0) == 0);
+        return 0;
+    }
+    void requestSave() {
+        InterlockedExchange(&g_saveDirty, 1);
+        if (InterlockedCompareExchange(&g_saveBusy, 1, 0) != 0) return;
+        HANDLE h = CreateThread(NULL, 0, saveThread, NULL, 0, NULL);
+        if (h) CloseHandle(h);
+        else InterlockedExchange(&g_saveBusy, 0);
+    }
+
+    // One Build line: "<n> <kid>:<pos> x 20". False when anything in it is wrong (the line is then skipped).
+    bool parseBuild(const char* v, int* n, Build* out) {
+        char* end = NULL;
+        const long k = strtol(v, &end, 10);
+        if (end == v || k < 1 || k > kBuilds) return false;
+        const char* p = end;
+        Build b;
+        memset(&b, 0, sizeof(b));
+        for (int s = 0; s < kSlots; ++s) {
+            while (*p == ' ') ++p;
+            const unsigned long kid = strtoul(p, &end, 16);
+            if (end == p || *end != ':') return false;
+            p = end + 1;
+            const long pos = strtol(p, &end, 10);
+            if (end == p || pos < -1 || pos >= (long)kInvMax) return false;
+            p = end;
+            b.kid[s] = (DWORD)kid;
+            b.pos[s] = (int)pos;
+            if (kid == kEmpty) b.pos[s] = -1;
+        }
+        while (*p == ' ') ++p;
+        if (*p) return false;
+        b.used = 1;
+        *n = (int)k - 1;
+        *out = b;
+        return true;
+    }
+
+    // With g_lock held. Bad lines are skipped, the rest is kept.
+    void readFile(int* builds, int* bad) {
+        *builds = 0; *bad = 0;
+        wchar_t dir1[MAX_PATH], dir2[MAX_PATH], file[MAX_PATH], tmp[MAX_PATH];
+        if (!filePath(dir1, dir2, file, tmp, MAX_PATH)) return;
+        HANDLE h = CreateFileW(file, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h == INVALID_HANDLE_VALUE) return;   // no file yet
+        const DWORD size = GetFileSize(h, NULL);
+        if (size == INVALID_FILE_SIZE || size > 1024 * 1024) { CloseHandle(h); *bad = 1; return; }
+        HANDLE heap = GetProcessHeap();
+        char* text = (char*)HeapAlloc(heap, 0, (SIZE_T)size + 1);
+        if (!text) { CloseHandle(h); return; }
+        DWORD got = 0;
+        const BOOL ok = ReadFile(h, text, size, &got, NULL);
+        CloseHandle(h);
+        if (!ok) { HeapFree(heap, 0, text); *bad = 1; return; }
+        text[got] = 0;
+        int cur = -1;
+        char* line = text;
+        while (*line) {
+            char* end = line;
+            while (*end && *end != '\n' && *end != '\r') ++end;
+            const char keep = *end;
+            *end = 0;
+            if (*line) {
+                const char* v = NULL;
+                int value = -1;
+                if ((v = wasort::valueOf(line, "Character=")) != NULL) {
+                    const char* space = strchr(v, ' ');
+                    if (space && sscanf_s(v, "%d", &value) == 1 && value >= 0 && value < kRecentSlots) {
+                        CharSet& c = g_sets[value];
+                        memset(&c, 0, sizeof(c));
+                        c.used = 1;
+                        if (!MultiByteToWideChar(CP_UTF8, 0, space + 1, -1, c.name, kNameLen)) memset(c.name, 0, sizeof(c.name));
+                        c.name[kNameLen - 1] = 0;
+                        cur = value;
+                    }
+                    else { ++*bad; cur = -1; }
+                }
+                else if ((v = wasort::valueOf(line, "Build=")) != NULL) {
+                    int n = 0;
+                    Build b;
+                    if (cur >= 0 && parseBuild(v, &n, &b)) { g_sets[cur].b[n] = b; ++*builds; }
+                    else ++*bad;
+                }
+                else ++*bad;
+            }
+            if (!keep) break;
+            line = end + 1;
+        }
+        HeapFree(heap, 0, text);
+    }
+
+    DWORD WINAPI loadThread(LPVOID) {
+        int builds = 0, bad = 0;
+        EnterCriticalSection(&g_lock);
+        readFile(&builds, &bad);
+        LeaveCriticalSection(&g_lock);
+        InterlockedExchange(&g_loaded, 1);
+        return 0;
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // Saving and putting on a build (game side, inside the grid's frame update)
+    // ---------------------------------------------------------------------------------------------------------------
+    void saveBuild(int sel) {
+        if (g_active < 0 || !takeSnap(g_snap)) return;
+        Build nb;
+        memset(&nb, 0, sizeof(nb));
+        nb.used = 1;
+        for (int slot = 0; slot < kSlots; ++slot) {
+            const DWORD pos = g_snap.pos[slot], id = g_snap.id[slot];
+            nb.kid[slot] = kEmpty;
+            nb.pos[slot] = -1;
+            if (slot == kHair || emptySlot(slot, id, pos) || !snapUsed(g_snap, pos)) continue;
+            nb.kid[slot] = snapKid(g_snap, pos);
+            nb.pos[slot] = (int)pos;
+        }
+        EnterCriticalSection(&g_lock);
+        g_sets[g_active].b[sel] = nb;
+        LeaveCriticalSection(&g_lock);
+        requestSave();
+    }
+
+    void deleteBuild(int sel) {
+        if (g_active < 0) return;
+        EnterCriticalSection(&g_lock);
+        memset(&g_sets[g_active].b[sel], 0, sizeof(Build));
+        LeaveCriticalSection(&g_lock);
+        requestSave();
+    }
+
+    int applyBuild(DWORD grid, const Build& b) {
+        if (!((CanChangeFn)g_fnCanChange)()) return 0;
+        if (!takeSnap(g_snap)) return 0;
+        int t[kSlots];
+        resolve(b, g_snap, t);
+        const DWORD player = g_snap.player;
+        const DWORD mm = rd32(kMenuMan);
+        const DWORD keep138 = mm ? rd32(mm + 0x138) : 0;
+        int changed = 0;
+        for (int slot = 0; slot < kSlots; ++slot) {
+            if (slot == kHair) continue;
+            const DWORD curPos = rd32(player + kSlotPos + slot * 4), curId = rd32(player + kSlotId + slot * 4);
+            if (t[slot] == -2) continue;                      // missing: the slot stays as it is
+            if (t[slot] == -1) {
+                // emptied (not a ring the game would ask about)
+                if (!emptySlot(slot, curId, curPos) && !((slot == 13 || slot == 14) && ringCheck(kEmpty, curPos) != 0)) {
+                    ((RemoveFn)g_fnRemove)(grid, (DWORD)slot, 0);
+                    ++changed;
+                }
+            }
+            else if ((DWORD)t[slot] != curPos) {
+                const DWORD pos = (DWORD)t[slot];
+                const DWORD e = wasort::inventorySlot(player, pos);
+                const DWORD kind = e ? rd32(e) : 0, id = e ? rd32(e + 4) : 0;
+                if (!e || (kind | id) != snapKid(g_snap, pos)) continue;                              // the bag changed
+                if (kind == 0x10000000 && armorCheck(kind, id, (DWORD)g_fakeList) != 0) continue;       // refused
+                if ((slot == 13 || slot == 14) && rd32(player + kSlotId + (slot == 13 ? 14 : 13) * 4) == id &&
+                    rd32(player + kSlotPos + (slot == 13 ? 14 : 13) * 4) != pos) continue;             // ring twice
+                if ((slot == 13 || slot == 14) && ringCheck(pos, curPos) != 0) continue;                // ring asks
+                const DWORD mem = rd32(kListMemory + slot * 4);
+                *(DWORD*)(g_fakeList + 0x100) = mem & 0xFFFF;
+                *(DWORD*)(g_fakeList + 0x108) = mem >> 16;
+                ((EquipFn)g_fnEquip)((DWORD)g_fakeList, (DWORD)slot, pos);
+                ++changed;
+            }
+        }
+        if (mm) *(DWORD*)(mm + 0x138) = keep138;
+        if (changed) ((SoundFn)g_fnSound)(0x64, 2);
+        return changed;
+    }
+
+    // the worn build and the preview of the browsed one (4 times a second, at once after a change)
+    // the build worn now, from g_snap (the one shown when it is worn too, else the first; -1 none)
+    int wornBuild(int sel) {
+        const CharSet& c = g_sets[g_active];
+        int worn = -1;
+        for (int i = 0; i < kBuilds; ++i) {
+            if (!isWorn(c.b[i], g_snap)) continue;
+            if (worn < 0 || i == sel) worn = i;
+        }
+        return worn;
+    }
+
+    void look(int sel) {
+        if (!takeSnap(g_snap)) { g_previewOn = false; return; }
+        const CharSet& c = g_sets[g_active];
+        g_worn = wornBuild(sel);
+        int t[kSlots];
+        resolve(c.b[sel], g_snap, t);
+        // Every picture is dimmed, except the slots the build would change: those are at full brightness with the blue
+        // background (a slot the build would empty: the background alone). A slot whose item is gone does not change.
+        unsigned dim = 0, fill = 0, shown = 0;
+        for (int slot = 0; slot < kSlots; ++slot) {
+            Shown& v = g_pv[slot];
+            v.on = 0;
+            const bool curEmpty = emptySlot(slot, g_snap.id[slot], g_snap.pos[slot]);
+            if (slot == kHair) continue;
+            const unsigned bit = 1u << slot;
+            if (t[slot] >= 0) {
+                const DWORD p = (DWORD)t[slot], kid = snapKid(g_snap, p);
+                v.on = 1;
+                v.kid = kid;
+                v.count = ((CountedFn)g_fnCounted)(kid & 0xF0000000, kid & 0x0FFFFFFF) ? snapCount(g_snap, p) : 0;
+                shown |= bit;
+                if (p != g_snap.pos[slot]) fill |= bit;
+            }
+            else if (t[slot] == -1) {
+                if (!curEmpty) { v.on = 1; v.kid = emptyValue(slot); v.count = 0; fill |= bit; }
+            }
+            else if (!curEmpty) shown |= bit;
+        }
+        // every other slot is dimmed: also an empty one, where the game still draws its stand-in (Fists, no armour)
+        dim = 0xFFFFFu & ~fill & ~(1u << kHair);
+        g_dimMask = dim;
+        g_fillMask = fill;
+        g_shownMask = shown;
+    }
+
+    // One hold action. ok: its button is held and it may run. The bar starts in this frame; true comes only in a later
+    // frame, once it has run for 'ms' (the time is compared signed: never "full" before it started). Let go, or another
+    // button held with it: the bar is gone and nothing happens. After it was done, the button must be let go first.
+    bool bar(bool ok, bool held, volatile bool& on, volatile DWORD& start, bool& done, DWORD ms, DWORD now) {
+        if (ok) {
+            if (done) return false;
+            if (!on) {
+                start = now;
+                on = true;
+                return false;
+            }
+            if ((int)(now - start) < (int)ms) return false;
+            on = false;
+            done = true;
+            return true;
+        }
+        on = false;
+        if (!held) done = false;
+        return false;
+    }
+
+    void tick(DWORD grid) {
+        const DWORD now = GetTickCount();
+        const bool had = now - g_gridTime < kFocusMs;
+        g_gridTime = now;
+        g_fillFrame = g_frame;
+        if (!had || now - g_lastCharLook >= 500) { g_lastCharLook = now; refreshCharacter(); }
+        if (!g_loaded || g_active < 0) { g_previewOn = false; g_dimMask = 0; g_fillMask = 0; return; }
+        const CharSet& c = g_sets[g_active];
+        unsigned m = 0;
+        for (int i = 0; i < kBuilds; ++i) if (c.b[i].used) m |= 1u << i;
+        g_savedMask = m;
+        if (!modeOn()) {
+            g_applyOn = false; g_saveOn = false; g_deleteOn = false;
+            g_applyDone = false; g_saveDone = false; g_deleteDone = false;
+            g_previewOn = false; g_dimMask = 0; g_fillMask = 0;
+            g_lastSel = -1;
+            g_wasMode = false;
+            // the worn build, so holding RS starts on it at once
+            if ((int)(now - g_nextWorn) >= 0 || !g_nextWorn) {
+                g_nextWorn = now + kWornMs;
+                if (takeSnap(g_snap)) g_worn = wornBuild(g_sel);
+            }
+            return;
+        }
+        if (!g_wasMode) {
+            // the first frame of the mode: the worn build exactly as it is now (the input side used the last look)
+            g_wasMode = true;
+            if (takeSnap(g_snap)) {
+                const int worn = wornBuild(g_sel);
+                g_worn = worn;
+                if (worn >= 0 && worn != g_sel) g_sel = worn;
+            }
+        }
+        const int sel = g_sel;
+        if (sel != g_lastSel) {
+            g_lastSel = sel;
+            // another build: a bar still held starts again from empty
+            g_applyOn = false; g_saveOn = false; g_deleteOn = false;
+            g_applyDone = false; g_saveDone = false; g_deleteDone = false;
+            g_nextLook = 0;
+        }
+        const bool used = c.b[sel].used != 0;
+        const bool hs = g_holdSave, ha = g_holdApply, hd = g_holdDelete;
+        // one action at a time, and only with its own button held alone (two held together start nothing)
+        const bool okSave = hs && !ha && !hd && !g_applyOn && !g_deleteOn;
+        const bool okApply = ha && !hs && !hd && used && !g_saveOn && !g_deleteOn;
+        const bool okDelete = hd && !hs && !ha && used && !g_saveOn && !g_applyOn;
+        if (bar(okSave, hs, g_saveOn, g_saveStart, g_saveDone, kSaveMs, now)) {
+            saveBuild(sel);
+            g_msgTime = now; g_msgBuild = sel; g_msg = 1;
+            g_nextLook = 0;
+        }
+        if (bar(okApply, ha, g_applyOn, g_applyStart, g_applyDone, kApplyMs, now)) {
+            applyBuild(grid, c.b[sel]);
+            g_msgTime = now; g_msgBuild = sel; g_msg = 2;
+            g_nextLook = 0;
+        }
+        if (bar(okDelete, hd, g_deleteOn, g_deleteStart, g_deleteDone, kDeleteMs, now)) {
+            deleteBuild(sel);
+            g_msgTime = now; g_msgBuild = sel; g_msg = 3;
+            g_nextLook = 0;
+        }
+        if (g_msg && ((int)(now - g_msgTime) >= (int)kMessageMs || g_msgBuild != sel)) g_msg = 0;
+        if ((int)(now - g_nextLook) >= 0 || !g_nextLook) { g_nextLook = now + kLookMs; look(sel); }
+        g_previewOn = !g_holdSave && c.b[sel].used;
+        if (!g_previewOn) { g_dimMask = 0; g_fillMask = 0; }
+    }
+
+    // right after the game filled the grid: the slots get the build's items
+    void preview(DWORD grid) {
+        if (!g_previewOn || !modeOn()) return;
+        for (int slot = 0; slot < kSlots; ++slot) {
+            if (!g_pv[slot].on) continue;
+            const DWORD w = ((FindWidgetFn)g_fnFindWidget)(grid, 0, rd32(kWidgetIds + slot * 4));
+            if (!w) continue;
+            const DWORD vt = rd32(w);
+            const DWORD fn = vt ? rd32(vt + 0x60) : 0;
+            if (!fn) continue;
+            ((SetPropFn)fn)(w, 0, kPropItem, g_pv[slot].kid, 2);
+            ((SetPropFn)fn)(w, 0, kPropCount, g_pv[slot].count, 2);
+        }
+    }
+
+    void fault(const char* where) {
+        g_previewOn = false;
+        g_dimMask = 0;
+        g_fillMask = 0;
+        if (!g_faultLogged) { g_faultLogged = true; SDLOG(0, "EquipmentLoadouts: an error in %s was caught, the step was skipped\n", where); }
+    }
+    void tickSafe(DWORD grid) {
+        __try { tick(grid); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { fault("the frame step"); }
+    }
+    void previewSafe(DWORD grid) {
+        __try { preview(grid); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { fault("the preview"); }
+    }
+
+    // the grid's method 36 (thiscall, no arguments): DSfix's step, the game's fill, then the preview
+    void __fastcall onFill(DWORD grid, DWORD unused) {
+        tickSafe(grid);
+        ((FillFn)g_fnFill)(grid, unused);
+        previewSafe(grid);
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // Input
+    // ---------------------------------------------------------------------------------------------------------------
+    bool ready() { return gridFocused() && g_loaded && g_active >= 0; }
+    // the slot grid is on screen now: filled in this frame or the last two, and no item list has focus (the sorting's
+    // list focus, when WeaponsArmorSort is on)
+    bool onScreen() { return ready() && g_frame - g_fillFrame <= 2 && !wasort::focusedKind(); }
+    // for the prompt: the grid was updated in this very frame (the game updates it before drawing the frame), so the
+    // hint is never drawn on the next window's first frame (LB / RB to the Inventory)
+    bool updatedThisFrame() { return onScreen() && g_fillFrame == g_frame; }
+    void beginMode() {
+        g_holdApply = false; g_holdSave = false; g_holdDelete = false;
+        g_msg = 0;
+        if (g_worn >= 0) g_sel = g_worn;          // start on the build worn now
+    }
+    void endMode() {
+        g_holdApply = false; g_holdSave = false; g_holdDelete = false;
+    }
+    void stepBuild(int dir) {
+        g_sel = (g_sel + dir + kBuilds) % kBuilds;
+        g_msg = 0;
+    }
+
+    void __stdcall onPad(DWORD idx, void* state) {
+        PadState* s = (PadState*)state;
+        if (!s || idx >= 4) return;
+        const WORD raw = s->buttons;
+        const WORD prev = g_padPrev[idx];
+        g_padPrev[idx] = raw;
+        if ((raw & (WORD)~prev) || s->lt > 30 || s->rt > 30 || s->lx > 8000 || s->lx < -8000 || s->ly > 8000 ||
+            s->ly < -8000 || s->rx > 8000 || s->rx < -8000 || s->ry > 8000 || s->ry < -8000) g_lastKeyboard = false;
+        const bool grid = ready();
+        if (!g_padMode && !g_kbMode && onScreen() && (raw & kPadRS)) {
+            g_padMode = true;
+            g_padIdx = idx;
+            beginMode();
+        }
+        if (g_padMode && idx == g_padIdx) {
+            if (!(raw & kPadRS) || !grid) {
+                g_padMode = false;
+                g_padWaitUp = raw;
+                endMode();
+            }
+            else {
+                if ((raw & kPadLeft) && !(prev & kPadLeft)) stepBuild(-1);
+                if ((raw & kPadRight) && !(prev & kPadRight)) stepBuild(+1);
+                g_holdApply = (raw & kPadDown) != 0;
+                g_holdSave = (raw & kPadUp) != 0;
+                g_holdDelete = (raw & kPadLB) != 0;
+            }
+        }
+        if (g_padMode) {
+            // everything is hidden from the game while RS is held (every pad)
+            s->buttons = 0; s->lt = 0; s->rt = 0; s->lx = 0; s->ly = 0; s->rx = 0; s->ry = 0;
+            return;
+        }
+        // LALT held: the D-pad too (DDTMControllerFix can give the arrow keys to the game as a D-pad)
+        if (g_kbMode) s->buttons &= (WORD)~(kPadUp | kPadDown | kPadLeft | kPadRight);
+        if (g_padWaitUp && idx == g_padIdx) {
+            g_padWaitUp &= raw;
+            s->buttons &= (WORD)~g_padWaitUp;
+        }
+    }
+
+    void __stdcall onKeyboard(LONG hr, DWORD reader) {
+        if (hr < 0 || !reader) return;
+        BYTE* keys = (BYTE*)(reader + 0xDC);
+        const bool focus = wasort::gameHasFocus();
+        const bool alt = focus && (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0;
+        const bool left = focus && (GetAsyncKeyState(VK_LEFT) & 0x8000) != 0;
+        const bool right = focus && (GetAsyncKeyState(VK_RIGHT) & 0x8000) != 0;
+        const bool up = focus && (GetAsyncKeyState(VK_UP) & 0x8000) != 0;
+        const bool down = focus && (GetAsyncKeyState(VK_DOWN) & 0x8000) != 0;
+        const bool del = focus && (GetAsyncKeyState(VK_DELETE) & 0x8000) != 0;
+        if (focus && ((GetAsyncKeyState(VK_LBUTTON) | GetAsyncKeyState(VK_RBUTTON)) & 0x8000)) g_lastKeyboard = true;
+        for (int k = 0; k < 256 && !g_lastKeyboard; ++k) if (keys[k] & 0x80) g_lastKeyboard = true;
+        const bool grid = ready();
+        if (!g_kbMode && !g_padMode && onScreen() && alt) {
+            g_kbMode = true;
+            beginMode();
+        }
+        if (g_kbMode) {
+            if (!alt || !grid) {
+                g_kbMode = false;
+                g_kbWaitUp = (left ? 1 : 0) | (right ? 2 : 0) | (up ? 4 : 0) | (down ? 8 : 0) | (del ? 16 : 0);
+                endMode();
+            }
+            else {
+                if (left && !g_kbPrevLeft) stepBuild(-1);
+                if (right && !g_kbPrevRight) stepBuild(+1);
+                g_holdApply = down;
+                g_holdSave = up;
+                g_holdDelete = del;
+            }
+        }
+        g_kbPrevLeft = left;
+        g_kbPrevRight = right;
+        if (!left) g_kbWaitUp &= ~1;
+        if (!right) g_kbWaitUp &= ~2;
+        if (!up) g_kbWaitUp &= ~4;
+        if (!down) g_kbWaitUp &= ~8;
+        if (g_kbMode || (g_kbWaitUp & 1)) keys[kDikLeft] = 0;
+        if (g_kbMode || (g_kbWaitUp & 2)) keys[kDikRight] = 0;
+        if (g_kbMode || (g_kbWaitUp & 4)) keys[kDikUp] = 0;
+        if (g_kbMode || (g_kbWaitUp & 8)) keys[kDikDown] = 0;
+        if (!del) g_kbWaitUp &= ~16;
+        if (g_kbMode || (g_kbWaitUp & 16)) keys[kDikDelete] = 0;
+    }
+}
+
+bool installEquipmentLoadouts() {
+    using namespace wasort;
+    namespace lo = loadouts;
+    if (lo::g_installed) return true;
+    if (!Settings::get().getEquipmentLoadouts()) return false;
+    const DWORD keyboardSite = 0x006447C8, xinputSite = 0x00ABA542;
+    const DWORD entry = lo::kVtGrid + lo::kFillMethod * 4;
+    bool ok = rd32(entry) == lo::kFillOriginal;
+    for (int i = 0; i < 9 && ok; ++i)
+        if (memcmp((const void*)lo::kCode[i].address, lo::kCode[i].bytes, sizeof(lo::kCode[i].bytes)) != 0) ok = false;
+    if (!g_keyboardPatched && memcmp((const void*)keyboardSite, kExpKeyboard, sizeof(kExpKeyboard)) != 0) ok = false;
+    if (!g_xinputPatched && memcmp((const void*)xinputSite, kExpXInput, sizeof(kExpXInput)) != 0) ok = false;
+    if (!ok) {
+        SDLOG(0, "EquipmentLoadouts: the game code is not what this build should have, it stays off\n");
+        return false;
+    }
+    if (!lo::g_lockReady) { InitializeCriticalSection(&lo::g_lock); lo::g_lockReady = true; }
+    memset(lo::g_fakeList, 0, sizeof(lo::g_fakeList));
+    // the input hooks first: without the grid hook they do nothing (the grid never has focus)
+    g_loadPad = &lo::onPad;
+    g_loadKeyboard = &lo::onKeyboard;
+    if (!g_xinputPatched) {
+        if (!writeJump(xinputSite, sizeof(kExpXInput), (const void*)&sortXInputGetState)) {
+            g_loadPad = NULL; g_loadKeyboard = NULL;
+            SDLOG(0, "EquipmentLoadouts: could not write at 0x%08X, it stays off\n", xinputSite);
+            return false;
+        }
+        g_xinputPatched = true;
+    }
+    if (!g_keyboardPatched) {
+        if (!writeJump(keyboardSite, sizeof(kExpKeyboard), (const void*)&keyboard_stub)) {
+            g_loadPad = NULL; g_loadKeyboard = NULL;   // the XInput hook stays, but does nothing for this feature
+            SDLOG(0, "EquipmentLoadouts: could not write at 0x%08X, it stays off\n", keyboardSite);
+            return false;
+        }
+        g_keyboardPatched = true;
+    }
+    DWORD old = 0;
+    if (!VirtualProtect((LPVOID)entry, 4, PAGE_READWRITE, &old)) {
+        g_loadPad = NULL; g_loadKeyboard = NULL;
+        SDLOG(0, "EquipmentLoadouts: could not write the slot grid's method, it stays off\n");
+        return false;
+    }
+    lo::g_installed = true;
+    *(DWORD*)entry = (DWORD)&lo::onFill;
+    DWORD ignored = 0;
+    VirtualProtect((LPVOID)entry, 4, old, &ignored);
+    HANDLE h = CreateThread(NULL, 0, lo::loadThread, NULL, 0, NULL);
+    if (h) CloseHandle(h);
+    else InterlockedExchange(&lo::g_loaded, 1);   // no file then: the builds live while the game runs
+    SDLOG(0, "EquipmentLoadouts: on (Equipment window: hold RS / LALT, D-pad / arrows)\n");
+    return true;
+}
+
+bool equipmentLoadoutsActive() {
+    return loadouts::g_installed;
+}
+
+bool equipmentLoadoutsPrompt(LoadoutPromptInfo* out) {
+    namespace lo = loadouts;
+    if (!out || !lo::updatedThisFrame()) return false;
+    const DWORD now = GetTickCount();
+    out->held = lo::g_padMode ? 1 : (lo::g_kbMode ? 2 : 0);
+    out->ownKeyboard = lo::g_lastKeyboard ? 1 : 0;
+    out->build = lo::g_sel;
+    out->saved = lo::g_savedMask;
+    out->worn = lo::g_worn;
+    out->state = 0;
+    out->progress = 0.0f;
+    // elapsed times are signed (a start a moment after 'now' counts as 0)
+    if (out->held && lo::g_saveOn) {
+        out->state = 2;
+        out->progress = (float)(int)(now - lo::g_saveStart) / (float)lo::kSaveMs;
+    }
+    else if (out->held && lo::g_deleteOn) {
+        out->state = 5;
+        out->progress = (float)(int)(now - lo::g_deleteStart) / (float)lo::kDeleteMs;
+    }
+    else if (out->held && lo::g_applyOn) {
+        out->state = 1;
+        out->progress = (float)(int)(now - lo::g_applyStart) / (float)lo::kApplyMs;
+    }
+    else if (out->held && lo::g_msg) {
+        out->state = lo::g_msg == 1 ? 3 : (lo::g_msg == 2 ? 4 : 6);
+        out->build = lo::g_msgBuild;
+        out->progress = 1.0f - (float)(int)(now - lo::g_msgTime) / (float)lo::kMessageMs;
+    }
+    if (out->progress < 0.0f) out->progress = 0.0f;
+    if (out->progress > 1.0f) out->progress = 1.0f;
+    return true;
+}
+
+unsigned equipmentLoadoutsDimMask(unsigned* shown, unsigned* fill) {
+    namespace lo = loadouts;
+    const bool on = lo::onScreen() && lo::modeOn() && lo::g_previewOn;
+    if (shown) *shown = on ? lo::g_shownMask : 0;
+    if (fill) *fill = on ? lo::g_fillMask : 0;
+    return on ? lo::g_dimMask : 0;
+}
+
+// for RenderstateManager (at Present): one more frame shown
+void equipmentLoadoutsNewFrame() { InterlockedIncrement(&loadouts::g_frame); }
 
 // "Most recent" sorting: the look at what the hero gains, equips and attunes (WeaponsArmorSort, above). Called every frame
 // from RSManager::redirectPresent; it works 4 times a second, and does nothing when WeaponsArmorSort is off.

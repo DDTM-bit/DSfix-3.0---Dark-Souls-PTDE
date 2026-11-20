@@ -397,6 +397,9 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
         // QuickSelectEstus: hold D-pad Down during play to select the Estus Flask
         if (Settings::get().getQuickSelectEstus()) installQuickSelectEstus();
 
+        // EquipmentLoadouts: 5 builds per character in the Equipment window (hold RS / LALT)
+        if (Settings::get().getEquipmentLoadouts()) installEquipmentLoadouts();
+
         // Item list wheel: with DDTMControllerFix the mouse wheel scrolls the item lists (no setting)
         installListWheelScroll();
 
