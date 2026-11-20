@@ -101,6 +101,8 @@ Hold **D-pad Down** (350 ms) during play to jump straight to the Estus Flask in 
 With DDTM Controller Fix, holding its SWITCH_ITEM key works the same.
 `QuickSelectEstus 1` in DSfix.ini (default 0 = off, nothing is patched).
 ---
+* **Equipment Loadouts:** Save up to 5 builds per character in the Equipment window and switch between them. Hold **RS** (keyboard **Left Alt**): **◀▶** choose, hold **▼** apply, hold **▲** save, hold **LB** (keyboard **Delete**) delete. Turn it on with `EquipmentLoadouts 1` in DSfix.ini.
+---
 * **Bonfire Covenant Switching**
 Rest at a bonfire and choose **Enter Covenant** (below Attune Magic). You can switch to any covenant you have joined in this playthrough.
 - Your current covenant is marked `*`. A broken covenant is marked `x`; picking it tells you why (for example, leader dead or hostile, Kaathe gone, or banished until absolution).
