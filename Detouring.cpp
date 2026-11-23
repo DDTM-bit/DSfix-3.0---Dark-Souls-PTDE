@@ -1,6 +1,7 @@
 #include "Detouring.h"
 
 #include <Windows.h>
+#include <cstring>
 
 #include "Settings.h"
 #include "RenderstateManager.h"
@@ -144,11 +145,56 @@ void detachLanguageHooks() {
 }
 // =================== end of language override hooks ===================
 
+// Direct3DCreate9 hook. Another program (an overlay) may already have its own jump at the start of Direct3DCreate9
+// when DSfix loads, into memory near the top of the address space. Detours wants its trampoline within 2 GB of the
+// function and of that jump's target, counted without the 32-bit wrap-around. With the game's 4 GB address space
+// (DARKSOULS.exe large address aware) that target lies above 2 GB, no place fits both, and DetourAttach refuses
+// (ERROR_NOT_ENOUGH_MEMORY): DSfix's graphics part never started. On x86 a 32-bit jump reaches every address, so then
+// DSfix puts its own jump in place of the other one and calls on to that jump's target, exactly what the replaced jump
+// did. The bytes after the first instruction are left alone.
+namespace {
+	enum D3DHookMode { D3DHOOK_NONE, D3DHOOK_DETOURS, D3DHOOK_JUMP };
+	D3DHookMode g_d3dHookMode = D3DHOOK_NONE;
+
+	bool hookD3DCreateByJump() {
+		BYTE* code = (BYTE*)DetourCodeFromPointer((PVOID)oDirect3DCreate9, NULL);
+		if (!code || code[0] != 0xE9) return false; // only that case: another program's jump already in place
+		BYTE* target = code + 5 + *(const INT32*)(code + 1);
+		DWORD oldProtect = 0;
+		if (!VirtualProtect(code, 5, PAGE_EXECUTE_READWRITE, &oldProtect)) return false;
+		oDirect3DCreate9 = (tDirect3DCreate9)target; // before the jump goes live
+		const INT32 rel = (INT32)((BYTE*)hkDirect3DCreate9 - (code + 5));
+		memcpy(code + 1, &rel, sizeof(rel));
+		DWORD ignored = 0;
+		VirtualProtect(code, 5, oldProtect, &ignored);
+		FlushInstructionCache(GetCurrentProcess(), code, 5);
+		return true;
+	}
+}
+
 void earlyDetour() {
 	QueryPerformanceFrequency(&countsPerSec);
+	// Direct3DCreate9 on its own: a refused hook makes Detours drop the whole transaction
 	DetourTransactionBegin();
 	DetourUpdateThread(GetCurrentThread());
-	DetourAttach(&(PVOID&)oDirect3DCreate9, hkDirect3DCreate9);
+	const LONG attached = DetourAttach(&(PVOID&)oDirect3DCreate9, hkDirect3DCreate9);
+	const LONG committed = DetourTransactionCommit();
+	if (attached == NO_ERROR && committed == NO_ERROR) {
+		g_d3dHookMode = D3DHOOK_DETOURS;
+	}
+	else if (hookD3DCreateByJump()) {
+		g_d3dHookMode = D3DHOOK_JUMP;
+		SDLOG(0, "Direct3D hook: another program's hook is already on Direct3DCreate9 (Detours error %ld); DSfix's jump "
+			"is put in its place and calls on to it\n", attached != NO_ERROR ? attached : committed);
+	}
+	else {
+		SDLOG(0, "Direct3D hook: could not be placed (Detours error %ld) - DSfix's graphics features stay off\n",
+			attached != NO_ERROR ? attached : committed);
+	}
+
+	// The language override (overrideLanguage) in a transaction of its own
+	DetourTransactionBegin();
+	DetourUpdateThread(GetCurrentThread());
 	attachLanguageHooks();
 	DetourTransactionCommit();
 }
@@ -186,7 +232,7 @@ void endDetour() {
 		//DetourDetach(&(PVOID&)TrueD3DXCreateTexture, DetouredD3DXCreateTexture);
 		DetourDetach(&(PVOID&)TrueD3DXCreateTextureFromFileInMemory, DetouredD3DXCreateTextureFromFileInMemory);
 		DetourDetach(&(PVOID&)TrueD3DXCreateTextureFromFileInMemoryEx, DetouredD3DXCreateTextureFromFileInMemoryEx);
-		DetourDetach(&(PVOID&)oDirect3DCreate9, hkDirect3DCreate9);
+		if (g_d3dHookMode == D3DHOOK_DETOURS) DetourDetach(&(PVOID&)oDirect3DCreate9, hkDirect3DCreate9);
 		//DetourDetach(&(PVOID&)TrueD3DXCompileShader, DetouredD3DXCompileShader);
 		detachLanguageHooks();
 		DetourTransactionCommit();
