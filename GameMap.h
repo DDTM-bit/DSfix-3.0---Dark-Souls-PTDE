@@ -690,11 +690,11 @@ namespace Look {
     // ---- Fire Keepers: a bonfire whose Fire Keeper is dead ("Fire Keeper is absent. Cannot light bonfire.") ----
     // The game keeps each keeper's state in event flags (in the character's save, right anywhere in the game), read with
     // the game's own reader (0x00D38C40: eax = the flag manager, cl = 0, argument: the flag) when the map opens.
-    // Anastacia: 1310 = her normal state (off once she is dead, by Lautrec or by you); Daughter of Chaos: 1272 = dead;
-    // Darkmoon Knightess: 1034 = dead.
+    // A keeper is absent while one of her flags is on (flag names from Wulf2k's DS-EventHook NamedIDs list):
+    // Anastacia: 1141 = dead, 1146 = dead but ready to revive (her soul taken from Lautrec); 1140 = initial state and
+    // 1142 = revived are the living states. Daughter of Chaos (Fair Lady): 1272 = dead. Darkmoon Knightess: 1034 = dead.
     const DWORD kFlagMan = 0x0137D7D4;
-    const DWORD kKeeperFlag[kKeepers] = { 1310, 1272, 1034 };
-    const bool kKeeperAbsentWhenOn[kKeepers] = { false, true, true };
+    const DWORD kKeeperDeadFlags[kKeepers][2] = { { 1141, 1146 }, { 1272, 0 }, { 1034, 0 } };   // 0 = unused
     __declspec(naked) DWORD __stdcall flagGetCall(DWORD man, DWORD flag) {
         __asm {
             pushad
@@ -718,8 +718,14 @@ namespace Look {
         BYTE ready = 0;
         if (!rdD(kFlagMan, man) || !man || !rdBlock(man + 0x114, &ready, 1) || !ready) return;   // not ready: as before
         for (int k = 0; k < kKeepers; ++k) {
-            bool on = false;
-            if (flagRead(man, kKeeperFlag[k], on)) g_keepers[k] = on == kKeeperAbsentWhenOn[k];
+            bool absent = false, readAll = true;
+            for (int f = 0; f < 2; ++f) {
+                if (!kKeeperDeadFlags[k][f]) continue;
+                bool on = false;
+                if (!flagRead(man, kKeeperDeadFlags[k][f], on)) { readAll = false; break; }
+                if (on) absent = true;
+            }
+            if (readAll) g_keepers[k] = absent;
         }
     }
     // the bonfire (table index) has no Fire Keeper (the map's red X)
