@@ -139,9 +139,10 @@ SETTING(bool, EquipmentLoadouts, "EquipmentLoadouts", false)
 // leave is halved). Broken covenants (leader dead or hostile, banished, ...) are not offered. 0 = off (nothing is patched)
 SETTING(bool, BonfireCovenants, "BonfireCovenants", false)
 // CovenantPoints: your devotion after the covenant name. In the menus (Inventory, Equipment, Status, Level Up):
-// "Path of the Dragon+2 (30o)" - the game shows the rank already. In the bonfire covenant list (BonfireCovenants):
-// "Path of the Dragon (8o)", from rank 1 on "Path of the Dragon (12o R+1)". Forest Hunter shows the invaders you killed
-// with 'k' ("(12k)"). At 0, and for Way of White and Princess's Guard, the name stays as it is. 0 = off (nothing is patched)
+// "Path of the Dragon+2 (30p)" - the game shows the rank already. In the bonfire covenant list (BonfireCovenants):
+// "Path of the Dragon (8p)", from rank 1 on "Path of the Dragon (12p R+1)". Forest Hunter shows its points the same way
+// (the invaders you killed). At 0, and for Way of White and Princess's Guard, the name stays as it is. 0 = off (nothing
+// is patched)
 SETTING(bool, CovenantPoints, "CovenantPoints", false)
 // cameraDistance: the camera's distance from your character while playing, as a multiplier of the game's own distance.
 // 1.0 = vanilla (nothing is patched), below 1.0 closer, above 1.0 farther (0.5 to 2.0). The toggleCameraDistance key

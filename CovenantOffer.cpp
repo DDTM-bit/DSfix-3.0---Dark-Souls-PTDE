@@ -557,16 +557,20 @@ bool covenantOfferActive() {
 // =====================================================================================================================
 // CovenantPoints - your devotion after the covenant name.
 //
-// Menus (the stats in the Inventory and Equipment windows, the Status window, Level Up): "Path of the Dragon+2 (30o)".
+// Menus (the stats in the Inventory and Equipment windows, the Status window, Level Up): "Path of the Dragon+2 (30p)".
 // The game already shows the rank there ("+2"), so only the devotion is added.
-// Bonfire "Enter Covenant" list (BonfireCovenants): "Path of the Dragon (8o)" at rank 0, "Path of the Dragon (12o R+1)"
-// from rank 1 on. There the points are grey, so the name stands out: the game's text has a colour tag
-// ("#c[rrggbb]...#c", the game uses it in its own menus), but no tag for a smaller size (every font is scaled to the
-// line's size).
+// Bonfire "Enter Covenant" list (BonfireCovenants): "Path of the Dragon (8p)" at rank 0, "Path of the Dragon (12p R+1)"
+// from rank 1 on. There the whole bracket has one colour that follows the rank: grey before rank 1, then pale yellow,
+// pale orange and red; for a covenant you can no longer join it is the dim grey of its name. The game's text has a
+// colour tag ("#c[rrggbb]...#c", the game uses it in its own menus), but no tag for a smaller size (every font is
+// scaled to the line's size). Colour tags are never put right next to each other: a list line with "#c#c[" (a colour
+// change right after another one) stopped the game with a text engine error in testing, so every tag pair is kept apart
+// by text (here the space before the bracket).
 //
 // The covenants with devotion are 3 to 9 (Warrior of Sunlight to Chaos Servant). Forest Hunter counts the invaders you
-// killed in the same place, so it is shown the same way with 'k' instead of 'o' ("Forest Hunter (12k R+1)"). With no
-// devotion yet (0), and for Way of White, Princess's Guard and "no covenant", the name stays as the game shows it.
+// killed in the same place, so it is shown the same way ("Forest Hunter (12p R+1)"). 'p' is for points, not offerings
+// or kills: leaving a covenant halves them. With no devotion yet (0), and for Way of White, Princess's Guard and
+// "no covenant", the name stays as the game shows it.
 //
 // The menus fill their covenant line in one place (0x00EFB35E): text id 105100 + 10 * rank + covenant, read with the
 // game's menu text call, while ebx holds the numbers the panel shows (yours, or the Level Up preview of them). Only
@@ -579,8 +583,8 @@ namespace covpoints {
     const DWORD kFnMenuText = 0x00D17860;
     const DWORD kTextNames = 105100;             // + 10 * rank + covenant
     const DWORD kTextLast = 105139;
-    const int kForestHunter = 7;
-    const wchar_t* const kBonfireGrey = L"#c[a0a0a0]";  // the points in the bonfire list; "#c" ends the colour
+    // The bonfire list: the whole bracket in one colour, by rank
+    const wchar_t* const kBonfireRank[4] = { L"a0a0a0", L"d8cc8c", L"e0a468", L"e0665a" };  // grey, pale yellow, pale orange, red
 
     bool g_installed = false;
     DWORD g_fnMenuText = kFnMenuText;
@@ -590,10 +594,6 @@ namespace covpoints {
     bool devotion(DWORD stats, int c, DWORD* out) {
         if (!stats || c < (int)kFirstCovenantId || c > 9) return false;
         return readByte(stats + kStatsDevotion + (DWORD)(c - (int)kFirstCovenantId), out);
-    }
-    // 'o' for offerings, 'k' for Forest Hunter (the invaders you killed)
-    wchar_t unitOf(int c) {
-        return c == kForestHunter ? L'k' : L'o';
     }
     // 0 below 10, then 1, 2, 3 at the game's ranks
     int rankOf(DWORD value) {
@@ -614,7 +614,7 @@ namespace covpoints {
         if (!devotion(stats, c, &value) || value == 0) return text;
         if (text == g_lastText && id == g_lastId && value == g_lastValue) return g_menuText;
         g_lastText = NULL;
-        __try { _snwprintf_s(g_menuText, 160, _TRUNCATE, L"%s (%u%c)", text, value, unitOf(c)); }
+        __try { _snwprintf_s(g_menuText, 160, _TRUNCATE, L"%s (%up)", text, value); }
         __except (EXCEPTION_EXECUTE_HANDLER) { return text; }
         g_lastText = text;
         g_lastId = id;
@@ -653,14 +653,16 @@ namespace covpoints {
         return true;
     }
 
-    // The bonfire list: " (8o)" at rank 0, " (12o R+1)" from rank 1 on, in grey, or false (nothing added)
-    bool bonfireSuffix(int c, wchar_t* out, size_t size) {
+    // The bonfire list: " (8p)" at rank 0, " (12p R+1)" from rank 1 on, or false (nothing added). One colour tag pair,
+    // after a space: the rank's colour, or disabledColor for a covenant you can no longer join.
+    bool bonfireSuffix(int c, const wchar_t* disabledColor, wchar_t* out, size_t size) {
         if (!g_installed) return false;
         DWORD value = 0;
         if (!devotion(statsBlock(), c, &value) || value == 0) return false;
         const int r = rankOf(value);
-        if (r == 0) _snwprintf_s(out, size, _TRUNCATE, L" %s(%u%c)#c", kBonfireGrey, value, unitOf(c));
-        else _snwprintf_s(out, size, _TRUNCATE, L" %s(%u%c R+%d)#c", kBonfireGrey, value, unitOf(c), r);
+        const wchar_t* color = disabledColor ? disabledColor : kBonfireRank[r];
+        if (r == 0) _snwprintf_s(out, size, _TRUNCATE, L" #c[%s](%up)#c", color, value);
+        else _snwprintf_s(out, size, _TRUNCATE, L" #c[%s](%up R+%d)#c", color, value, r);
         return true;
     }
 }
@@ -687,7 +689,7 @@ bool installCovenantPoints() {
 // BonfireCovenants - switch to a covenant you already joined, at any bonfire.
 //
 // The bonfire list gets the leaders' own line "Enter Covenant" (right after Attune Magic). It opens a list of the
-// covenants you joined in this playthrough, in game order: your current one marked "* ", a broken one "x " (picking it
+// covenants you joined in this playthrough, in game order: your current one in green, a broken one in grey (picking it
 // tells why). Picking another one shows the leaders' own question "Join Covenant? (abandons former Covenant)". Yes plays
 // the leaders' oath sound (s123456789, common event 840) while the screen fades to black and back (3 s, drawn by
 // DSfix); in the dark the game's BreakCovenantPledge runs (the devotion of the covenant you leave is halved) and the new
@@ -995,14 +997,14 @@ namespace bonfirecov {
         case 3: return true;                                     // altar
         case 4: return !flag(1677);                              // Kaathe not gone
         case 5: return !flag(1781);                              // the Everlasting Dragon still talks
-        case 6: return true;                                     // coffin
+        case 6: return !flag(7);                                 // the coffin: Nito not defeated (flag 7)
         case 7: return !(flag(1712) || flag(746));               // not banished (until absolution)
         case 8: return !(flag(1241) || flag(1242));              // Gwyndolin not hostile / not dead
         case 9: return !(flag(1271) || flag(1272));              // Daughter of Chaos not hostile / not killed
         }
         return false;
     }
-    // In the list: the current covenant and every joined one (broken ones are shown marked "x ")
+    // In the list: the current covenant and every joined one (broken ones are shown in grey)
     bool listed(int c, int current) {
         return joinedOnce(c, current);
     }
@@ -1063,21 +1065,25 @@ namespace bonfirecov {
     }
 
     // -----------------------------------------------------------------------------------------------------------------
-    // Our texts: the covenant names ("Warrior of Sunlight", current "* Warrior of Sunlight", broken "x Darkwraith") and
-    // the reason a broken covenant cannot be joined
+    // Our texts: the covenant names (the current one in green, a broken one in grey, the others as the game shows them)
+    // and the reason a broken covenant cannot be joined. The colour is the game's own text tag "#c[rrggbb]...#c" (the
+    // game uses it in its own menus); the tags are put one after the other, never one inside another.
     // -----------------------------------------------------------------------------------------------------------------
-    wchar_t g_names[10][96];
+    const wchar_t* const kColorCurrent = L"92c88a";      // soft green
+    const wchar_t* const kColorBroken = L"808080";       // dim grey, like a disabled line (its points too)
+    wchar_t g_names[10][128];
     bool g_namesReady[10];
     const wchar_t* g_reason[10];
 
-    void prepareName(int c, const wchar_t* mark) {
+    void prepareName(int c, const wchar_t* color, bool broken) {
         g_namesReady[c] = false;
         const wchar_t* name = (const wchar_t*)callEdi(kFnMenuText, kTextNames + (DWORD)c);
         if (!name) return;
-        wchar_t points[48] = L"";
-        covpoints::bonfireSuffix(c, points, 48);           // CovenantPoints: " (8o)" / " (12o R+1)" in grey, or nothing
+        wchar_t points[64] = L"";
+        covpoints::bonfireSuffix(c, broken ? kColorBroken : NULL, points, 64);  // CovenantPoints: " (8p)", " (12p R+1)"
         __try {
-            _snwprintf_s(g_names[c], 96, _TRUNCATE, L"%s%s%s", mark, name, points);
+            if (color) _snwprintf_s(g_names[c], 128, _TRUNCATE, L"#c[%s]%s#c%s", color, name, points);
+            else _snwprintf_s(g_names[c], 128, _TRUNCATE, L"%s%s", name, points);
             g_namesReady[c] = true;
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -1089,6 +1095,7 @@ namespace bonfirecov {
         case 2: return flag(1232) ? L"Gwynevere is gone." : L"Gwynevere is hostile.";
         case 4: return L"Darkstalker Kaathe is gone.";
         case 5: return L"The Everlasting Dragon is silent.";
+        case 6: return L"Gravelord Nito is dead.";
         case 7: return L"You were banished. Seek absolution.";
         case 8: return flag(1242) ? L"Dark Sun Gwyndolin is dead." : L"Dark Sun Gwyndolin is hostile.";
         case 9: return flag(1272) ? L"The Daughter of Chaos is dead." : L"The Daughter of Chaos is hostile.";
@@ -1139,7 +1146,7 @@ namespace bonfirecov {
         g_windowTime = GetTickCount();
     }
 
-    // The covenant list: our lines only, in game order (current "* ", broken "x ")
+    // The covenant list: our lines only, in game order (current in green, broken in grey)
     void buildCovenantList() {
         const int current = currentCovenant();
         listClear();
@@ -1148,7 +1155,7 @@ namespace bonfirecov {
             if (!listed(c, current)) continue;
             const bool broken = c != current && !available(c);
             g_reason[c] = broken ? reasonFor(c) : 0;
-            prepareName(c, c == current ? L"* " : (broken ? L"x " : L""));
+            prepareName(c, c == current ? kColorCurrent : (broken ? kColorBroken : NULL), broken);
             listAdd(kCovTextBase + (DWORD)c, (DWORD)(kCovIndexBase + c));
             ++g_covenantLines;
         }
