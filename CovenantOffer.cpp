@@ -555,6 +555,135 @@ bool covenantOfferActive() {
 }
 
 // =====================================================================================================================
+// CovenantPoints - your devotion after the covenant name.
+//
+// Menus (the stats in the Inventory and Equipment windows, the Status window, Level Up): "Path of the Dragon+2 (30o)".
+// The game already shows the rank there ("+2"), so only the devotion is added.
+// Bonfire "Enter Covenant" list (BonfireCovenants): "Path of the Dragon (8o)" at rank 0, "Path of the Dragon (12o R+1)"
+// from rank 1 on. There the points are grey, so the name stands out: the game's text has a colour tag
+// ("#c[rrggbb]...#c", the game uses it in its own menus), but no tag for a smaller size (every font is scaled to the
+// line's size).
+//
+// The covenants with devotion are 3 to 9 (Warrior of Sunlight to Chaos Servant). Forest Hunter counts the invaders you
+// killed in the same place, so it is shown the same way with 'k' instead of 'o' ("Forest Hunter (12k R+1)"). With no
+// devotion yet (0), and for Way of White, Princess's Guard and "no covenant", the name stays as the game shows it.
+//
+// The menus fill their covenant line in one place (0x00EFB35E): text id 105100 + 10 * rank + covenant, read with the
+// game's menu text call, while ebx holds the numbers the panel shows (yours, or the Level Up preview of them). Only
+// that one call is redirected: the game's text comes back as it is and DSfix shows a copy with the devotion after it.
+// The covenant name itself, and every other place that uses it, is left alone.
+// =====================================================================================================================
+namespace covpoints {
+    const DWORD kSiteMenu = 0x00EFB35E;          // call 0x00D17860 (edi = text id -> the text), the covenant line
+    const BYTE kExpMenu[5] = { 0xE8, 0xFD, 0xC4, 0xE1, 0xFF };
+    const DWORD kFnMenuText = 0x00D17860;
+    const DWORD kTextNames = 105100;             // + 10 * rank + covenant
+    const DWORD kTextLast = 105139;
+    const int kForestHunter = 7;
+    const wchar_t* const kBonfireGrey = L"#c[a0a0a0]";  // the points in the bonfire list; "#c" ends the colour
+
+    bool g_installed = false;
+    DWORD g_fnMenuText = kFnMenuText;
+    wchar_t g_menuText[160];
+
+    // The devotion of covenant 'c' in the numbers block 'stats', or false for a covenant without devotion
+    bool devotion(DWORD stats, int c, DWORD* out) {
+        if (!stats || c < (int)kFirstCovenantId || c > 9) return false;
+        return readByte(stats + kStatsDevotion + (DWORD)(c - (int)kFirstCovenantId), out);
+    }
+    // 'o' for offerings, 'k' for Forest Hunter (the invaders you killed)
+    wchar_t unitOf(int c) {
+        return c == kForestHunter ? L'k' : L'o';
+    }
+    // 0 below 10, then 1, 2, 3 at the game's ranks
+    int rankOf(DWORD value) {
+        int r = 0;
+        for (int i = 0; i < 3; ++i) if (value >= kRankAt[i]) r = i + 1;
+        return r;
+    }
+
+    // The menus: the game's text with the devotion after it, or the game's text unchanged. The game refills this
+    // line on every frame of its own update, so the text is only built again when the name or the devotion changes:
+    // the rest of the time this is a few comparisons on the game's own call.
+    const wchar_t* g_lastText = NULL;
+    DWORD g_lastId = 0, g_lastValue = 0;
+    const wchar_t* __stdcall menuText(const wchar_t* text, DWORD id, DWORD stats) {
+        if (!text || id < kTextNames || id > kTextLast) return text;
+        DWORD value = 0;
+        const int c = (int)((id - kTextNames) % 10);
+        if (!devotion(stats, c, &value) || value == 0) return text;
+        if (text == g_lastText && id == g_lastId && value == g_lastValue) return g_menuText;
+        g_lastText = NULL;
+        __try { _snwprintf_s(g_menuText, 160, _TRUNCATE, L"%s (%u%c)", text, value, unitOf(c)); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return text; }
+        g_lastText = text;
+        g_lastId = id;
+        g_lastValue = value;
+        return g_menuText;
+    }
+
+    // Replaces the game's call at kSiteMenu (edi = text id, ebx = the numbers the panel shows). Every register as the
+    // game's call leaves it, only eax may become our text.
+    __declspec(naked) void menu_stub() {
+        __asm {
+            push edi                            // the text id
+            call dword ptr[g_fnMenuText]
+            pushad
+            pushfd
+            push ebx                            // the numbers
+            push dword ptr[esp + 0x28]          // the text id (one push further down now)
+            push eax                            // the game's text
+            call menuText
+            mov dword ptr[esp + 0x20], eax      // becomes eax at POPAD
+            popfd
+            popad
+            add esp, 4                          // the saved text id
+            ret
+        }
+    }
+
+    bool writeCall(DWORD address, const void* target) {
+        DWORD oldProtect;
+        if (!VirtualProtect((LPVOID)address, 5, PAGE_EXECUTE_READWRITE, &oldProtect)) return false;
+        BYTE* p = (BYTE*)address;
+        *(DWORD*)(p + 1) = (DWORD)target - (address + 5);
+        p[0] = 0xE8;
+        VirtualProtect((LPVOID)address, 5, oldProtect, &oldProtect);
+        FlushInstructionCache(GetCurrentProcess(), (LPCVOID)address, 5);
+        return true;
+    }
+
+    // The bonfire list: " (8o)" at rank 0, " (12o R+1)" from rank 1 on, in grey, or false (nothing added)
+    bool bonfireSuffix(int c, wchar_t* out, size_t size) {
+        if (!g_installed) return false;
+        DWORD value = 0;
+        if (!devotion(statsBlock(), c, &value) || value == 0) return false;
+        const int r = rankOf(value);
+        if (r == 0) _snwprintf_s(out, size, _TRUNCATE, L" %s(%u%c)#c", kBonfireGrey, value, unitOf(c));
+        else _snwprintf_s(out, size, _TRUNCATE, L" %s(%u%c R+%d)#c", kBonfireGrey, value, unitOf(c), r);
+        return true;
+    }
+}
+
+bool installCovenantPoints() {
+    using namespace covpoints;
+    if (covpoints::g_installed) return true;
+    if (!Settings::get().getCovenantPoints()) return false;
+    if (memcmp((const void*)kSiteMenu, kExpMenu, sizeof(kExpMenu)) != 0) {
+        SDLOG(0, "CovenantPoints: the code for the covenant line at 0x%08X is not what this build should have, "
+                 "CovenantPoints stays off\n", kSiteMenu);
+        return false;
+    }
+    if (!writeCall(kSiteMenu, (const void*)&menu_stub)) {
+        SDLOG(0, "CovenantPoints: could not write at 0x%08X, CovenantPoints stays off\n", kSiteMenu);
+        return false;
+    }
+    covpoints::g_installed = true;
+    SDLOG(0, "CovenantPoints: on (devotion after the covenant name in the menus and the bonfire covenant list)\n");
+    return true;
+}
+
+// =====================================================================================================================
 // BonfireCovenants - switch to a covenant you already joined, at any bonfire.
 //
 // The bonfire list gets the leaders' own line "Enter Covenant" (right after Attune Magic). It opens a list of the
@@ -945,8 +1074,10 @@ namespace bonfirecov {
         g_namesReady[c] = false;
         const wchar_t* name = (const wchar_t*)callEdi(kFnMenuText, kTextNames + (DWORD)c);
         if (!name) return;
+        wchar_t points[48] = L"";
+        covpoints::bonfireSuffix(c, points, 48);           // CovenantPoints: " (8o)" / " (12o R+1)" in grey, or nothing
         __try {
-            _snwprintf_s(g_names[c], 96, _TRUNCATE, L"%s%s", mark, name);
+            _snwprintf_s(g_names[c], 96, _TRUNCATE, L"%s%s%s", mark, name, points);
             g_namesReady[c] = true;
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {}

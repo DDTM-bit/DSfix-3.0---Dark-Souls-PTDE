@@ -385,6 +385,9 @@ bool WINAPI DllMain(HMODULE hDll, DWORD dwReason, PVOID pvReserved) {
         // BonfireCovenants: "Enter Covenant" at bonfires, to switch to a covenant you already joined
         if (Settings::get().getBonfireCovenants()) installBonfireCovenants();
 
+        // CovenantPoints: your devotion after the covenant name in the menus and the bonfire covenant list
+        if (Settings::get().getCovenantPoints()) installCovenantPoints();
+
         // WeaponsArmorSort: sort the Weapons / Armor lists (Inventory, Equipment, Bottomless Box) by a row value
         if (Settings::get().getWeaponsArmorSort()) installWeaponsArmorSort();
 

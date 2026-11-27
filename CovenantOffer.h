@@ -7,6 +7,10 @@ bool installCovenantOffer();
 // True when the feature is running.
 bool covenantOfferActive();
 
+// CovenantPoints: your devotion after the covenant name in the menus and the bonfire covenant list.
+// Nothing is patched when the setting is off.
+bool installCovenantPoints();
+
 // BonfireCovenants: "Enter Covenant" in the bonfire list, to switch to a covenant you already joined in this playthrough.
 // Nothing is patched when the setting is off.
 bool installBonfireCovenants();
